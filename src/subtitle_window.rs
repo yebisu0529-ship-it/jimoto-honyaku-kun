@@ -213,14 +213,6 @@ impl State {
         }
         let mut response = WindowResponse::default();
         ctx.show_viewport_immediate(Self::viewport_id(), self.builder(), |child, _class| {
-            child.input(|input| {
-                if let Some(inner) = input.viewport().inner_rect {
-                    self.native_size = inner.size().max(egui::vec2(360.0, 220.0));
-                }
-                if let Some(outer) = input.viewport().outer_rect {
-                    self.native_position = Some(outer.min);
-                }
-            });
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
                 .show(child, |ui| {
@@ -230,6 +222,18 @@ impl State {
                 response = self.close();
             }
             if response.closed {
+                // Remember the geometry only when closing. egui turns a builder
+                // that follows the open window into a resize or move that runs
+                // after the next frame has read the window, which swaps it
+                // between its last two sizes for as long as frames are drawn.
+                child.input(|input| {
+                    if let Some(inner) = input.viewport().inner_rect {
+                        self.native_size = inner.size().max(egui::vec2(360.0, 220.0));
+                    }
+                    if let Some(outer) = input.viewport().outer_rect {
+                        self.native_position = Some(outer.min);
+                    }
+                });
                 // This command is scoped to the native child context, never root.
                 child.send_viewport_cmd(egui::ViewportCommand::Close);
             }

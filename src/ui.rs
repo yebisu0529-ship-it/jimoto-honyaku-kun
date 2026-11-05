@@ -22,6 +22,158 @@ pub(super) struct UiProbe {
     pub nav_heights: Vec<f32>,
     pub now_rect: Option<egui::Rect>,
     pub reading_font: f32,
+    pub status_rect: Option<egui::Rect>,
+}
+
+/// How far one local model is from being usable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Readiness {
+    Ready,
+    Preparing,
+    Missing,
+}
+
+impl Readiness {
+    /// The word printed beside the model name. A ready model needs none.
+    fn word(self) -> Option<&'static str> {
+        match self {
+            Self::Ready => None,
+            Self::Preparing => Some("準備中"),
+            Self::Missing => Some("未準備"),
+        }
+    }
+
+    fn color(self) -> Color32 {
+        match self {
+            Self::Ready => ACCENT,
+            Self::Preparing => WARNING,
+            Self::Missing => TEXT_MUTED,
+        }
+    }
+
+    /// A missing model links to the screen that prepares it.
+    fn needs_action(self) -> bool {
+        self == Self::Missing
+    }
+}
+
+struct ModelStatus {
+    name: &'static str,
+    readiness: Readiness,
+    detail: String,
+    opens: Tab,
+}
+
+impl ModelStatus {
+    fn hover(&self) -> String {
+        let state = match self.readiness {
+            Readiness::Ready => "準備完了",
+            Readiness::Preparing => "準備中",
+            Readiness::Missing => "未準備",
+        };
+        let action = if self.readiness.needs_action() {
+            "\nクリックすると準備する画面を開きます"
+        } else {
+            ""
+        };
+        format!("{}: {}\n{state}{action}", self.name, self.detail)
+    }
+}
+
+/// A dot, the model name and, unless ready, its state in words.
+fn status_chip(ui: &mut egui::Ui, status: &ModelStatus) -> egui::Response {
+    const DOT: f32 = 8.0;
+    let readiness = status.readiness;
+    let font = egui::FontId::proportional(theme::SIZE_CAPTION);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        status.name,
+        0.0,
+        egui::TextFormat::simple(font.clone(), TEXT_SECONDARY),
+    );
+    if let Some(word) = readiness.word() {
+        job.append(
+            word,
+            theme::SPACE_1,
+            egui::TextFormat::simple(font, readiness.color()),
+        );
+    }
+    let galley = ui.painter().layout_job(job);
+    let width = theme::SPACE_1 + DOT + theme::SPACE_1 + galley.size().x + theme::SPACE_1;
+    let sense = if readiness.needs_action() {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, theme::CONTROL_H), sense);
+    let face = rect.shrink2(Vec2::new(0.0, theme::SPACE_1));
+    if readiness.needs_action() && response.hovered() {
+        ui.painter()
+            .rect_filled(face, theme::RADIUS_CONTROL, SURFACE_RAISED);
+    }
+    let center = egui::pos2(rect.left() + theme::SPACE_1 + DOT / 2.0, rect.center().y);
+    match readiness {
+        Readiness::Ready => {
+            ui.painter()
+                .circle_filled(center, DOT / 2.0, readiness.color());
+        }
+        Readiness::Preparing | Readiness::Missing => {
+            ui.painter().circle_stroke(
+                center,
+                DOT / 2.0 - 0.75,
+                egui::Stroke::new(1.5_f32, readiness.color()),
+            );
+        }
+    }
+    let text = egui::pos2(
+        center.x + DOT / 2.0 + theme::SPACE_1,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    let label = galley.text().to_owned();
+    ui.painter().galley(text, galley, TEXT_SECONDARY);
+    // The row is exactly one control tall, so the ring is drawn inside it.
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            face,
+            theme::RADIUS_CONTROL,
+            egui::Stroke::new(2.0_f32, ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let kind = if readiness.needs_action() {
+        egui::WidgetType::Button
+    } else {
+        egui::WidgetType::Label
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(kind, true, &label));
+    response
+}
+
+/// The latest app message on one truncated line; the full text is on hover.
+fn status_message(ui: &mut egui::Ui, parts: &[(&str, Color32)]) {
+    let font = egui::FontId::proportional(theme::SIZE_CAPTION);
+    let mut job = egui::text::LayoutJob::default();
+    let mut shown: Vec<&str> = Vec::new();
+    for (text, color) in parts.iter().filter(|(text, _)| !text.is_empty()) {
+        // Some failures are copied into more than one message field.
+        if shown.contains(text) {
+            continue;
+        }
+        shown.push(text);
+        if !job.is_empty() {
+            job.append(
+                "  ·  ",
+                0.0,
+                egui::TextFormat::simple(font.clone(), TEXT_MUTED),
+            );
+        }
+        job.append(text, 0.0, egui::TextFormat::simple(font.clone(), *color));
+    }
+    if job.is_empty() {
+        return;
+    }
+    let full = job.text.clone();
+    ui.add(egui::Label::new(job).truncate()).on_hover_text(full);
 }
 
 fn paragraph_label(row: &Row) -> &'static str {
@@ -1046,52 +1198,82 @@ impl App {
                 });
         });
     }
-    /// 下のステータス行に、各モデルが載っているかを小さく出す。
-    fn model_dots_ui(&self, ui: &mut egui::Ui) {
-        let ocr = match self.settings.ocr_backend.as_str() {
-            "indra" => "Indra OCR",
-            "paddle" => "PaddleOCR-VL",
-            _ => "Windows OCR",
+    /// The four local models, in the order the status row shows them.
+    fn model_statuses(&self) -> [ModelStatus; 4] {
+        // `service_error` also carries speech-recognition failures, so the
+        // translation state follows the translation engine alone.
+        let translation = if self.backend_ready {
+            Readiness::Ready
+        } else if self.backend_loading || self.setup.installing {
+            Readiness::Preparing
+        } else {
+            Readiness::Missing
         };
-        let asr = match self.settings.asr_backend.as_str() {
-            "nemotron" => "Nemotron Speech",
-            "qwen" => "Qwen3-ASR",
-            _ => "Whisper",
+        let ocr = if self.screen_ocr_ready() {
+            Readiness::Ready
+        } else if self.screen_ocr_preparing() {
+            Readiness::Preparing
+        } else {
+            Readiness::Missing
         };
-        let translation = format!(
+        let speech = if self.asr_ready {
+            Readiness::Ready
+        } else if self.audio_installing
+            || self.audio_start_requested
+            || self.asr_started_at.is_some()
+        {
+            Readiness::Preparing
+        } else {
+            Readiness::Missing
+        };
+        let readout = if self.readout.ready.is_some() {
+            Readiness::Ready
+        } else if self.readout.preparing {
+            Readiness::Preparing
+        } else {
+            Readiness::Missing
+        };
+        let translation_detail = format!(
             "{} · {}",
             self.current_model_label(),
             self.connection_label()
         );
-        let items = [
-            (
-                "翻訳",
-                self.backend_ready && self.service_error.is_empty(),
-                translation,
-            ),
-            ("OCR", self.screen_ocr_ready(), ocr.to_owned()),
-            ("STT", self.asr_ready, asr.to_owned()),
-            ("TTS", self.readout.ready.is_some(), "読み上げ".to_owned()),
-        ];
-        for (name, ready, detail) in items {
-            let hover = format!(
-                "{name}: {detail} · {}",
-                if ready { "準備完了" } else { "未準備" }
-            );
-            ui.label(
-                RichText::new(name)
-                    .size(theme::SIZE_CAPTION)
-                    .color(TEXT_SECONDARY),
-            )
-            .on_hover_text(hover.as_str());
-            ui.label(
-                RichText::new(if ready { "●" } else { "○" })
-                    .size(theme::SIZE_CAPTION)
-                    .color(if ready { ACCENT } else { TEXT_MUTED }),
-            )
-            .on_hover_text(hover);
-            ui.add_space(6.0);
-        }
+        let ocr_detail = match self.settings.ocr_backend.as_str() {
+            "indra" => "Indra OCR",
+            "paddle" => "PaddleOCR-VL",
+            _ => "Windows OCR",
+        };
+        let speech_detail = match self.settings.asr_backend.as_str() {
+            "nemotron" => "Nemotron Speech",
+            "qwen" => "Qwen3-ASR",
+            _ => "Whisper",
+        };
+        [
+            ModelStatus {
+                name: "翻訳",
+                readiness: translation,
+                detail: translation_detail,
+                opens: Tab::Setup,
+            },
+            ModelStatus {
+                name: "文字認識",
+                readiness: ocr,
+                detail: ocr_detail.into(),
+                opens: Tab::Settings,
+            },
+            ModelStatus {
+                name: "音声認識",
+                readiness: speech,
+                detail: speech_detail.into(),
+                opens: Tab::Settings,
+            },
+            ModelStatus {
+                name: "読み上げ",
+                readiness: readout,
+                detail: "Irodori-TTS".into(),
+                opens: Tab::Settings,
+            },
+        ]
     }
     fn output_card(&mut self, ui: &mut egui::Ui, height: f32) {
         card().show(ui, |ui| {
@@ -2043,51 +2225,59 @@ impl App {
             }
             return;
         }
+        let statuses = self.model_statuses();
+        let mut open_from_status = None;
+        // One fixed row: a long message is truncated instead of growing the
+        // panel and pushing the page up.
         egui::TopBottomPanel::bottom("status")
-            .min_height(28.0)
+            .exact_height(theme::CONTROL_H)
             .frame(
                 egui::Frame::new()
                     .fill(SURFACE)
-                    .inner_margin(egui::Margin::symmetric(theme::GUTTER as i8, 4)),
+                    .inner_margin(egui::Margin::symmetric(theme::GUTTER as i8, 0)),
             )
             .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    self.model_dots_ui(ui);
-                    ui.label(
-                        RichText::new(format!(
-                            "{} · {}",
-                            self.current_model_label(),
-                            self.connection_label()
-                        ))
-                        .size(theme::SIZE_CAPTION)
-                        .color(if self.backend_ready {
-                            ACCENT
-                        } else {
-                            TEXT_MUTED
-                        }),
+                #[cfg(test)]
+                {
+                    self.ui_probe.status_rect = Some(ui.max_rect());
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = theme::SPACE_1;
+                    for status in &statuses {
+                        if status_chip(ui, status)
+                            .on_hover_text(status.hover())
+                            .clicked()
+                        {
+                            open_from_status = Some(status.opens);
+                        }
+                    }
+                    ui.add_space(theme::SPACE_3);
+                    let readout = if self.readout.error.is_empty() {
+                        (self.readout.status.as_str(), TEXT_SECONDARY)
+                    } else {
+                        (self.readout.error.as_str(), ERROR)
+                    };
+                    // The live page shows service errors in its own status line.
+                    let service_error = if self.tab == Tab::Live {
+                        ""
+                    } else {
+                        self.service_error.as_str()
+                    };
+                    status_message(
+                        ui,
+                        &[
+                            (service_error, ERROR),
+                            (self.status.as_str(), TEXT_SECONDARY),
+                            readout,
+                        ],
                     );
-                    if !self.status.is_empty() {
-                        ui.label(
-                            RichText::new(&self.status)
-                                .size(theme::SIZE_CAPTION)
-                                .color(TEXT_SECONDARY),
-                        );
-                    }
-                    if !self.readout.error.is_empty() {
-                        ui.label(
-                            RichText::new(&self.readout.error)
-                                .size(theme::SIZE_CAPTION)
-                                .color(ERROR),
-                        );
-                    } else if !self.readout.status.is_empty() {
-                        ui.label(
-                            RichText::new(&self.readout.status)
-                                .size(theme::SIZE_CAPTION)
-                                .color(TEXT_SECONDARY),
-                        );
-                    }
                 });
             });
+        match open_from_status {
+            Some(Tab::Setup) => self.open_setup(),
+            Some(tab) => self.tab = tab,
+            None => {}
+        }
         self.rail(ctx);
         egui::CentralPanel::default()
             .frame(
@@ -2523,6 +2713,106 @@ mod live_layout_tests {
             );
         }
         context
+    }
+
+    fn drawn_text(app: &mut App, width: f32, height: f32) -> String {
+        drawn_galleys(app, width, height)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every painted text in the last frame, with the number of rows it took.
+    fn drawn_galleys(app: &mut App, width: f32, height: f32) -> Vec<(String, usize)> {
+        fn visit(shape: &egui::epaint::Shape, out: &mut Vec<(String, usize)>) {
+            match shape {
+                egui::epaint::Shape::Text(text) => {
+                    out.push((text.galley.job.text.clone(), text.galley.rows.len()))
+                }
+                egui::epaint::Shape::Vec(shapes) => shapes.iter().for_each(|s| visit(s, out)),
+                _ => {}
+            }
+        }
+        let context = egui::Context::default();
+        configure_theme(&context);
+        let mut texts = Vec::new();
+        for frame in 0..3 {
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, height),
+                    )),
+                    time: Some(frame as f64 / 60.0),
+                    ..Default::default()
+                },
+                |context| app.render_ui(context),
+            );
+            texts.clear();
+            for shape in &output.shapes {
+                visit(&shape.shape, &mut texts);
+            }
+        }
+        texts
+    }
+
+    #[test]
+    fn status_row_names_each_model_in_words_and_stays_one_row() {
+        for (width, message) in [
+            (860.0, String::new()),
+            (860.0, "とても長い状態の説明が続きます。".repeat(40)),
+            (1280.0, "設定を保存しました。".to_owned()),
+        ] {
+            let mut app = App::inert();
+            app.tab = Tab::Text;
+            app.backend_ready = true;
+            app.status = message;
+            app.readout.error = "読み上げに失敗しました。".repeat(8);
+            let galleys = drawn_galleys(&mut app, width, 620.0);
+            // A chip paints its name and state as one text.
+            for chip in ["翻訳", "文字認識", "音声認識未準備", "読み上げ未準備"]
+            {
+                assert!(
+                    galleys.iter().any(|(text, _)| text == chip),
+                    "chip {chip} missing at {width}"
+                );
+            }
+            for (text, _) in &galleys {
+                for jargon in ["OCR", "STT", "TTS"] {
+                    assert!(!text.contains(jargon), "{jargon} still shown at {width}");
+                }
+            }
+            let (_, rows) = galleys
+                .iter()
+                .find(|(text, _)| text.contains("読み上げに失敗しました"))
+                .expect("status message drawn");
+            assert_eq!(*rows, 1, "status message wrapped at {width}");
+        }
+    }
+
+    #[test]
+    fn each_model_follows_its_own_service_and_errors_reach_the_status_message() {
+        let mut app = App::inert();
+        app.tab = Tab::Text;
+        app.backend_ready = true;
+        // Speech-recognition failures share `service_error` with translation.
+        app.service_error = "Nemotronを起動できません: 実行環境がありません".into();
+        let statuses = app.model_statuses();
+        assert_eq!(statuses[0].readiness, Readiness::Ready);
+        let speech = statuses.iter().find(|s| s.name == "音声認識").unwrap();
+        assert_eq!(speech.readiness, Readiness::Missing);
+        assert!(speech.opens == Tab::Settings);
+        let drawn = drawn_text(&mut app, 1280.0, 880.0);
+        assert!(drawn.contains("Nemotronを起動できません"), "{drawn}");
+        app.backend_ready = false;
+        app.service_error.clear();
+        let translation = &app.model_statuses()[0];
+        assert_eq!(translation.readiness, Readiness::Missing);
+        assert!(translation.readiness.needs_action());
+        assert!(translation.opens == Tab::Setup);
+        app.backend_loading = true;
+        assert_eq!(app.model_statuses()[0].readiness, Readiness::Preparing);
     }
 
     #[test]

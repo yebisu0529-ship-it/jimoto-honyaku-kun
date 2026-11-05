@@ -178,6 +178,9 @@ impl App {
             let _ = tx.send(Event::Ocr { generation, result });
         });
     }
+    pub(super) fn screen_ocr_preparing(&self) -> bool {
+        self.ocr.installing
+    }
     pub(super) fn screen_ocr_ready(&self) -> bool {
         match self.settings.ocr_backend.as_str() {
             "windows" => true,

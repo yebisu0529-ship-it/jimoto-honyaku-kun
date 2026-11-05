@@ -218,6 +218,15 @@ impl MiniStatus {
     }
 }
 
+/// Below this inner height the mini view gives the confirmed translation the
+/// space: one live line instead of two, and a shorter status row.
+const COMPACT_HEIGHT: f32 = 300.0;
+/// Status row with its gap: a 32-point row normally, a caption row when compact.
+const STATUS_ROW: f32 = 36.0;
+const STATUS_ROW_COMPACT: f32 = 24.0;
+/// Height of the one-line labels above the live strip.
+const LABEL_ROW: f32 = 16.0;
+
 fn fixed_region<R>(
     ui: &mut egui::Ui,
     id: &'static str,
@@ -231,6 +240,19 @@ fn fixed_region<R>(
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(rect));
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     (rect, draw(&mut child))
+}
+
+/// A one-line label held at the left of a fixed slot, like the text below it.
+/// A sized label would be centred in the slot instead.
+fn left_label(ui: &mut egui::Ui, size: egui::Vec2, text: RichText) {
+    ui.allocate_ui_with_layout(
+        size,
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_size(size);
+            ui.add(egui::Label::new(text).truncate());
+        },
+    );
 }
 
 impl App {
@@ -394,6 +416,7 @@ impl App {
             .frame(egui::Frame::new().inner_margin(6.0).fill(theme::CANVAS))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+                let compact = ui.available_height() < COMPACT_HEIGHT;
                 let toolbar_height = 36.0; // 32-point controls plus 2 points above/below.
                 let (toolbar, ()) = fixed_region(ui, "mini-toolbar", toolbar_height, |ui| {
                     ui.spacing_mut().interact_size.y = theme::CONTROL_H;
@@ -427,19 +450,26 @@ impl App {
                             {
                                 self.mini_toggle_live(ctx);
                             }
-                            if ui
-                                .add_sized(
-                                    [86.0, theme::CONTROL_H],
-                                    egui::Button::new(if self.settings.auto_read {
-                                        "読上 ON"
-                                    } else {
-                                        "読上 OFF"
-                                    })
-                                    .selected(self.settings.auto_read),
+                            let auto_read = ui
+                                .add(
+                                    egui::Button::new("自動読み上げ")
+                                        .selected(self.settings.auto_read)
+                                        .min_size(egui::vec2(0.0, theme::CONTROL_H)),
                                 )
-                                .on_hover_text("新しい日本語の確定訳を自動で読み上げます")
-                                .clicked()
-                            {
+                                .on_hover_text(
+                                    "新しい日本語の確定訳を自動で読み上げます。押すたびにオンとオフが切り替わります",
+                                );
+                            // The fill alone shows the state; screen readers get it
+                            // as the button's selected state.
+                            auto_read.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    self.settings.auto_read,
+                                    "自動読み上げ",
+                                )
+                            });
+                            if auto_read.clicked() {
                                 if self.settings.auto_read {
                                     self.settings.auto_read = false;
                                     self.stop_readout();
@@ -498,7 +528,12 @@ impl App {
                                     .is_some_and(|p| p.state == ParagraphState::Failed)
                         }),
                 );
-                let draft_height = 72.0;
+                let now_rows = if compact { 1.0 } else { 2.0 };
+                let now_row_height = ui
+                    .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(theme::SIZE_BODY)))
+                    .ceil();
+                let now_height = now_rows * now_row_height;
+                let draft_height = LABEL_ROW + ui.spacing().item_spacing.y + now_height;
                 let (now_rect, inspect_error) =
                     fixed_region(ui, "mini-draft", draft_height, |ui| {
                         ui.spacing_mut().interact_size.y = 16.0;
@@ -582,19 +617,15 @@ impl App {
                         let has_error = error.is_some();
                         let inspect = ui
                             .horizontal(|ui| {
-                                ui.add_sized(
-                                    [
-                                        (ui.available_width()
-                                            - if has_error { 130.0 } else { 0.0 })
-                                        .max(40.0),
-                                        16.0,
-                                    ],
-                                    egui::Label::new(
-                                        RichText::new(label)
-                                            .size(theme::SIZE_CAPTION)
-                                            .color(ACCENT),
-                                    )
-                                    .truncate(),
+                                let width = (ui.available_width()
+                                    - if has_error { 130.0 } else { 0.0 })
+                                .max(40.0);
+                                left_label(
+                                    ui,
+                                    egui::vec2(width, LABEL_ROW),
+                                    RichText::new(label)
+                                        .size(theme::SIZE_CAPTION)
+                                        .color(ACCENT),
                                 );
                                 has_error && ui.small_button("通常表示で確認").clicked()
                             })
@@ -605,8 +636,8 @@ impl App {
                                 paragraph.map(|row| row.record.id),
                                 self.mini.manual,
                             ))
-                            .max_height(44.0)
-                            .min_scrolled_height(44.0)
+                            .max_height(now_height)
+                            .min_scrolled_height(now_height)
                             .auto_shrink([false, false])
                             .stick_to_bottom(self.settings.auto_scroll)
                             .show(ui, |ui| {
@@ -697,14 +728,12 @@ impl App {
                         let width = (ui.available_width()
                             - if self.mini.manual { 220.0 } else { 0.0 })
                         .max(40.0);
-                        ui.add_sized(
-                            [width, 22.0],
-                            egui::Label::new(
-                                RichText::new(heading)
-                                    .size(theme::SIZE_CAPTION)
-                                    .color(ACCENT),
-                            )
-                            .truncate(),
+                        left_label(
+                            ui,
+                            egui::vec2(width, 22.0),
+                            RichText::new(heading)
+                                .size(theme::SIZE_CAPTION)
+                                .color(ACCENT),
                         );
                         if self.mini.manual {
                             let count_label = format!("ライブ新着{live_count}件");
@@ -724,9 +753,14 @@ impl App {
                     .inner
                 })
                 .1;
-                // Reserve the 32-point status row plus its gap; the confirmed
-                // reading area still keeps 70 points at the 400x260 minimum.
-                let body_height = (ui.available_height() - 36.0).max(16.0);
+                // Reserve the status row plus its gap; the confirmed reading area
+                // keeps three rows of 22-point text at the 400x260 minimum.
+                let status_row = if compact {
+                    STATUS_ROW_COMPACT
+                } else {
+                    STATUS_ROW
+                };
+                let body_height = (ui.available_height() - status_row).max(16.0);
                 let reading_size = theme::reading_size(self.settings.font_size);
                 let row_height = ui
                     .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(reading_size)))
@@ -793,6 +827,12 @@ impl App {
                     self.live_busy.is_some() || self.manual_busy.is_some(),
                     self.caption_enabled || self.audio_enabled,
                 );
+                if compact {
+                    // A horizontal row is at least one control tall; the compact
+                    // status row holds only captions and a small button.
+                    ui.spacing_mut().interact_size.y =
+                        STATUS_ROW_COMPACT - ui.spacing().item_spacing.y;
+                }
                 let status_response = ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(status.label())
@@ -1109,8 +1149,9 @@ mod tests {
         assert!(text.contains("前の確定文章"));
         assert!(!text.contains("別の入力の確定文章"));
         assert_eq!(live_result(&app.rows, Some(2)).unwrap().record.id, 1);
-        assert_eq!(app.mini.now_rect.unwrap().height(), 72.0);
-        assert!(app.mini.body_rect.unwrap().height() >= 70.0);
+        // At the minimum size the live strip is its label and one 16-point row.
+        assert_eq!(app.mini.now_rect.unwrap().height(), 44.0);
+        assert!(app.mini.body_rect.unwrap().height() >= 96.0);
         app.rows[1].record.paragraph.as_mut().unwrap().state = ParagraphState::Closing;
         app.asr_partial = "NEXT-DRAFT".into();
         assert!(draw_text(&mut app, &ctx).contains("いま受け取った文章全体の日本語訳"));
@@ -1176,8 +1217,8 @@ mod tests {
                 assert_eq!(after, before);
             }
             assert!(live_result(&app.rows, Some(1)).is_none());
-            assert_eq!(app.mini.now_rect.unwrap().height(), 72.0);
-            assert!(app.mini.body_rect.unwrap().height() >= 70.0);
+            assert_eq!(app.mini.now_rect.unwrap().height(), 44.0);
+            assert!(app.mini.body_rect.unwrap().height() >= 96.0);
         }
     }
     #[test]

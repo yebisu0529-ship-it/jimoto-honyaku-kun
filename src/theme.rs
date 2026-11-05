@@ -107,6 +107,11 @@ pub fn label(text: impl Into<String>) -> RichText {
 pub fn caption(text: impl Into<String>) -> RichText {
     RichText::new(text).size(SIZE_CAPTION).color(TEXT_MUTED)
 }
+/// Placeholder text in an empty field. The app-wide text colour would otherwise
+/// paint it exactly like entered text.
+pub fn hint(text: impl Into<String>) -> RichText {
+    RichText::new(text).color(TEXT_MUTED)
+}
 pub fn reading(text: impl Into<String>, size: f32) -> RichText {
     RichText::new(text).size(reading_size(size)).color(TEXT)
 }
@@ -243,6 +248,8 @@ fn slider_visuals(visuals: &mut egui::Visuals) {
     visuals.widgets.inactive.bg_fill = BORDER_STRONG;
     visuals.widgets.inactive.fg_stroke = Stroke::new(2.0_f32, TEXT);
     visuals.widgets.hovered.fg_stroke = Stroke::new(2.0_f32, TEXT);
+    // Keyboard focus and dragging share the active visuals.
+    visuals.widgets.active.fg_stroke = Stroke::new(2.0_f32, ACCENT);
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +413,10 @@ mod tests {
         for (part, color) in [
             ("rail", visuals.widgets.inactive.bg_fill),
             ("handle ring", visuals.widgets.inactive.fg_stroke.color),
+            (
+                "focused handle ring",
+                visuals.widgets.active.fg_stroke.color,
+            ),
         ] {
             let ratio = contrast_ratio(color, SURFACE);
             assert!(ratio >= 3.0, "slider {part}: {ratio:.2}:1 on a card");

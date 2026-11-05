@@ -55,9 +55,6 @@ pub const SPACE_6: f32 = 24.0;
 pub const RAIL_WIDTH: f32 = 96.0;
 /// Outer gutter of the content area.
 pub const GUTTER: f32 = 24.0;
-/// Long-form text never grows wider than this, even on a wide monitor.
-pub const READING_COLUMN_MAX: f32 = 900.0;
-
 /// Minimum interactive height. Every control is at least this tall.
 pub const CONTROL_H: f32 = 32.0;
 /// Primary actions and navigation items.

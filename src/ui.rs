@@ -105,23 +105,19 @@ fn live_region<R>(
     contents(&mut child)
 }
 
-/// Center the reading column and cap its width so long Japanese lines stay
-/// inside the comfortable 20-40 character range.
-fn content_column(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    let width = ui.available_width().min(theme::READING_COLUMN_MAX);
-    let pad = ((ui.available_width() - width) * 0.5).max(0.0);
+/// The page always fills the window; the caller decides where a single
+/// prose column needs a readable measure.
+fn page_column(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let width = ui.available_width();
     let height = ui.available_height();
-    ui.horizontal(|ui| {
-        ui.add_space(pad);
-        ui.allocate_ui_with_layout(
-            Vec2::new(width, height),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(width);
-                add(ui);
-            },
-        );
-    });
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, height),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_width(width);
+            add(ui);
+        },
+    );
 }
 
 fn live_latest_panel(
@@ -520,16 +516,6 @@ impl App {
             let mut open_subtitle = false;
             let backend_ready = self.backend_ready;
             ui.horizontal(|ui| {
-                let text_width = (ui.available_width() - 340.0).max(120.0);
-                ui.vertical(|ui| {
-                    ui.set_width(text_width);
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.add(egui::Label::new(theme::title(title)).truncate());
-                    ui.add(
-                        egui::Label::new(RichText::new(subtitle).size(12.0).color(TEXT_MUTED))
-                            .truncate(),
-                    );
-                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Present on every page so the separate subtitle window and
                     // the collapsed mini view are always one click away.
@@ -550,6 +536,20 @@ impl App {
                         enter_mini = true;
                     }
                     actions(ui);
+                    // The title takes whatever the actions leave, so a narrow
+                    // window truncates it instead of overlapping the buttons.
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.add(egui::Label::new(theme::title(title)).truncate());
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(subtitle).size(12.0).color(TEXT_MUTED),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    });
                 });
             });
             if open_subtitle {
@@ -950,19 +950,32 @@ impl App {
     }
 
     pub(super) fn text_ui(&mut self, ui: &mut egui::Ui) {
-        content_column(ui, |ui| {
+        page_column(ui, |ui| {
             let ready = self.backend_ready;
             let mut open_image = false;
+            let translate_ready =
+                self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
+            let mut translate = false;
             self.page_header(
                 ui,
                 "文章翻訳",
-                "文章を入力するか、画面や画像から読み取って翻訳します。",
+                "文章・ファイル・画面の文字を翻訳します。",
                 |ui| {
+                    if ui
+                        .add_enabled(translate_ready, primary("翻訳する"))
+                        .on_hover_text("Ctrl + Enter")
+                        .clicked()
+                    {
+                        translate = true;
+                    }
                     if ui.add_enabled(ready, standard("画像から翻訳")).clicked() {
                         open_image = true;
                     }
                 },
             );
+            if translate {
+                self.manual_translate();
+            }
             if open_image {
                 self.open_image();
             }
@@ -972,12 +985,16 @@ impl App {
             });
             self.backend_notice(ui);
             ui.add_space(theme::SPACE_2);
-            let available = (ui.available_height() - 56.0).max(220.0);
-            let stacked = ui.available_width() < 680.0;
+            let ready =
+                self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
+            // The text area gets the remaining height after the card header
+            // (40), the two card paddings (32) and the row gap (8).
+            let available = (ui.available_height() - 8.0).max(240.0);
+            let stacked = ui.available_width() < 820.0;
             let height = if stacked {
-                (available / 2.0 - 82.0).max(64.0)
+                (available / 2.0 - 96.0).max(140.0)
             } else {
-                (available - 82.0).max(120.0)
+                (available - 96.0).max(180.0)
             };
             if stacked {
                 self.input_card(ui, height);
@@ -1007,20 +1024,6 @@ impl App {
                     );
                 });
             }
-            ui.add_space(theme::SPACE_2);
-            let ready =
-                self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
-            live_region(ui, "text-actions", 44.0, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.add_enabled(ready, primary("翻訳する")).clicked() {
-                        self.manual_translate();
-                    }
-                    ui.label(RichText::new("Ctrl + Enter").size(12.0).color(TEXT_MUTED));
-                    if self.manual_busy.is_some() {
-                        ui.spinner();
-                    }
-                });
-            });
             if ready && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter)) {
                 self.manual_translate();
             }
@@ -1029,7 +1032,7 @@ impl App {
 
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         let layout = LiveLayout::for_height(ui.ctx().input(|input| input.content_rect().height()));
-        content_column(ui, |ui| {
+        page_column(ui, |ui| {
             self.page_header(
                 ui,
                 "ライブ翻訳",
@@ -1129,13 +1132,16 @@ impl App {
                 {
                     let rect = ui
                         .push_id(("history-row", row.record.id), |ui| {
-                            live_history_card(
+                            let rect = live_history_card(
                                 ui,
                                 row,
                                 self.settings.font_size,
                                 self.settings.live_show_original,
                                 &mut read_requested,
-                            )
+                            );
+                            ui.add_space(theme::SPACE_2);
+                            ui.separator();
+                            rect
                         })
                         .inner;
                     geometry.push(super::live_view::RowGeometry {
@@ -1143,8 +1149,6 @@ impl App {
                         top: rect.top() - origin,
                         bottom: rect.bottom() - origin,
                     });
-                    ui.add_space(theme::SPACE_2);
-                    ui.separator();
                     ui.add_space(theme::SPACE_2);
                 }
                 (geometry, viewport)
@@ -1190,7 +1194,7 @@ impl App {
     }
 
     pub(super) fn files_ui(&mut self, ui: &mut egui::Ui) {
-        content_column(ui, |ui| {
+        page_column(ui, |ui| {
             let ready = self.backend_ready && !self.file_busy;
             let has_rows = !self.rows.is_empty();
             let mut translate_file = false;
@@ -1309,6 +1313,204 @@ impl App {
         });
     }
 
+    fn settings_translation_card(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(ui.available_width());
+        ui.label(RichText::new("翻訳モデル").strong());
+        ui.label(self.setup_summary());
+        secondary(ui, self.connection_label());
+        if ui.add(standard("モデルを変更")).clicked() {
+            self.open_setup();
+        }
+    }
+
+    fn settings_asr_card(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(ui.available_width());
+        ui.label(RichText::new("音声認識").strong());
+        egui::ComboBox::from_id_salt("asr-backend")
+            .selected_text(match self.settings.asr_backend.as_str() {
+                "nemotron" => "Nemotron Speech · 英語 / 連続認識",
+                "qwen" => "Qwen3-ASR · 多言語",
+                _ => "Whisper · 多言語 / CPU",
+            })
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_value(
+                        &mut self.settings.asr_backend,
+                        "nemotron".into(),
+                        "Nemotron Speech · 英語 / 連続認識",
+                    )
+                    .changed()
+                {
+                    self.settings.asr_model = "nvidia/nemotron-speech-streaming-en-0.6b".into();
+                    self.settings.asr_endpoint = "http://127.0.0.1:17864".into();
+                    self.settings.asr_device = "auto".into();
+                }
+                if ui
+                    .selectable_value(
+                        &mut self.settings.asr_backend,
+                        "qwen".into(),
+                        "Qwen3-ASR · 多言語",
+                    )
+                    .changed()
+                {
+                    self.settings.asr_model = "Qwen/Qwen3-ASR-0.6B-hf".into();
+                    self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
+                    self.settings.asr_device = self
+                        .setup
+                        .recommendation
+                        .as_ref()
+                        .filter(|rec| rec.asr_backend == "qwen")
+                        .map(|rec| rec.asr_device.clone())
+                        .unwrap_or_else(|| "cpu".into());
+                }
+                if ui
+                    .selectable_value(
+                        &mut self.settings.asr_backend,
+                        "whisper".into(),
+                        "Whisper · 多言語 / CPU",
+                    )
+                    .changed()
+                {
+                    self.settings.asr_model = "base".into();
+                    self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
+                    self.settings.asr_device = "cpu".into();
+                }
+            });
+        secondary(
+            ui,
+            if self.asr_ready {
+                "音声認識の準備完了"
+            } else {
+                "初回は必要なモデルを準備します"
+            },
+        );
+        egui::CollapsingHeader::new("音声認識の詳細")
+            .id_salt("asr-details")
+            .default_open(false)
+            .show(ui, |ui| {
+                if self.settings.asr_backend == "nemotron" {
+                    secondary(ui, "英語専用です。続きの原文をつないで訳文を更新し、まとまった文章を保存します。");
+                    ui.horizontal_wrapped(|ui| {
+                        secondary(ui, "認識モード");
+                        ui.selectable_value(&mut self.settings.nemotron_context, 6, "精度優先 · 560ms");
+                        ui.selectable_value(&mut self.settings.nemotron_context, 1, "速さ優先 · 160ms");
+                    });
+                    secondary(ui, "上の時間はモデルの音声処理単位です。表示までの時間には、文の区切りと翻訳の待ち時間も含まれます。");
+                    ui.horizontal_wrapped(|ui| {
+                        secondary(ui, "実行方式");
+                        for (value, label) in [("auto", "自動"), ("vulkan", "GPU · Vulkan"), ("cpu", "CPU")] {
+                            ui.selectable_value(&mut self.settings.asr_device, value.into(), label);
+                        }
+                    });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        secondary(ui, "音声の区切り");
+                        for (value, label) in [(2.0, "短め"), (3.0, "標準"), (4.0, "長め")] {
+                            ui.selectable_value(&mut self.settings.audio_seconds, value, label);
+                        }
+                    });
+                }
+            });
+        ui.add_space(theme::SPACE_1);
+        if ui.add(standard("音声認識を準備")).clicked() {
+            self.prepare_audio();
+        }
+    }
+
+    fn settings_youtube_card(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(ui.available_width());
+        ui.label(RichText::new("YouTube字幕の接続").strong());
+        secondary(
+            ui,
+            "ブラウザーの字幕連携に、下の接続キーを設定してください。",
+        );
+        ui.label(RichText::new("接続キー").size(14.0));
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings.bridge_token)
+                    .password(true)
+                    .interactive(false)
+                    .desired_width(220.0),
+            );
+            if ui.add(standard("接続キーをコピー")).clicked()
+                && let Ok(mut clipboard) = arboard::Clipboard::new()
+            {
+                let _ = clipboard.set_text(self.settings.bridge_token.clone());
+            }
+        });
+        if ui.add(standard("字幕連携のフォルダーを開く")).clicked() {
+            let mut command = Command::new("explorer.exe");
+            command.arg(app_root().join("extension"));
+            command_hidden(&mut command);
+            let _ = command.spawn();
+        }
+        secondary(ui, "拡張機能の追加はブラウザーで行ってください。");
+    }
+
+    fn settings_glossary_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("用語集と文脈")
+            .id_salt("glossary")
+            .default_open(false)
+            .show(ui, |ui| {
+                secondary(ui, "1行に「原語 = 訳語」を入力します。例: inference = 推論");
+                ui.add_sized(
+                    [ui.available_width(), 160.0],
+                    egui::TextEdit::multiline(&mut self.glossary_input)
+                        .desired_width(f32::INFINITY)
+                        .margin(12.0),
+                );
+                if let Err(error) = parse_glossary(&self.glossary_input) {
+                    ui.colored_label(ERROR, error);
+                }
+                ui.label(RichText::new("文脈（翻訳する文章の背景）").size(14.0));
+                ui.add_sized(
+                    [ui.available_width(), 88.0],
+                    egui::TextEdit::multiline(&mut self.settings.translation.context)
+                        .desired_width(f32::INFINITY)
+                        .margin(12.0),
+                );
+            });
+    }
+
+    fn settings_shortcuts_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("ショートカットと保存先")
+            .id_salt("shortcuts")
+            .default_open(false)
+            .show(ui, |ui| {
+                secondary(ui, "範囲翻訳: Ctrl + Alt + T　 音声翻訳: Ctrl + Alt + L");
+                if ui.add(standard("保存フォルダーを開く")).clicked() {
+                    self.open_data_folder();
+                }
+            });
+    }
+
+    fn settings_diagnostics_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("詳細（トラブル時）")
+            .id_salt("diagnostics")
+            .default_open(false)
+            .show(ui, |ui| {
+                for (label, value) in [
+                    ("翻訳モデルのファイル", &mut self.settings.model),
+                    ("翻訳エンジン", &mut self.settings.llama_server),
+                    ("翻訳サーバー", &mut self.settings.translation.endpoint),
+                    ("音声認識モデル", &mut self.settings.asr_model),
+                    ("音声認識の実行環境", &mut self.settings.python),
+                    ("音声認識サーバー", &mut self.settings.asr_endpoint),
+                ] {
+                    ui.label(RichText::new(label).size(14.0));
+                    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
+                }
+                ui.label(
+                    RichText::new(format!("保存先: {}", data_root().display()))
+                        .size(12.0)
+                        .color(TEXT_MUTED),
+                );
+                if ui.add(standard("翻訳エンジンを起動")).clicked() {
+                    self.start_translation_server();
+                }
+            });
+    }
+
     pub(super) fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let previous_asr = (
             self.settings.asr_backend.clone(),
@@ -1317,244 +1519,47 @@ impl App {
             self.settings.asr_device.clone(),
             self.settings.nemotron_context,
         );
-        content_column(ui, |ui| {
+        page_column(ui, |ui| {
             self.page_header(ui, "設定", "翻訳と音声認識はこのPC内で処理します。", |_| {});
             ui.add_space(theme::SPACE_2);
             egui::ScrollArea::vertical()
                 .id_salt("settings-scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    card().show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.label(RichText::new("翻訳モデル").strong());
-                        ui.label(self.setup_summary());
-                        secondary(ui, self.connection_label());
-                        if ui.add(standard("モデルを変更")).clicked() {
-                            self.open_setup();
-                        }
-                    });
-                    ui.add_space(theme::SPACE_2);
-                    card().show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        self.readout_settings_ui(ui);
-                    });
-                    ui.add_space(theme::SPACE_2);
-                    card().show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.label(RichText::new("音声認識").strong());
-                        egui::ComboBox::from_id_salt("asr-backend")
-                            .selected_text(match self.settings.asr_backend.as_str() {
-                                "nemotron" => "Nemotron Speech · 英語 / 連続認識",
-                                "qwen" => "Qwen3-ASR · 多言語",
-                                _ => "Whisper · 多言語 / CPU",
-                            })
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.settings.asr_backend,
-                                        "nemotron".into(),
-                                        "Nemotron Speech · 英語 / 連続認識",
-                                    )
-                                    .changed()
-                                {
-                                    self.settings.asr_model =
-                                        "nvidia/nemotron-speech-streaming-en-0.6b".into();
-                                    self.settings.asr_endpoint = "http://127.0.0.1:17864".into();
-                                    self.settings.asr_device = "auto".into();
-                                }
-                                if ui
-                                    .selectable_value(
-                                        &mut self.settings.asr_backend,
-                                        "qwen".into(),
-                                        "Qwen3-ASR · 多言語",
-                                    )
-                                    .changed()
-                                {
-                                    self.settings.asr_model = "Qwen/Qwen3-ASR-0.6B-hf".into();
-                                    self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
-                                    self.settings.asr_device = self
-                                        .setup
-                                        .recommendation
-                                        .as_ref()
-                                        .filter(|rec| rec.asr_backend == "qwen")
-                                        .map(|rec| rec.asr_device.clone())
-                                        .unwrap_or_else(|| "cpu".into());
-                                }
-                                if ui
-                                    .selectable_value(
-                                        &mut self.settings.asr_backend,
-                                        "whisper".into(),
-                                        "Whisper · 多言語 / CPU",
-                                    )
-                                    .changed()
-                                {
-                                    self.settings.asr_model = "base".into();
-                                    self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
-                                    self.settings.asr_device = "cpu".into();
-                                }
-                            });
-                        secondary(
-                            ui,
-                            if self.asr_ready {
-                                "音声認識の準備完了"
-                            } else {
-                                "初回は必要なモデルを準備します"
-                            },
-                        );
-                        egui::CollapsingHeader::new("音声認識の詳細")
-                            .id_salt("asr-details")
-                            .default_open(false)
-                            .show(ui, |ui| {
-                                if self.settings.asr_backend == "nemotron" {
-                                    secondary(ui, "英語専用です。続きの原文をつないで訳文を更新し、まとまった文章を保存します。");
-                                    ui.horizontal_wrapped(|ui| {
-                                        secondary(ui, "認識モード");
-                                        ui.selectable_value(
-                                            &mut self.settings.nemotron_context,
-                                            6,
-                                            "精度優先 · 560ms",
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.settings.nemotron_context,
-                                            1,
-                                            "速さ優先 · 160ms",
-                                        );
-                                    });
-                                    secondary(ui, "上の時間はモデルの音声処理単位です。表示までの時間には、文の区切りと翻訳の待ち時間も含まれます。");
-                                    ui.horizontal_wrapped(|ui| {
-                                        secondary(ui, "実行方式");
-                                        for (value, label) in [
-                                            ("auto", "自動"),
-                                            ("vulkan", "GPU · Vulkan"),
-                                            ("cpu", "CPU"),
-                                        ] {
-                                            ui.selectable_value(
-                                                &mut self.settings.asr_device,
-                                                value.into(),
-                                                label,
-                                            );
-                                        }
-                                    });
-                                } else {
-                                    ui.horizontal_wrapped(|ui| {
-                                        secondary(ui, "音声の区切り");
-                                        for (value, label) in
-                                            [(2.0, "短め"), (3.0, "標準"), (4.0, "長め")]
-                                        {
-                                            ui.selectable_value(
-                                                &mut self.settings.audio_seconds,
-                                                value,
-                                                label,
-                                            );
-                                        }
-                                    });
-                                }
-                            });
-                        ui.add_space(theme::SPACE_1);
-                        if ui.add(standard("音声認識を準備")).clicked() {
-                            self.prepare_audio();
-                        }
-                    });
-                    ui.add_space(theme::SPACE_2);
-                    card().show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        self.screen_ocr_settings_ui(ui);
-                    });
-                    ui.add_space(theme::SPACE_2);
-                    card().show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        self.paragraph_tools_settings_ui(ui);
-                    });
-                    ui.add_space(theme::SPACE_2);
-                    card().show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.label(RichText::new("YouTube字幕の接続").strong());
-                        secondary(
-                            ui,
-                            "ブラウザーの字幕連携に、下の接続キーを設定してください。",
-                        );
-                        ui.label(RichText::new("接続キー").size(14.0));
-                        ui.horizontal_wrapped(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.settings.bridge_token)
-                                    .password(true)
-                                    .interactive(false)
-                                    .desired_width(220.0),
-                            );
-                            if ui.add(standard("接続キーをコピー")).clicked()
-                                && let Ok(mut clipboard) = arboard::Clipboard::new()
-                            {
-                                let _ = clipboard.set_text(self.settings.bridge_token.clone());
-                            }
+                    // Two independent columns above 1100 points so a wide
+                    // window does not become one very long form.
+                    if ui.available_width() >= 1100.0 {
+                        ui.columns(2, |columns| {
+                            columns[0].spacing_mut().item_spacing.y = theme::SPACE_3;
+                            columns[1].spacing_mut().item_spacing.y = theme::SPACE_3;
+                            card().show(&mut columns[0], |ui| self.settings_translation_card(ui));
+                            card().show(&mut columns[0], |ui| self.readout_settings_ui(ui));
+                            card().show(&mut columns[0], |ui| self.paragraph_tools_settings_ui(ui));
+                            self.settings_glossary_section(&mut columns[0]);
+                            card().show(&mut columns[1], |ui| self.settings_asr_card(ui));
+                            card().show(&mut columns[1], |ui| self.screen_ocr_settings_ui(ui));
+                            card().show(&mut columns[1], |ui| self.settings_youtube_card(ui));
+                            self.settings_shortcuts_section(&mut columns[1]);
+                            self.settings_diagnostics_section(&mut columns[1]);
                         });
-                        if ui.add(standard("字幕連携のフォルダーを開く")).clicked() {
-                            let mut command = Command::new("explorer.exe");
-                            command.arg(app_root().join("extension"));
-                            command_hidden(&mut command);
-                            let _ = command.spawn();
-                        }
-                        secondary(ui, "拡張機能の追加はブラウザーで行ってください。");
-                    });
-                    ui.add_space(theme::SPACE_2);
-                    egui::CollapsingHeader::new("用語集と文脈")
-                        .id_salt("glossary")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            secondary(ui, "1行に「原語 = 訳語」を入力します。例: inference = 推論");
-                            ui.add_sized(
-                                [ui.available_width(), 160.0],
-                                egui::TextEdit::multiline(&mut self.glossary_input)
-                                    .desired_width(f32::INFINITY)
-                                    .margin(12.0),
-                            );
-                            if let Err(error) = parse_glossary(&self.glossary_input) {
-                                ui.colored_label(ERROR, error);
-                            }
-                            ui.label(RichText::new("文脈（翻訳する文章の背景）").size(14.0));
-                            ui.add_sized(
-                                [ui.available_width(), 88.0],
-                                egui::TextEdit::multiline(&mut self.settings.translation.context)
-                                    .desired_width(f32::INFINITY)
-                                    .margin(12.0),
-                            );
-                        });
-                    egui::CollapsingHeader::new("ショートカットと保存先")
-                        .id_salt("shortcuts")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            secondary(ui, "範囲翻訳: Ctrl + Alt + T　 音声翻訳: Ctrl + Alt + L");
-                            if ui.add(standard("保存フォルダーを開く")).clicked() {
-                                self.open_data_folder();
-                            }
-                        });
-                    egui::CollapsingHeader::new("詳細（トラブル時）")
-                        .id_salt("diagnostics")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            for (label, value) in [
-                                ("翻訳モデルのファイル", &mut self.settings.model),
-                                ("翻訳エンジン", &mut self.settings.llama_server),
-                                ("翻訳サーバー", &mut self.settings.translation.endpoint),
-                                ("音声認識モデル", &mut self.settings.asr_model),
-                                ("音声認識の実行環境", &mut self.settings.python),
-                                ("音声認識サーバー", &mut self.settings.asr_endpoint),
-                            ] {
-                                ui.label(RichText::new(label).size(14.0));
-                                ui.add(
-                                    egui::TextEdit::singleline(value)
-                                        .desired_width(f32::INFINITY),
-                                );
-                            }
-                            ui.label(
-                                RichText::new(format!("保存先: {}", data_root().display()))
-                                    .size(12.0)
-                                    .color(TEXT_MUTED),
-                            );
-                            if ui.add(standard("翻訳エンジンを起動")).clicked() {
-                                self.start_translation_server();
-                            }
-                        });
-                    ui.add_space(theme::SPACE_3);
+                    } else {
+                        card().show(ui, |ui| self.settings_translation_card(ui));
+                        ui.add_space(theme::SPACE_2);
+                        card().show(ui, |ui| self.readout_settings_ui(ui));
+                        ui.add_space(theme::SPACE_2);
+                        card().show(ui, |ui| self.settings_asr_card(ui));
+                        ui.add_space(theme::SPACE_2);
+                        card().show(ui, |ui| self.screen_ocr_settings_ui(ui));
+                        ui.add_space(theme::SPACE_2);
+                        card().show(ui, |ui| self.paragraph_tools_settings_ui(ui));
+                        ui.add_space(theme::SPACE_2);
+                        card().show(ui, |ui| self.settings_youtube_card(ui));
+                        ui.add_space(theme::SPACE_2);
+                        self.settings_glossary_section(ui);
+                        self.settings_shortcuts_section(ui);
+                        self.settings_diagnostics_section(ui);
+                    }
+                    ui.add_space(theme::SPACE_4);
                     if ui
                         .add_enabled(
                             parse_glossary(&self.glossary_input).is_ok(),
@@ -1604,7 +1609,6 @@ impl App {
             self.request_service_status();
         }
     }
-
     fn rail(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("rail")
             .exact_width(theme::RAIL_WIDTH)

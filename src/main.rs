@@ -1952,7 +1952,7 @@ fn install_fonts(ctx: &egui::Context) {
 }
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
-    for (viewport_width, viewport_height) in [(1280, 880), (860, 620)] {
+    for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
         for (name, tab, filled) in [
             ("01-text-empty", Tab::Text, false),
             ("02-text-filled", Tab::Text, true),

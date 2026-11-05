@@ -2088,7 +2088,10 @@ impl App {
                         )
                         .wrap(),
                     );
-                    ui.add(egui::Label::new(RichText::new(credit::CREDIT).size(7.5)).wrap());
+                    ui.add(egui::Label::new(theme::caption("PC内で翻訳")))
+                        .on_hover_text(
+                            "翻訳・文字認識・音声認識・読み上げは、このPC内で処理します",
+                        );
                 });
                 ui.add_space(theme::SPACE_4);
                 for (tab, label) in [
@@ -2110,15 +2113,6 @@ impl App {
                 // Pin the quick actions to the bottom so a shortage of height
                 // can never push the last control outside the window.
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new("翻訳は\nこのPC内で\n処理します")
-                                .size(theme::SIZE_CAPTION)
-                                .color(TEXT_MUTED),
-                        )
-                        .wrap(),
-                    );
-                    ui.add_space(theme::SPACE_2);
                     if !self.backend_ready
                         && ui
                             .add_sized([ui.available_width(), theme::CONTROL_H], standard("モデル"))
@@ -2140,7 +2134,8 @@ impl App {
                         .add_enabled_ui(can_toggle, |ui| {
                             ui.add_sized(
                                 [ui.available_width(), theme::CONTROL_H_LARGE],
-                                standard(audio_label),
+                                standard(audio_label)
+                                    .selected(self.audio_enabled || self.audio_start_requested),
                             )
                         })
                         .inner
@@ -2241,36 +2236,40 @@ impl App {
                 {
                     self.ui_probe.status_rect = Some(ui.max_rect());
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = theme::SPACE_1;
-                    for status in &statuses {
-                        if status_chip(ui, status)
-                            .on_hover_text(status.hover())
-                            .clicked()
-                        {
-                            open_from_status = Some(status.opens);
-                        }
-                    }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(theme::caption(credit::LABEL));
                     ui.add_space(theme::SPACE_3);
-                    let readout = if self.readout.error.is_empty() {
-                        (self.readout.status.as_str(), TEXT_SECONDARY)
-                    } else {
-                        (self.readout.error.as_str(), ERROR)
-                    };
-                    // The live page shows service errors in its own status line.
-                    let service_error = if self.tab == Tab::Live {
-                        ""
-                    } else {
-                        self.service_error.as_str()
-                    };
-                    status_message(
-                        ui,
-                        &[
-                            (service_error, ERROR),
-                            (self.status.as_str(), TEXT_SECONDARY),
-                            readout,
-                        ],
-                    );
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = theme::SPACE_1;
+                        for status in &statuses {
+                            if status_chip(ui, status)
+                                .on_hover_text(status.hover())
+                                .clicked()
+                            {
+                                open_from_status = Some(status.opens);
+                            }
+                        }
+                        ui.add_space(theme::SPACE_3);
+                        let readout = if self.readout.error.is_empty() {
+                            (self.readout.status.as_str(), TEXT_SECONDARY)
+                        } else {
+                            (self.readout.error.as_str(), ERROR)
+                        };
+                        // The live page shows service errors in its own status line.
+                        let service_error = if self.tab == Tab::Live {
+                            ""
+                        } else {
+                            self.service_error.as_str()
+                        };
+                        status_message(
+                            ui,
+                            &[
+                                (service_error, ERROR),
+                                (self.status.as_str(), TEXT_SECONDARY),
+                                readout,
+                            ],
+                        );
+                    });
                 });
             });
         match open_from_status {
@@ -2778,6 +2777,10 @@ mod live_layout_tests {
                     "chip {chip} missing at {width}"
                 );
             }
+            assert!(
+                galleys.iter().any(|(text, _)| text == credit::LABEL),
+                "credit missing at {width}"
+            );
             for (text, _) in &galleys {
                 for jargon in ["OCR", "STT", "TTS"] {
                     assert!(!text.contains(jargon), "{jargon} still shown at {width}");

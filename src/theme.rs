@@ -312,7 +312,7 @@ mod tests {
     fn ui_sources_take_type_and_colour_from_tokens() {
         // UI_UX_BRIEF section 5: the credit keeps these sizes until it has a
         // roomier place on screen.
-        let allowed = [("ui.rs", ".size(7.5)"), ("mini.rs", ".size(9.0)")];
+        let allowed = [("mini.rs", ".size(9.0)")];
         for (file, source) in [
             ("ui.rs", include_str!("ui.rs")),
             ("mini.rs", include_str!("mini.rs")),

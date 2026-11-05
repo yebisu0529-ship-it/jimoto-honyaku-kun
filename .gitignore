@@ -1,0 +1,16 @@
+/target/
+/.venv/
+/models/
+/runtime/
+/verification/*.log
+/verification/*.wav
+/verification/opus-review-input.txt
+__pycache__/
+*.partial
+/dist/
+/assets/fonts/NotoSansJP.ttf
+/verification/hardware-this-pc.json
+/verification/cli-plan.json
+/verification/portable-smoke-*/
+
+/verification/

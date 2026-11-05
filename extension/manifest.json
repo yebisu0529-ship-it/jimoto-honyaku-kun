@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "地元翻訳くん - YouTube字幕連携",
+  "version": "0.2.1",
+  "description": "YouTubeの表示字幕を地元翻訳くんへ送信。translated by PLaMo。",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1:17862/*"],
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
+  "action": { "default_title": "地元翻訳くんの字幕設定", "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" } },
+  "content_scripts": [{
+    "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }]
+}

@@ -26,6 +26,7 @@ use std::{
 };
 
 mod document;
+mod file_output;
 mod live_view;
 mod mini;
 mod paragraph_tools;
@@ -743,6 +744,9 @@ impl App {
         }
         self.translate(self.input.clone(), Lane::Manual, 0, 0, "文章", None);
     }
+    fn manual_output_ready(&self) -> bool {
+        self.manual_busy.is_none() && !self.output.is_empty()
+    }
     fn enter_mini_view(&mut self, ctx: &egui::Context) {
         if self.window_mode.is_mini() || self.close_after_restore.is_some() {
             return;
@@ -1198,6 +1202,10 @@ impl App {
                                 self.status = format!("翻訳完了 · {elapsed:.1}秒");
                             }
                             Err(error) => {
+                                row.record.translation.clear();
+                                if lane == Lane::Manual {
+                                    self.output.clear();
+                                }
                                 row.error = Some(error.clone());
                                 self.status = error;
                                 manual_failed = lane == Lane::Manual;
@@ -1534,8 +1542,8 @@ impl App {
         let Some(output) = rfd::FileDialog::new().set_file_name(filename).save_file() else {
             return;
         };
-        if input == output {
-            self.status = "元のファイルを保つため、別のファイル名を選んでください。".into();
+        if let Err(error) = file_output::check_destination(&input, &output) {
+            self.status = error.to_string();
             return;
         }
         self.file_busy = true;
@@ -1564,7 +1572,7 @@ impl App {
                             !cancel.load(Ordering::Relaxed),
                             "中止しました。元のファイルと出力先は変更していません。"
                         );
-                        cue.text = translator.translate(&cue.text, |_| {})?;
+                        cue.text = translator.translate_live(&cue.text, &cancel, |_| {})?;
                         let _ = tx.try_send(Event::Info(format!(
                             "字幕を翻訳中 {}/{}",
                             index + 1,
@@ -1584,7 +1592,7 @@ impl App {
                         if part.trim().is_empty() {
                             result.push_str(part);
                         } else {
-                            result.push_str(&translator.translate(part, |_| {})?);
+                            result.push_str(&translator.translate_live(part, &cancel, |_| {})?);
                             result.push_str("\n\n");
                         }
                         let _ = tx.try_send(Event::Info(format!(
@@ -1602,7 +1610,7 @@ impl App {
                 } else {
                     credit::published(&content)
                 };
-                fs::write(&output, content)?;
+                file_output::write_translation(&input, &output, &content, &cancel)?;
                 Ok(format!("保存しました: {}", output.display()))
             })();
             let _ = tx.send(Event::FileDone(result.map_err(|e| format!("{e:#}"))));
@@ -2337,6 +2345,75 @@ mod tests {
             start_ms,
             end_ms,
         }
+    }
+    #[test]
+    fn regression_failed_manual_stream_discards_the_unfinished_translation() {
+        let mut a = app();
+        let ctx = egui::Context::default();
+        let id = 42;
+        a.manual_busy = Some(id);
+        a.rows.push(Row {
+            record: record(id, "文章", "", 0, 0),
+            pending: true,
+            error: None,
+            generation: 0,
+        });
+        a.tx.send(Event::Partial {
+            id,
+            text: "unfinished translation".into(),
+        })
+        .unwrap();
+        a.process(&ctx);
+        assert_eq!(a.output, "unfinished translation");
+        assert!(!a.manual_output_ready());
+        a.tx.send(Event::Done {
+            id,
+            lane: Lane::Manual,
+            result: Err("stream interrupted".into()),
+            elapsed: 0.0,
+            generation: 0,
+        })
+        .unwrap();
+        a.process(&ctx);
+        assert!(a.output.is_empty());
+        assert!(!a.manual_output_ready());
+        assert!(a.rows[0].record.translation.is_empty());
+        assert_eq!(a.rows[0].record.source, "source");
+        assert_eq!(a.rows[0].error.as_deref(), Some("stream interrupted"));
+        assert!(a.manual_busy.is_none());
+    }
+    #[test]
+    fn successful_manual_stream_enables_output_only_after_completion() {
+        let mut a = app();
+        let ctx = egui::Context::default();
+        let id = 42;
+        a.manual_busy = Some(id);
+        a.rows.push(Row {
+            record: record(id, "文章", "", 0, 0),
+            pending: true,
+            error: None,
+            generation: 0,
+        });
+        a.tx.send(Event::Partial {
+            id,
+            text: "draft".into(),
+        })
+        .unwrap();
+        a.process(&ctx);
+        assert!(!a.manual_output_ready());
+        a.tx.send(Event::Done {
+            id,
+            lane: Lane::Manual,
+            result: Ok("complete translation".into()),
+            elapsed: 0.0,
+            generation: 0,
+        })
+        .unwrap();
+        a.process(&ctx);
+        assert!(a.manual_output_ready());
+        assert_eq!(a.output, "complete translation");
+        assert_eq!(a.rows[0].record.translation, a.output);
+        assert!(a.rows[0].error.is_none());
     }
     #[test]
     fn source_toggles_only_invalidate_their_own_generation_and_overlay() {

@@ -1,0 +1,4 @@
+# These bytes are embedded in the executable and have fixed SHA-256 values.
+# Keep them identical across Windows checkouts, including core.autocrlf=true.
+scripts/plamo_template.jinja text eol=lf
+scripts/indra-requirements.lock text eol=lf

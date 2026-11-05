@@ -1281,7 +1281,7 @@ impl App {
                         .color(ACCENT),
                 );
                 if ui
-                    .add_enabled(!self.output.is_empty(), standard("コピー"))
+                    .add_enabled(self.manual_output_ready(), standard("コピー"))
                     .on_hover_text("PLaMoのクレジットを付けてコピーします")
                     .clicked()
                     && let Ok(mut clipboard) = arboard::Clipboard::new()
@@ -1289,13 +1289,13 @@ impl App {
                     let _ = clipboard.set_text(credit::published(&self.output));
                 }
                 if ui
-                    .add_enabled(!self.output.is_empty(), standard("保存"))
+                    .add_enabled(self.manual_output_ready(), standard("保存"))
                     .clicked()
                 {
                     self.save_text();
                 }
                 if ui
-                    .add_enabled(!self.output.is_empty(), standard("読み上げ"))
+                    .add_enabled(self.manual_output_ready(), standard("読み上げ"))
                     .clicked()
                 {
                     self.read_translation(self.output.clone());

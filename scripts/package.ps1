@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$AppRoot = '',
     [string]$OutDir = '',
@@ -44,6 +44,7 @@ $taskFiles = @(
     @{ Source = 'extension/README.md'; Entry = 'extension/README.md' },
     @{ Source = 'README.md'; Entry = 'README.md' },
     @{ Source = 'LICENSE'; Entry = 'LICENSE' },
+    @{ Source = 'docs/SPECIFICATIONS.md'; Entry = 'docs/SPECIFICATIONS.md' },
     @{ Source = 'docs/DISTRIBUTION.md'; Entry = 'docs/DISTRIBUTION.md' },
     @{ Source = 'docs/VALIDATION.md'; Entry = 'docs/VALIDATION.md' }
 )

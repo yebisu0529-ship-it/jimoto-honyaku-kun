@@ -37,7 +37,7 @@ Windows 10/11 x64 向けのローカル翻訳アプリ。文章・画面OCR・Yo
   - `src/screen_ocr.rs` OCR 設定、`src/readout.rs` 読み上げ設定
 - プレビュー（GUI 不要・CPU 描画）:
   `plamo-translate.exe --render-preview <出力フォルダ>`
-  で 27 枚（2560x1369 / 1280x880 / 860x620 + ミニ 520x360・400x260 + 字幕窓）を書き出す。
+  で 30 枚（文章・ライブ・設定・初回準備・履歴を 2560x1369 / 1280x880 / 860x620 + ミニ 520x360・400x260 + 字幕窓）を書き出す。
 - 検証:
   `cargo check --all-targets --locked`
   `cargo clippy --all-targets --locked -- -D warnings`
@@ -102,7 +102,7 @@ Windows 10/11 x64 向けのローカル翻訳アプリ。文章・画面OCR・Yo
 ## 9. 検証
 
 - `cargo check --all-targets --locked` / `cargo clippy --all-targets --locked -- -D warnings` / `cargo test --locked`
-- `--render-preview` が 27 枚をエラーなしで出力
+- `--render-preview` が 30 枚をエラーなしで出力
 - 860x620 と 400x260 で、クリップ・重なり・はみ出しがない
 - キーボードのみで主要導線を辿れる。フォーカスが見える
 - 文字サイズと色は `theme.rs` 経由。直値を増やす場合は理由を残す

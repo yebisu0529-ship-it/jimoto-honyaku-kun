@@ -1965,6 +1965,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             ("03-live", Tab::Live, true),
             ("04-settings", Tab::Settings, false),
             ("05-first-run", Tab::Setup, false),
+            ("18-history", Tab::Files, true),
         ] {
             let ctx = egui::Context::default();
             ui::configure_theme(&ctx);
@@ -2007,7 +2008,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 "会議は来週の月曜日に変更になりました。\nプロジェクトの管理画面を開いてください。"
                     .into();
             }
-            if tab == Tab::Live {
+            if matches!(tab, Tab::Live | Tab::Files) {
                 app.caption_enabled = true;
                 app.audio_enabled = true;
                 for (index, source, translation) in [

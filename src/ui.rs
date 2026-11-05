@@ -499,7 +499,7 @@ impl App {
                 }
                 if ui
                     .add(standard("字幕ウィンドウ"))
-                    .on_hover_text("翻訳を独立したウィンドウに表示します。ミニ表示と併用できます。")
+                    .on_hover_text("訳文を独立したウィンドウに表示します。ミニ表示と併用できます。")
                     .clicked()
                 {
                     self.subtitle_window.open = true;
@@ -1684,7 +1684,7 @@ mod live_layout_tests {
                 app.caption_enabled = true;
                 app.settings.font_size = size;
                 assert!(!app.settings.live_show_original);
-                let japanese:String = "文章全体の文脈を保ちながら、続きを受け取り一つの段落として日本語を更新します。".chars().cycle().take(600).collect();
+                let japanese:String = "文章全体の文脈を保ちながら原文の続きを受け取り、一つの段落として訳文を更新します。".chars().cycle().take(600).collect();
                 let mut active = row(2, false, false);
                 active.record.translation = japanese.clone();
                 active.record.paragraph = Some(ParagraphMeta {

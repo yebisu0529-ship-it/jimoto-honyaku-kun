@@ -572,7 +572,7 @@ impl App {
                     if ui.button("今はしない").clicked() { self.audio_confirmation=false; self.audio_start_requested=false; }
                 });
             }
-            if !self.service_error.is_empty(){ui.colored_label(Color32::from_rgb(240,122,122),&self.service_error);}
+            if !self.service_error.is_empty(){ui.colored_label(theme::ERROR,&self.service_error);}
         });
     }
 }

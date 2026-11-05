@@ -347,8 +347,8 @@ impl App {
     }
     pub(super) fn readout_settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("訳文の読み上げ").strong());
-        ui.label("Irodori-TTS v4.1 Small-MF / speech.cpp");
-        ui.label("日本語の訳文を、このPC内で音声にします。");
+        ui.label(theme::label("日本語の訳文を、このPC内で音声にします。"));
+        ui.label(theme::caption("Irodori-TTS v4.1 Small-MF / speech.cpp"));
         let old_voice = self.settings.tts_voice_profile.clone();
         ui.add_enabled_ui(!self.readout.voice_preparing, |ui| {
             egui::ComboBox::from_id_salt("fixed-readout-voice")
@@ -398,7 +398,8 @@ impl App {
         let options = readout_options(&self.settings, false);
         self.settings.tts_speed = options.speed;
         self.settings.tts_max_speed = options.max_speed;
-        ui.add(
+        theme::slider(
+            ui,
             egui::Slider::new(&mut self.settings.tts_speed, 0.8..=1.6)
                 .step_by(0.1)
                 .fixed_decimals(1)
@@ -410,7 +411,8 @@ impl App {
             &mut self.settings.tts_catch_up,
             "ライブ字幕の遅れに合わせて速度を上げる",
         );
-        ui.add(
+        theme::slider(
+            ui,
             egui::Slider::new(&mut self.settings.tts_max_speed, 1.2..=2.0)
                 .step_by(0.1)
                 .fixed_decimals(1)

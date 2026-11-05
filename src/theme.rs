@@ -224,6 +224,27 @@ pub fn focus_ring(ui: &egui::Ui, response: &egui::Response) {
     }
 }
 
+/// A slider on a card, drawn with [`slider_visuals`].
+pub fn slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        slider_visuals(&mut ui.style_mut().visuals);
+        ui.add(slider)
+    })
+    .inner
+}
+
+/// egui paints a slider's rail in the inactive widget fill, which is the card
+/// colour here. The rail and the handle ring get their own contrast instead.
+/// Checkboxes and scroll bars share that fill, so this stays scoped to sliders.
+/// The filled part keeps the selection tint: the value box paints selected
+/// digits in the selection stroke colour, which must stay off that tint.
+fn slider_visuals(visuals: &mut egui::Visuals) {
+    visuals.slider_trailing_fill = true;
+    visuals.widgets.inactive.bg_fill = BORDER_STRONG;
+    visuals.widgets.inactive.fg_stroke = Stroke::new(2.0_f32, TEXT);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(2.0_f32, TEXT);
+}
+
 // ---------------------------------------------------------------------------
 // Contrast (WCAG 2.2).
 // ---------------------------------------------------------------------------
@@ -321,6 +342,12 @@ mod tests {
             ("readout.rs", include_str!("readout.rs")),
             ("subtitle_window.rs", include_str!("subtitle_window.rs")),
             ("main.rs", include_str!("main.rs")),
+            ("paragraph_tools.rs", include_str!("paragraph_tools.rs")),
+            ("services.rs", include_str!("services.rs")),
+            ("document.rs", include_str!("document.rs")),
+            ("streaming.rs", include_str!("streaming.rs")),
+            ("window_mode.rs", include_str!("window_mode.rs")),
+            ("live_view.rs", include_str!("live_view.rs")),
         ] {
             for (index, line) in source.lines().enumerate() {
                 for pattern in [
@@ -362,6 +389,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn slider_rail_and_handle_meet_ui_contrast_and_selected_digits_stay_readable() {
+        let context = egui::Context::default();
+        apply(&context);
+        let mut visuals = context.style().visuals.clone();
+        assert_eq!(
+            visuals.widgets.inactive.bg_fill, SURFACE,
+            "without the slider scope the rail is the card colour"
+        );
+        let selection = visuals.selection;
+        slider_visuals(&mut visuals);
+        assert!(visuals.slider_trailing_fill);
+        for (part, color) in [
+            ("rail", visuals.widgets.inactive.bg_fill),
+            ("handle ring", visuals.widgets.inactive.fg_stroke.color),
+        ] {
+            let ratio = contrast_ratio(color, SURFACE);
+            assert!(ratio >= 3.0, "slider {part}: {ratio:.2}:1 on a card");
+        }
+        // Selected digits in the value box are drawn in the stroke colour on the fill.
+        assert_eq!(visuals.selection.bg_fill, selection.bg_fill);
+        assert_eq!(visuals.selection.stroke, selection.stroke);
+        assert_ne!(visuals.selection.stroke.color, visuals.selection.bg_fill);
     }
 
     #[test]

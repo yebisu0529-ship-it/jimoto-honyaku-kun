@@ -620,6 +620,15 @@ pub(super) fn configure_theme(ctx: &egui::Context) {
 fn card() -> egui::Frame {
     theme::card()
 }
+
+/// Every settings group is a full-width card whose controls keep their own
+/// width; `ui.columns` would otherwise stretch each button across the column.
+fn settings_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    card().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), add);
+    });
+}
 fn secondary(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(theme::label(text));
 }
@@ -967,7 +976,8 @@ impl App {
                         );
                     ui.add_space(theme::SPACE_1);
                     ui.label(theme::caption("訳文の文字サイズ"));
-                    ui.add(
+                    theme::slider(
+                        ui,
                         egui::Slider::new(
                             &mut self.settings.font_size,
                             theme::READING_MIN..=theme::READING_MAX,
@@ -1686,7 +1696,6 @@ impl App {
     }
 
     fn settings_translation_card(&mut self, ui: &mut egui::Ui) {
-        ui.set_min_width(ui.available_width());
         ui.label(RichText::new("翻訳モデル").strong());
         ui.label(self.setup_summary());
         secondary(ui, self.connection_label());
@@ -1696,7 +1705,6 @@ impl App {
     }
 
     fn settings_asr_card(&mut self, ui: &mut egui::Ui) {
-        ui.set_min_width(ui.available_width());
         ui.label(RichText::new("音声認識").strong());
         egui::ComboBox::from_id_salt("asr-backend")
             .selected_text(match self.settings.asr_backend.as_str() {
@@ -1790,7 +1798,6 @@ impl App {
     }
 
     fn settings_youtube_card(&mut self, ui: &mut egui::Ui) {
-        ui.set_min_width(ui.available_width());
         ui.label(RichText::new("YouTube字幕の接続").strong());
         let receiving = self.caption_enabled
             && !self.caption_paused
@@ -1963,9 +1970,12 @@ impl App {
         page_column(ui, |ui| {
             self.page_header(ui, "設定", "翻訳と音声認識はこのPC内で処理します。", |_| {});
             ui.add_space(theme::SPACE_2);
+            // The save action stays in view under the scrolling form.
+            let footer = theme::SPACE_3 + theme::CONTROL_H_LARGE;
             egui::ScrollArea::vertical()
                 .id_salt("settings-scroll")
                 .auto_shrink([false, false])
+                .max_height((ui.available_height() - footer).max(0.0))
                 .show(ui, |ui| {
                     // Two independent columns above 1100 points so a wide
                     // window does not become one very long form.
@@ -1973,61 +1983,60 @@ impl App {
                         ui.columns(2, |columns| {
                             columns[0].spacing_mut().item_spacing.y = theme::SPACE_3;
                             columns[1].spacing_mut().item_spacing.y = theme::SPACE_3;
-                            card().show(&mut columns[0], |ui| self.settings_translation_card(ui));
-                            card().show(&mut columns[0], |ui| self.readout_settings_ui(ui));
-                            card().show(&mut columns[0], |ui| self.paragraph_tools_settings_ui(ui));
+                            settings_card(&mut columns[0], |ui| self.settings_translation_card(ui));
+                            settings_card(&mut columns[0], |ui| self.readout_settings_ui(ui));
+                            settings_card(&mut columns[0], |ui| {
+                                self.paragraph_tools_settings_ui(ui)
+                            });
                             self.settings_glossary_section(&mut columns[0]);
-                            card().show(&mut columns[1], |ui| self.settings_asr_card(ui));
-                            card().show(&mut columns[1], |ui| self.screen_ocr_settings_ui(ui));
-                            card().show(&mut columns[1], |ui| self.settings_youtube_card(ui));
+                            settings_card(&mut columns[1], |ui| self.settings_asr_card(ui));
+                            settings_card(&mut columns[1], |ui| self.screen_ocr_settings_ui(ui));
+                            settings_card(&mut columns[1], |ui| self.settings_youtube_card(ui));
                             self.settings_shortcuts_section(&mut columns[1]);
                             self.settings_diagnostics_section(&mut columns[1]);
                         });
                     } else {
-                        card().show(ui, |ui| self.settings_translation_card(ui));
-                        ui.add_space(theme::SPACE_2);
-                        card().show(ui, |ui| self.readout_settings_ui(ui));
-                        ui.add_space(theme::SPACE_2);
-                        card().show(ui, |ui| self.settings_asr_card(ui));
-                        ui.add_space(theme::SPACE_2);
-                        card().show(ui, |ui| self.screen_ocr_settings_ui(ui));
-                        ui.add_space(theme::SPACE_2);
-                        card().show(ui, |ui| self.paragraph_tools_settings_ui(ui));
-                        ui.add_space(theme::SPACE_2);
-                        card().show(ui, |ui| self.settings_youtube_card(ui));
-                        ui.add_space(theme::SPACE_2);
+                        ui.spacing_mut().item_spacing.y = theme::SPACE_3;
+                        settings_card(ui, |ui| self.settings_translation_card(ui));
+                        settings_card(ui, |ui| self.readout_settings_ui(ui));
+                        settings_card(ui, |ui| self.settings_asr_card(ui));
+                        settings_card(ui, |ui| self.screen_ocr_settings_ui(ui));
+                        settings_card(ui, |ui| self.paragraph_tools_settings_ui(ui));
+                        settings_card(ui, |ui| self.settings_youtube_card(ui));
                         self.settings_glossary_section(ui);
                         self.settings_shortcuts_section(ui);
                         self.settings_diagnostics_section(ui);
                     }
-                    ui.add_space(theme::SPACE_4);
-                    if ui
-                        .add_enabled(
-                            parse_glossary(&self.glossary_input).is_ok(),
-                            primary("設定を保存"),
-                        )
-                        .clicked()
-                    {
-                        match parse_glossary(&self.glossary_input) {
-                            Ok(glossary) => {
-                                self.settings.translation.glossary = glossary;
-                                match self.persist_preferences() {
-                                    Ok(()) => {
-                                        self.settings_load_failed = false;
-                                        self.status = "設定を保存しました。".into();
-                                    }
-                                    Err(error) => self.status = error.to_string(),
-                                }
-                            }
-                            Err(error) => self.status = error,
-                        }
-                    }
-                    ui.add_space(theme::SPACE_4);
+                    ui.add_space(theme::SPACE_6);
                     if ui.add(standard("アプリを終了")).clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     ui.add_space(theme::SPACE_4);
                 });
+            // A hairline marks where the form scrolls under the fixed bar.
+            let line = ui.cursor().top() + theme::SPACE_1;
+            ui.painter()
+                .hline(ui.max_rect().x_range(), line, theme::hairline());
+            ui.add_space(theme::SPACE_3);
+            let glossary = parse_glossary(&self.glossary_input);
+            if ui
+                .add_enabled(glossary.is_ok(), primary("設定を保存"))
+                .clicked()
+            {
+                match glossary {
+                    Ok(glossary) => {
+                        self.settings.translation.glossary = glossary;
+                        match self.persist_preferences() {
+                            Ok(()) => {
+                                self.settings_load_failed = false;
+                                self.status = "設定を保存しました。".into();
+                            }
+                            Err(error) => self.status = error.to_string(),
+                        }
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
         });
         if previous_asr
             != (

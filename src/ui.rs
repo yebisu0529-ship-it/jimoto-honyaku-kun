@@ -1,17 +1,28 @@
+use super::theme::{
+    self, ACCENT, ACCENT_SOFT, BORDER_STRONG, CANVAS, ERROR, INPUT, ON_ACCENT, SURFACE,
+    SURFACE_RAISED, TEXT, TEXT_MUTED, TEXT_SECONDARY, WARNING,
+};
 use super::*;
 use plamo_translate::journal::ParagraphState;
 
-const BG: Color32 = Color32::from_rgb(20, 24, 31);
-const SIDEBAR: Color32 = Color32::from_rgb(16, 20, 25);
-const SURFACE: Color32 = Color32::from_rgb(27, 33, 42);
-const INPUT: Color32 = Color32::from_rgb(17, 22, 28);
-const BORDER: Color32 = Color32::from_rgb(42, 50, 61);
-const TEXT: Color32 = Color32::from_rgb(230, 234, 240);
-const SECONDARY: Color32 = Color32::from_rgb(163, 173, 186);
-const MINT: Color32 = Color32::from_rgb(60, 191, 164);
-const ERROR: Color32 = Color32::from_rgb(240, 122, 122);
-
 const LIVE_LATEST_HEIGHT: f32 = 312.0;
+/// Height reserved for the page title and its actions.
+const HEADER_HEIGHT: f32 = 56.0;
+/// Height reserved for the live input/display controls.
+const SOURCES_HEIGHT: f32 = 40.0;
+/// Height reserved above the history list for its label.
+const HISTORY_HEADING_HEIGHT: f32 = 28.0;
+
+/// Measurements captured while drawing, so tests can assert real geometry
+/// instead of re-deriving layout from constants.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct UiProbe {
+    pub rail_width: f32,
+    pub nav_heights: Vec<f32>,
+    pub now_rect: Option<egui::Rect>,
+    pub reading_font: f32,
+}
 
 fn paragraph_label(row: &Row) -> &'static str {
     match row.record.paragraph.as_ref().map(|p| p.state) {
@@ -31,6 +42,20 @@ fn history_row_visible(row: &Row, current: Option<u64>) -> bool {
             row.pending,
             if row.is_confirmed() { current } else { None },
         )
+}
+
+/// A paragraph that is still being revised is never presented as final, and
+/// never paired with a different source.
+fn row_is_unfinished(row: &Row) -> bool {
+    row.record.paragraph.as_ref().is_some_and(|p| {
+        matches!(
+            p.state,
+            ParagraphState::Open
+                | ParagraphState::Closing
+                | ParagraphState::Interrupted
+                | ParagraphState::Failed
+        )
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -57,9 +82,6 @@ impl LiveLayout {
             compact,
         }
     }
-    fn column_height(self) -> f32 {
-        (self.latest_height - 104.0).max(40.0)
-    }
 }
 
 /// Allocate a hard outer rectangle; changing child content cannot move history.
@@ -81,6 +103,25 @@ fn live_region<R>(
     );
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     contents(&mut child)
+}
+
+/// Center the reading column and cap its width so long Japanese lines stay
+/// inside the comfortable 20-40 character range.
+fn content_column(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let width = ui.available_width().min(theme::READING_COLUMN_MAX);
+    let pad = ((ui.available_width() - width) * 0.5).max(0.0);
+    let height = ui.available_height();
+    ui.horizontal(|ui| {
+        ui.add_space(pad);
+        ui.allocate_ui_with_layout(
+            Vec2::new(width, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                add(ui);
+            },
+        );
+    });
 }
 
 fn live_latest_panel(
@@ -108,122 +149,95 @@ fn live_latest_panel(
     let translation = selected
         .map(|row| row.record.translation.as_str())
         .unwrap_or("");
-    let mut read_requested = None;
     live_region(ui, "live-latest-panel", layout.latest_height, |ui| {
-        card()
-            .inner_margin(egui::Margin::symmetric(16, 12))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                ui.set_min_width(ui.available_width());
-                ui.set_min_height(layout.latest_height - 24.0);
-                ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 176.0).max(40.0);
-                    ui.add_sized(
-                        [width, 32.0],
-                        egui::Label::new(
-                            RichText::new("進行中の文章／最新の対訳")
-                                .strong()
-                                .size(15.0),
+        theme::reading_surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = theme::SPACE_1;
+            ui.add(
+                egui::Label::new(
+                    RichText::new("進行中の文章／最新の対訳")
+                        .size(12.0)
+                        .strong()
+                        .color(ACCENT),
+                )
+                .truncate(),
+            );
+            let state = match mode {
+                LatestMode::Draft => "認識途中 · 原文をつないで翻訳します".to_owned(),
+                LatestMode::Current => selected
+                    .map(|row| {
+                        format!(
+                            "{} · {} · {}",
+                            clock(row.record.start_ms),
+                            row.record.kind,
+                            paragraph_label(row)
                         )
-                        .truncate(),
-                    );
-                    if ui
-                        .add_enabled(!translation.is_empty(), standard("コピー"))
-                        .clicked()
-                        && let Ok(mut clipboard) = arboard::Clipboard::new()
-                    {
-                        let _ = clipboard.set_text(translation.to_owned());
-                    }
-                    if ui
-                        .add_enabled(
-                            selected.is_some_and(Row::is_confirmed),
-                            standard("読み上げ"),
-                        )
-                        .clicked()
-                    {
-                        read_requested = Some(translation.to_owned());
-                    }
-                });
-                let state = match mode {
-                    LatestMode::Draft => "認識途中 · 原文をつないで翻訳します".into(),
-                    LatestMode::Current => selected
-                        .map(|row| {
-                            format!(
-                                "{} · {} · {}",
-                                clock(row.record.start_ms),
-                                row.record.kind,
-                                paragraph_label(row)
-                            )
-                        })
-                        .unwrap_or_default(),
-                    LatestMode::Empty => "YouTube字幕またはPC音声の入力を待っています".into(),
-                };
-                ui.add(
-                    egui::Label::new(RichText::new(state).size(12.0).color(SECONDARY)).truncate(),
-                );
-                let source = match mode {
-                    LatestMode::Draft => draft.to_owned(),
-                    LatestMode::Current if show_original => {
-                        let accepted = selected.map(|row| row.record.source.as_str()).unwrap_or("");
-                        if draft.trim().is_empty() {
-                            accepted.to_owned()
-                        } else {
-                            format!("{accepted}\n\n追加で認識中の原文（未確定）:\n{draft}")
-                        }
-                    }
-                    LatestMode::Current => "原文は非表示です。".to_owned(),
-                    LatestMode::Empty => "原文はここに表示されます。".to_owned(),
-                };
-                let error = selected.and_then(|row| row.error.as_deref());
-                let target = error.unwrap_or_else(|| {
-                    if !translation.is_empty() {
-                        translation
-                    } else if mode == LatestMode::Draft {
-                        "原文をつなぎながら訳文を更新します。"
-                    } else if selected.is_some_and(|row| row.pending) {
-                        "翻訳しています…"
+                    })
+                    .unwrap_or_default(),
+                LatestMode::Empty => "YouTube字幕またはPC音声の入力を待っています".to_owned(),
+            };
+            ui.add(egui::Label::new(RichText::new(state).size(12.0).color(TEXT_MUTED)).truncate());
+            let source = match mode {
+                LatestMode::Draft => draft.to_owned(),
+                LatestMode::Current if show_original => {
+                    let accepted = selected.map(|row| row.record.source.as_str()).unwrap_or("");
+                    if draft.trim().is_empty() {
+                        accepted.to_owned()
                     } else {
-                        "訳文はここに表示されます。"
+                        format!("{accepted}\n\n追加で認識中の原文（未確定）:\n{draft}")
                     }
-                });
-                let id = selected.map(|row| row.record.id).unwrap_or(0);
-                let show_source = show_original || mode == LatestMode::Draft;
-                ui.columns(if show_source { 2 } else { 1 }, |columns| {
-                    if show_source {
-                        live_text_column(
-                            &mut columns[0],
-                            ("latest-source", id, mode == LatestMode::Draft),
-                            "原文",
-                            &source,
-                            (16.0, SECONDARY),
-                            auto_scroll
-                                && (mode == LatestMode::Draft
-                                    || selected
-                                        .is_some_and(|row| row.pending || row.is_provisional())),
-                            layout.column_height(),
-                        );
-                    }
-                    live_text_column(
-                        &mut columns[usize::from(show_source)],
-                        ("latest-target", id, false),
-                        if selected.is_some_and(Row::is_provisional) {
-                            "訳文（継続して更新）"
-                        } else {
-                            "訳文"
-                        },
-                        target,
-                        (
-                            font_size.clamp(18.0, 24.0),
-                            if error.is_some() { ERROR } else { TEXT },
-                        ),
-                        auto_scroll
-                            && selected.is_some_and(|row| row.pending || row.is_provisional()),
-                        layout.column_height(),
-                    );
-                });
+                }
+                LatestMode::Current => {
+                    "原文は非表示です。表示メニューから切り替えられます。".to_owned()
+                }
+                LatestMode::Empty => "原文はここに表示されます。".to_owned(),
+            };
+            let error = selected.and_then(|row| row.error.as_deref());
+            let target = error.unwrap_or_else(|| {
+                if !translation.is_empty() {
+                    translation
+                } else if mode == LatestMode::Draft {
+                    "原文をつなぎながら訳文を更新します。"
+                } else if selected.is_some_and(|row| row.pending) {
+                    "翻訳しています…"
+                } else {
+                    "訳文はここに表示されます。"
+                }
             });
+            let id = selected.map(|row| row.record.id).unwrap_or(0);
+            let show_source = show_original || mode == LatestMode::Draft;
+            let height = ui.available_height().max(24.0);
+            ui.columns(if show_source { 2 } else { 1 }, |columns| {
+                if show_source {
+                    live_text_column(
+                        &mut columns[0],
+                        ("latest-source", id, mode == LatestMode::Draft),
+                        "原文",
+                        &source,
+                        (15.0, TEXT_MUTED),
+                        auto_scroll
+                            && (mode == LatestMode::Draft
+                                || selected.is_some_and(|row| row.pending || row.is_provisional())),
+                        height,
+                    );
+                }
+                live_text_column(
+                    &mut columns[usize::from(show_source)],
+                    ("latest-target", id, false),
+                    if selected.is_some_and(Row::is_provisional) {
+                        "訳文（継続して更新）"
+                    } else {
+                        "訳文"
+                    },
+                    target,
+                    (font_size, if error.is_some() { ERROR } else { TEXT }),
+                    auto_scroll && selected.is_some_and(|row| row.pending || row.is_provisional()),
+                    height,
+                );
+            });
+        });
     });
-    read_requested
+    None
 }
 
 fn live_text_column(
@@ -236,13 +250,17 @@ fn live_text_column(
     height: f32,
 ) {
     let (size, color) = style;
-    ui.label(RichText::new(label).size(12.0).color(MINT));
+    let label_height = ui
+        .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(12.0)))
+        .ceil();
+    ui.label(RichText::new(label).size(12.0).color(TEXT_MUTED));
     // Use the same explicit pitch for wrapping and viewport sizing. A sticky
     // tail then lands on complete rows instead of clipping half the first row.
     let row_height = ui
         .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(size)))
         .ceil();
-    let rows = ((height - 4.0) / row_height).floor().max(1.0);
+    let available = (height - label_height - theme::SPACE_1).max(row_height);
+    let rows = ((available - 4.0) / row_height).floor().max(1.0);
     let height = rows * row_height + 4.0;
     egui::ScrollArea::vertical()
         .id_salt(id)
@@ -262,7 +280,7 @@ fn live_text_column(
             ui.add(
                 egui::Label::new(
                     RichText::new(text)
-                        .size(size)
+                        .size(theme::reading_size(size))
                         .line_height(Some(row_height))
                         .color(color),
                 )
@@ -280,76 +298,76 @@ fn live_history_card(
     show_original: bool,
     read_requested: &mut Option<String>,
 ) -> egui::Rect {
-    card()
+    let unfinished = row_is_unfinished(row);
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(0, 2))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(clock(row.record.start_ms))
-                        .size(12.0)
-                        .color(SECONDARY),
-                );
-                let color = match row.record.kind.as_str() {
-                    "YouTube" => Color32::from_rgb(217, 144, 106),
-                    "音声" => Color32::from_rgb(127, 167, 224),
-                    _ => Color32::from_rgb(179, 157, 219),
-                };
+            ui.horizontal(|ui| {
+                ui.label(theme::caption(clock(row.record.start_ms)));
+                let color = live_kind_color(&row.record.kind);
                 egui::Frame::new()
+                    .fill(SURFACE_RAISED)
                     .stroke(egui::Stroke::new(1.0_f32, color))
                     .corner_radius(4)
-                    .inner_margin(4.0)
+                    .inner_margin(egui::Margin::symmetric(6, 2))
                     .show(ui, |ui| {
-                        ui.label(RichText::new(&row.record.kind).size(12.0).color(color));
+                        ui.label(RichText::new(&row.record.kind).size(11.0).color(color));
                     });
-                if ui
-                    .add_enabled(!row.record.translation.is_empty(), standard("コピー"))
-                    .clicked()
-                    && let Ok(mut clipboard) = arboard::Clipboard::new()
-                {
-                    let _ = clipboard.set_text(row.record.translation.clone());
+                if unfinished {
+                    // Unconfirmed text is labelled, not just tinted.
+                    badge(
+                        ui,
+                        paragraph_label(row),
+                        if row.error.is_some() { ERROR } else { WARNING },
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(paragraph_label(row))
+                            .size(12.0)
+                            .color(TEXT_MUTED),
+                    );
                 }
-                if ui
-                    .add_enabled(row.is_confirmed(), standard("読み上げ"))
-                    .clicked()
-                {
-                    *read_requested = Some(row.record.translation.clone());
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(row.is_confirmed(), standard("読み上げ"))
+                        .clicked()
+                    {
+                        *read_requested = Some(row.record.translation.clone());
+                    }
+                    if ui
+                        .add_enabled(!row.record.translation.is_empty(), standard("コピー"))
+                        .clicked()
+                        && let Ok(mut clipboard) = arboard::Clipboard::new()
+                    {
+                        let _ = clipboard.set_text(row.record.translation.clone());
+                    }
+                });
             });
-            let unfinished = row.record.paragraph.as_ref().is_some_and(|p| {
-                matches!(
-                    p.state,
-                    ParagraphState::Interrupted | ParagraphState::Failed
-                )
-            });
-            if row.record.paragraph.is_some() {
-                ui.label(
-                    RichText::new(paragraph_label(row))
-                        .size(12.0)
-                        .color(if unfinished { ERROR } else { SECONDARY }),
-                );
-            }
             if let Some(error) = &row.error {
-                ui.colored_label(ERROR, error);
+                ui.add(egui::Label::new(RichText::new(error).size(13.0).color(ERROR)).wrap());
             }
+            ui.add_space(theme::SPACE_1);
             if !row.record.translation.is_empty() {
                 ui.add(
-                    egui::Label::new(
-                        RichText::new(&row.record.translation)
-                            .size(font_size.clamp(18.0, 24.0))
-                            .color(TEXT),
-                    )
-                    .wrap()
-                    .selectable(true),
+                    egui::Label::new(theme::reading(&row.record.translation, font_size))
+                        .wrap()
+                        .selectable(true),
                 );
             } else {
-                secondary(ui, "訳文はありません。");
+                ui.label(
+                    RichText::new("訳文はありません。")
+                        .size(15.0)
+                        .color(TEXT_MUTED),
+                );
             }
-            if show_original || unfinished {
+            if show_original {
+                ui.add_space(theme::SPACE_1);
                 ui.add(
                     egui::Label::new(
                         RichText::new(&row.record.source)
-                            .size(15.0)
-                            .color(SECONDARY),
+                            .size(14.0)
+                            .color(TEXT_MUTED),
                     )
                     .wrap()
                     .selectable(true),
@@ -360,72 +378,33 @@ fn live_history_card(
         .rect
 }
 
+fn live_kind_color(kind: &str) -> Color32 {
+    match kind {
+        "YouTube" => Color32::from_rgb(226, 160, 118),
+        "音声" => Color32::from_rgb(141, 180, 234),
+        _ => Color32::from_rgb(186, 166, 224),
+    }
+}
+
 pub(super) fn configure_theme(ctx: &egui::Context) {
     install_fonts(ctx);
-    let mut style = (*ctx.style()).clone();
-    style.visuals = egui::Visuals::dark();
-    style
-        .text_styles
-        .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Body, egui::FontId::proportional(16.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(14.0));
-    style.spacing.item_spacing = Vec2::new(8.0, 8.0);
-    style.spacing.button_padding = Vec2::new(12.0, 6.0);
-    style.spacing.interact_size.y = 32.0;
-    style.visuals.override_text_color = Some(TEXT);
-    style.visuals.panel_fill = BG;
-    style.visuals.window_fill = SURFACE;
-    style.visuals.extreme_bg_color = INPUT;
-    style.visuals.faint_bg_color = SURFACE;
-    style.visuals.selection.bg_fill = Color32::from_rgb(31, 74, 67);
-    style.visuals.selection.stroke = egui::Stroke::new(2.0_f32, MINT);
-    for widget in [
-        &mut style.visuals.widgets.inactive,
-        &mut style.visuals.widgets.hovered,
-        &mut style.visuals.widgets.active,
-        &mut style.visuals.widgets.open,
-    ] {
-        widget.bg_fill = SURFACE;
-        widget.weak_bg_fill = SURFACE;
-        widget.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
-        widget.fg_stroke = egui::Stroke::new(1.0_f32, TEXT);
-        widget.corner_radius = egui::CornerRadius::same(6);
-    }
-    style.visuals.widgets.hovered.bg_stroke =
-        egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 68, 82));
-    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(2.0_f32, MINT);
-    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
-    style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, SECONDARY);
-    ctx.set_style(style);
+    theme::apply(ctx);
 }
 
 fn card() -> egui::Frame {
-    egui::Frame::new()
-        .fill(SURFACE)
-        .stroke(egui::Stroke::new(1.0_f32, BORDER))
-        .corner_radius(8)
-        .inner_margin(16.0)
+    theme::card()
 }
 fn secondary(ui: &mut egui::Ui, text: impl Into<String>) {
-    ui.label(RichText::new(text).size(14.0).color(SECONDARY));
+    ui.label(theme::label(text));
 }
 pub(super) fn primary(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(Color32::from_rgb(11, 21, 18)))
-        .fill(MINT)
-        .min_size(Vec2::new(132.0, 36.0))
+    egui::Button::new(RichText::new(label).size(15.0).strong().color(ON_ACCENT))
+        .fill(ACCENT)
+        .min_size(Vec2::new(140.0, theme::CONTROL_H_LARGE))
 }
 fn standard(label: &str) -> egui::Button<'_> {
-    egui::Button::new(label).min_size(Vec2::new(0.0, 32.0))
+    egui::Button::new(RichText::new(label).size(14.0).color(TEXT))
+        .min_size(Vec2::new(0.0, theme::CONTROL_H))
 }
 pub(super) fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     ui.scope(|ui| {
@@ -437,31 +416,72 @@ pub(super) fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::
             &mut visuals.widgets.active,
             &mut visuals.widgets.open,
         ] {
-            widget.corner_radius = egui::CornerRadius::same(3);
-            widget.bg_fill = if checked { MINT } else { INPUT };
+            widget.corner_radius = egui::CornerRadius::same(6);
+            widget.bg_fill = if checked { ACCENT_SOFT } else { INPUT };
             widget.weak_bg_fill = widget.bg_fill;
-            widget.bg_stroke = egui::Stroke::new(
-                1.5_f32,
-                if checked {
-                    MINT
-                } else {
-                    Color32::from_rgb(127, 138, 152)
-                },
-            );
-            widget.fg_stroke = egui::Stroke::new(
-                2.0_f32,
-                if checked {
-                    Color32::from_rgb(11, 21, 18)
-                } else {
-                    TEXT
-                },
-            );
+            widget.bg_stroke =
+                egui::Stroke::new(1.0_f32, if checked { ACCENT } else { BORDER_STRONG });
+            widget.fg_stroke = egui::Stroke::new(2.0_f32, if checked { ACCENT } else { TEXT });
         }
-        visuals.widgets.active.bg_stroke = egui::Stroke::new(2.0_f32, MINT);
-        ui.checkbox(value, label)
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(2.0_f32, ACCENT);
+        ui.checkbox(value, RichText::new(label).size(14.0).color(TEXT))
     })
     .inner
 }
+
+fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(ACCENT_SOFT)
+        .stroke(egui::Stroke::new(1.0_f32, color))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).size(11.0).color(color));
+        });
+}
+
+fn rail_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    let height = theme::CONTROL_H_LARGE + 8.0;
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    let hovered = response.hovered();
+    if selected {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(theme::RADIUS_CONTROL),
+            SURFACE_RAISED,
+        );
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                egui::Pos2::new(rect.left(), rect.top() + 10.0),
+                Vec2::new(3.0, rect.height() - 20.0),
+            ),
+            2.0,
+            ACCENT,
+        );
+    } else if hovered {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(theme::RADIUS_CONTROL),
+            SURFACE,
+        );
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        if selected { TEXT } else { TEXT_SECONDARY },
+    );
+    theme::focus_ring(ui, &response);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
+    });
+    response
+}
+
 fn parse_glossary(input: &str) -> std::result::Result<Vec<(String, String)>, String> {
     let mut entries = Vec::new();
     for (index, line) in input.lines().enumerate() {
@@ -486,28 +506,282 @@ fn parse_glossary(input: &str) -> std::result::Result<Vec<(String, String)>, Str
 }
 
 impl App {
-    fn workspace_heading(&mut self, ui: &mut egui::Ui, title: &str) {
-        ui.horizontal(|ui| {
-            ui.heading(title);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(self.backend_ready, standard("ミニ表示"))
-                    .on_hover_text("操作欄を畳み、翻訳だけを小窓に表示します。Ctrl + Shift + M")
-                    .clicked()
-                {
-                    self.enter_mini_view(ui.ctx());
-                }
-                if ui
-                    .add(standard("字幕ウィンドウ"))
-                    .on_hover_text("訳文を独立したウィンドウに表示します。ミニ表示と併用できます。")
-                    .clicked()
-                {
-                    self.subtitle_window.open = true;
-                }
+    /// Page title and supporting line. Actions sit on the same fixed row so
+    /// changing content can never shift the reading area.
+    fn page_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &str,
+        subtitle: &str,
+        actions: impl FnOnce(&mut egui::Ui),
+    ) {
+        live_region(ui, "page-header", HEADER_HEIGHT, |ui| {
+            let mut enter_mini = false;
+            let mut open_subtitle = false;
+            let backend_ready = self.backend_ready;
+            ui.horizontal(|ui| {
+                let text_width = (ui.available_width() - 340.0).max(120.0);
+                ui.vertical(|ui| {
+                    ui.set_width(text_width);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.add(egui::Label::new(theme::title(title)).truncate());
+                    ui.add(
+                        egui::Label::new(RichText::new(subtitle).size(12.0).color(TEXT_MUTED))
+                            .truncate(),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Present on every page so the separate subtitle window and
+                    // the collapsed mini view are always one click away.
+                    if ui
+                        .add(standard("字幕ウィンドウ"))
+                        .on_hover_text(
+                            "訳文を独立したウィンドウに表示します。ミニ表示と併用できます。",
+                        )
+                        .clicked()
+                    {
+                        open_subtitle = true;
+                    }
+                    if ui
+                        .add_enabled(backend_ready, standard("ミニ表示"))
+                        .on_hover_text("入力欄を畳み、訳文だけを小窓に表示します。Ctrl + Shift + M")
+                        .clicked()
+                    {
+                        enter_mini = true;
+                    }
+                    actions(ui);
+                });
             });
+            if open_subtitle {
+                self.subtitle_window.open = true;
+            }
+            if enter_mini {
+                self.enter_mini_view(ui.ctx());
+            }
         });
     }
-    pub(super) fn languages(&mut self, ui: &mut egui::Ui) {
+
+    /// One fixed row for inputs, display options and the actions for the
+    /// translation currently on screen.
+    fn live_sources_row(&mut self, ui: &mut egui::Ui) {
+        let current_text = self
+            .document_visible_row()
+            .filter(|row| row.is_provisional() || row.is_confirmed())
+            .map(|row| row.record.translation.clone())
+            .unwrap_or_default();
+        let current_ready = self.document_visible_row().is_some_and(Row::is_confirmed);
+        live_region(ui, "live-sources", SOURCES_HEIGHT, |ui| {
+            let mut read_requested = None;
+            ui.horizontal(|ui| {
+                let caption_receiving = self.caption_enabled
+                    && !self.caption_paused
+                    && self
+                        .last_caption
+                        .is_some_and(|time| time.elapsed() < Duration::from_secs(8));
+                let mut enabled = self.caption_enabled;
+                let caption = toggle(ui, &mut enabled, "YouTube字幕");
+                if caption.changed() {
+                    self.set_caption_enabled(enabled);
+                }
+                caption.on_hover_text(if caption_receiving {
+                    "字幕を受信中"
+                } else if self.caption_enabled {
+                    "字幕の受信待ち"
+                } else {
+                    "クリックで字幕を受け取ります"
+                });
+                let mut audio = self.audio_enabled || self.audio_start_requested;
+                let can_toggle =
+                    self.backend_ready || self.audio_enabled || self.audio_start_requested;
+                let audio_toggle = ui
+                    .add_enabled_ui(can_toggle, |ui| toggle(ui, &mut audio, "PC音声"))
+                    .inner;
+                if audio_toggle.changed() {
+                    if !audio && self.audio_start_requested && !self.audio_enabled {
+                        self.audio_start_requested = false;
+                    } else if self.audio_enabled
+                        || (self.audio_environment_ready()
+                            && self.asr_ready
+                            && self.backend_ready)
+                    {
+                        self.toggle_audio();
+                    } else {
+                        self.audio_start_requested = true;
+                        self.prepare_audio();
+                    }
+                }
+                audio_toggle.on_hover_text(if self.audio_enabled && self.asr_ready {
+                    if self.asr_busy {
+                        "音声を認識中"
+                    } else {
+                        "聞き取り中"
+                    }
+                } else if self.audio_start_requested {
+                    "音声認識の準備中"
+                } else {
+                    "クリックでPCの音声を聞き取ります"
+                });
+                let was_enabled = self.settings.auto_read;
+                let read_toggle = ui
+                    .add_enabled_ui(self.readout.ready.is_some(), |ui| {
+                        toggle(ui, &mut self.settings.auto_read, "自動読み上げ")
+                    })
+                    .inner;
+                if was_enabled && !self.settings.auto_read {
+                    self.stop_readout();
+                }
+                read_toggle.on_hover_text("新しい確定訳を読み上げます");
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.menu_button(RichText::new("その他").size(14.0), |ui| {
+                        if ui.add(standard("新しく始める")).clicked() {
+                            match Journal::new(&data_root().join("sessions")) {
+                                Ok(journal) => {
+                                    self.document_shutdown();
+                                    self.journal = Some(journal);
+                                    self.journal_error.clear();
+                                    self.rows.clear();
+                                    self.invalidate_timeline();
+                                }
+                                Err(error) => self.status = error.to_string(),
+                            }
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(!self.rows.is_empty(), standard("書き出し"))
+                            .clicked()
+                        {
+                            self.export_history();
+                            ui.close();
+                        }
+                    });
+                    ui.menu_button(RichText::new("表示").size(14.0), |ui| {
+                        toggle(ui, &mut self.settings.live_show_original, "原文を表示");
+                        toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール")
+                            .on_hover_text(
+                                "上へスクロールしている間は位置を保ちます。OFFからONに戻すと末尾へ移動します。",
+                            );
+                        ui.add_space(theme::SPACE_1);
+                        ui.label(RichText::new("訳文の文字サイズ").size(12.0).color(TEXT_MUTED));
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.settings.font_size,
+                                theme::READING_MIN..=theme::READING_MAX,
+                            )
+                            .integer()
+                            .suffix(" pt"),
+                        );
+                    });
+                    if ui
+                        .add_enabled(current_ready, standard("読み上げ"))
+                        .clicked()
+                    {
+                        read_requested = Some(current_text.clone());
+                    }
+                    if ui
+                        .add_enabled(!current_text.is_empty(), standard("コピー"))
+                        .clicked()
+                        && let Ok(mut clipboard) = arboard::Clipboard::new()
+                    {
+                        let _ = clipboard.set_text(current_text.clone());
+                    }
+                });
+            });
+            if let Some(text) = read_requested.filter(|_| !ui.ctx().will_discard()) {
+                self.read_translation(text);
+            }
+        });
+    }
+
+    fn live_status_region(&mut self, ui: &mut egui::Ui, layout: LiveLayout) {
+        // Reserve status, notices and the stop control even while idle.
+        live_region(ui, "live-status", layout.status_height, |ui| {
+            if layout.compact {
+                ui.spacing_mut().item_spacing.y = theme::SPACE_1;
+            }
+            let speaking = self.readout_busy();
+            ui.horizontal(|ui| {
+                let status = if speaking {
+                    self.readout.status.clone()
+                } else if self.live_busy.is_some() {
+                    "翻訳中".to_owned()
+                } else if !self.asr_partial.is_empty() {
+                    "音声を認識中".to_owned()
+                } else {
+                    "最新の対訳を表示します".to_owned()
+                };
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(speaking, standard("読み上げを停止"))
+                        .clicked()
+                    {
+                        self.stop_readout();
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&status).size(13.0).color(if speaking {
+                                    ACCENT
+                                } else {
+                                    TEXT_SECONDARY
+                                }),
+                            )
+                            .truncate(),
+                        );
+                    });
+                });
+            });
+            let saved = if !self.journal_error.is_empty() {
+                "保存できていません"
+            } else if self.journal.is_some() {
+                "タイムラインへ自動保存"
+            } else {
+                "プレビュー · 保存されません"
+            };
+            let notice = if self.caption_enabled && self.audio_enabled {
+                format!("{saved} · 字幕を優先し、字幕がない間は音声を使います")
+            } else {
+                saved.to_owned()
+            };
+            let errors = [&self.service_error, &self.journal_error]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" / ");
+            if layout.compact {
+                let combined = if errors.is_empty() {
+                    notice
+                } else {
+                    format!("{errors} / {notice}")
+                };
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&combined)
+                            .size(12.0)
+                            .color(if errors.is_empty() { TEXT_MUTED } else { ERROR }),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(combined);
+            } else {
+                ui.add(
+                    egui::Label::new(RichText::new(notice).size(12.0).color(
+                        if errors.is_empty() && self.journal.is_some() {
+                            theme::SUCCESS
+                        } else {
+                            TEXT_MUTED
+                        },
+                    ))
+                    .truncate(),
+                );
+                ui.add(egui::Label::new(RichText::new(&errors).size(12.0).color(ERROR)).truncate())
+                    .on_hover_text(errors);
+            }
+        });
+    }
+
+    fn languages(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt("source-language")
                 .width(126.0)
@@ -620,7 +894,7 @@ impl App {
                         [ui.available_width(), height],
                         egui::TextEdit::multiline(&mut self.input)
                             .hint_text("翻訳したい文章を入力してください")
-                            .font(egui::FontId::proportional(16.0))
+                            .font(egui::FontId::proportional(theme::SIZE_BODY))
                             .margin(12.0)
                             .desired_width(f32::INFINITY),
                     );
@@ -630,7 +904,7 @@ impl App {
     fn output_card(&mut self, ui: &mut egui::Ui, height: f32) {
         card().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("訳文").size(14.0).strong().color(MINT));
+                ui.label(RichText::new("訳文").size(14.0).strong().color(ACCENT));
                 if ui
                     .add_enabled(!self.output.is_empty(), standard("コピー"))
                     .clicked()
@@ -665,425 +939,376 @@ impl App {
                         [ui.available_width(), height],
                         egui::TextEdit::multiline(&mut output)
                             .hint_text("訳文はここに表示されます")
-                            .font(egui::FontId::proportional(17.0))
+                            .font(egui::FontId::proportional(theme::reading_size(
+                                self.settings.font_size,
+                            )))
                             .margin(12.0)
                             .desired_width(f32::INFINITY),
                     );
                 });
         });
     }
+
     pub(super) fn text_ui(&mut self, ui: &mut egui::Ui) {
-        self.workspace_heading(ui, "文章翻訳");
-        secondary(ui, "文章を入力するか、画面や画像から読み取って翻訳します。");
-        ui.add_space(8.0);
-        self.languages(ui);
-        self.backend_notice(ui);
-        ui.add_space(4.0);
-        let stacked = ui.available_width() < 650.0;
-        let available = (ui.available_height() - 56.0).max(220.0);
-        let height = if stacked {
-            (available / 2.0 - 82.0).max(64.0)
-        } else {
-            (available - 82.0).max(120.0)
-        };
-        if stacked {
-            self.input_card(ui, height);
-            self.output_card(ui, height);
-        } else {
-            ui.columns(2, |columns| {
-                self.input_card(&mut columns[0], height);
-                self.output_card(&mut columns[1], height);
-            });
-        }
-        ui.add_space(4.0);
-        let ready =
-            self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
-        ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(ready, primary("翻訳する")).clicked() {
-                self.manual_translate();
-            }
-            ui.label(RichText::new("Ctrl + Enter").size(12.0).color(SECONDARY));
-            if self.manual_busy.is_some() {
-                ui.spinner();
-            }
-            if ui
-                .add_enabled(self.backend_ready, standard("画像から翻訳"))
-                .clicked()
-            {
+        content_column(ui, |ui| {
+            let ready = self.backend_ready;
+            let mut open_image = false;
+            self.page_header(
+                ui,
+                "文章翻訳",
+                "文章を入力するか、画面や画像から読み取って翻訳します。",
+                |ui| {
+                    if ui.add_enabled(ready, standard("画像から翻訳")).clicked() {
+                        open_image = true;
+                    }
+                },
+            );
+            if open_image {
                 self.open_image();
             }
+            ui.add_space(theme::SPACE_2);
+            live_region(ui, "text-languages", 36.0, |ui| {
+                self.languages(ui);
+            });
+            self.backend_notice(ui);
+            ui.add_space(theme::SPACE_2);
+            let available = (ui.available_height() - 56.0).max(220.0);
+            let stacked = ui.available_width() < 680.0;
+            let height = if stacked {
+                (available / 2.0 - 82.0).max(64.0)
+            } else {
+                (available - 82.0).max(120.0)
+            };
+            if stacked {
+                self.input_card(ui, height);
+                ui.add_space(theme::SPACE_2);
+                self.output_card(ui, height);
+            } else {
+                let total = ui.available_width();
+                let input_width = total * 0.42;
+                let output_width = total - input_width - theme::SPACE_3;
+                ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(input_width, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(input_width);
+                            self.input_card(ui, height);
+                        },
+                    );
+                    ui.add_space(theme::SPACE_3);
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(output_width, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(output_width);
+                            self.output_card(ui, height);
+                        },
+                    );
+                });
+            }
+            ui.add_space(theme::SPACE_2);
+            let ready =
+                self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
+            live_region(ui, "text-actions", 44.0, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(ready, primary("翻訳する")).clicked() {
+                        self.manual_translate();
+                    }
+                    ui.label(RichText::new("Ctrl + Enter").size(12.0).color(TEXT_MUTED));
+                    if self.manual_busy.is_some() {
+                        ui.spinner();
+                    }
+                });
+            });
+            if ready && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter)) {
+                self.manual_translate();
+            }
         });
-        if ready && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter)) {
-            self.manual_translate();
-        }
     }
+
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         let layout = LiveLayout::for_height(ui.ctx().input(|input| input.content_rect().height()));
-        self.workspace_heading(ui, "ライブ翻訳");
-        ui.add_space(if layout.compact { 4.0 } else { 8.0 });
-        let caption_receiving = self.caption_enabled
-            && !self.caption_paused
-            && self
-                .last_caption
-                .is_some_and(|time| time.elapsed() < Duration::from_secs(8));
-        ui.columns(2, |columns| {
-            card()
-                .inner_margin(if layout.compact { 8.0 } else { 16.0 })
-                .show(&mut columns[0], |ui| {
-                    if layout.compact {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                    }
-                    let mut enabled = self.caption_enabled;
-                    if toggle(ui, &mut enabled, "YouTube字幕").changed() {
-                        self.set_caption_enabled(enabled);
-                    }
-                    secondary(
-                        ui,
-                        if caption_receiving {
-                            "字幕を受信中"
-                        } else if self.caption_enabled {
-                            "字幕の受信待ち"
-                        } else {
-                            "停止中"
-                        },
-                    );
-                });
-            card()
-                .inner_margin(if layout.compact { 8.0 } else { 16.0 })
-                .show(&mut columns[1], |ui| {
-                    if layout.compact {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                    }
-                    let mut enabled = self.audio_enabled || self.audio_start_requested;
-                    let can_toggle =
-                        self.backend_ready || self.audio_enabled || self.audio_start_requested;
-                    if ui
-                        .add_enabled_ui(can_toggle, |ui| toggle(ui, &mut enabled, "PC音声"))
-                        .inner
-                        .changed()
-                    {
-                        if !enabled && self.audio_start_requested && !self.audio_enabled {
-                            self.audio_start_requested = false;
-                        } else if self.audio_enabled
-                            || (self.audio_environment_ready()
-                                && self.asr_ready
-                                && self.backend_ready)
-                        {
-                            self.toggle_audio();
-                        } else {
-                            self.audio_start_requested = true;
-                            self.prepare_audio();
-                        }
-                    }
-                    secondary(
-                        ui,
-                        if self.audio_enabled && self.asr_ready {
-                            if self.asr_busy {
-                                "音声を認識中"
-                            } else {
-                                "聞き取り中"
-                            }
-                        } else if self.audio_start_requested {
-                            "音声認識の準備中"
-                        } else {
-                            "停止中"
-                        },
-                    );
-                });
-        });
-        ui.add_space(if layout.compact { 4.0 } else { 8.0 });
-        ui.horizontal_wrapped(|ui| {
-            let was_enabled = self.settings.auto_read;
-            ui.add_enabled_ui(self.readout.ready.is_some(), |ui| {
-                toggle(ui, &mut self.settings.auto_read, "訳文を読み上げ");
-            });
-            if was_enabled && !self.settings.auto_read {
-                self.stop_readout();
-            }
-            ui.menu_button("表示", |ui| {
-                toggle(ui, &mut self.settings.live_show_original, "原文を表示");
-                toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール").on_hover_text(
-                    "上へスクロールしている間は位置を保ちます。OFFからONに戻すと末尾へ移動します。",
-                );
-                ui.add(
-                    egui::Slider::new(&mut self.settings.font_size, 18.0..=24.0)
-                        .integer()
-                        .text("訳文の文字サイズ"),
-                );
-            });
-            if ui.add(standard("新しく始める")).clicked() {
-                match Journal::new(&data_root().join("sessions")) {
-                    Ok(journal) => {
-                        self.document_shutdown();
-                        self.journal = Some(journal);
-                        self.journal_error.clear();
-                        self.rows.clear();
-                        self.invalidate_timeline();
-                    }
-                    Err(error) => self.status = error.to_string(),
-                }
-            }
-            if ui
-                .add_enabled(!self.rows.is_empty(), standard("書き出し"))
-                .clicked()
+        content_column(ui, |ui| {
+            self.page_header(
+                ui,
+                "ライブ翻訳",
+                "字幕とPC音声を、通しの日本語で読みます。",
+                |_| {},
+            );
+            ui.add_space(theme::SPACE_2);
+            self.live_sources_row(ui);
+            ui.add_space(theme::SPACE_2);
+            self.live_status_region(ui, layout);
+            ui.add_space(theme::SPACE_2);
+            let current = self
+                .document_visible_row()
+                .filter(|row| row.is_provisional() || row.is_confirmed());
+            let mode = super::live_view::latest_mode(
+                current.is_none() && !self.asr_partial.trim().is_empty(),
+                current.is_some(),
+            );
+            #[cfg(test)]
+            let top_before = ui.cursor().top();
+            let mut read_requested = live_latest_panel(
+                ui,
+                current,
+                &self.asr_partial,
+                mode,
+                layout,
+                (
+                    self.settings.font_size,
+                    self.settings.live_show_original,
+                    self.settings.auto_scroll,
+                ),
+            );
+            #[cfg(test)]
             {
-                self.export_history();
+                self.ui_probe.now_rect = Some(egui::Rect::from_min_max(
+                    egui::Pos2::new(ui.min_rect().left(), top_before),
+                    egui::Pos2::new(ui.min_rect().right(), ui.cursor().top()),
+                ));
+                self.ui_probe.reading_font = theme::reading_size(self.settings.font_size);
             }
-        });
-        // Reserve status, notices and the stop control even while idle.
-        live_region(ui, "live-status", layout.status_height, |ui| {
-            if layout.compact {
-                ui.spacing_mut().item_spacing.y = 4.0;
-            }
-            let speaking = self.readout_busy();
-            ui.horizontal(|ui| {
-                let status = if speaking {
-                    self.readout.status.as_str()
-                } else if self.live_busy.is_some() {
-                    "翻訳中"
-                } else if !self.asr_partial.is_empty() {
-                    "音声を認識中"
-                } else {
-                    "最新の対訳を表示します"
-                };
-                let width = (ui.available_width() - 170.0).max(40.0);
-                ui.add_sized(
-                    [width, 32.0],
-                    egui::Label::new(RichText::new(status).color(if speaking {
-                        MINT
-                    } else {
-                        SECONDARY
-                    }))
-                    .truncate(),
-                );
-                if ui
-                    .add_enabled(speaking, standard("読み上げを停止"))
-                    .clicked()
-                {
-                    self.stop_readout();
-                }
-            });
-            let saved = if !self.journal_error.is_empty() {
-                "保存できていません"
-            } else if self.journal.is_some() {
-                "タイムラインへ自動保存"
-            } else {
-                "プレビュー · 保存されません"
-            };
-            let notice = if self.caption_enabled && self.audio_enabled {
-                format!("{saved} · 字幕を優先し、字幕がない間は音声を使います")
-            } else {
-                saved.to_owned()
-            };
-            let errors = [&self.service_error, &self.journal_error]
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(" / ");
-            if layout.compact {
-                let combined = if errors.is_empty() {
-                    notice
-                } else {
-                    format!("{errors} / {notice}")
-                };
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(&combined)
-                            .size(12.0)
-                            .color(if errors.is_empty() { SECONDARY } else { ERROR }),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(combined);
-            } else {
-                ui.add(
-                    egui::Label::new(RichText::new(notice).size(12.0).color(SECONDARY)).truncate(),
-                );
-                ui.add(egui::Label::new(RichText::new(&errors).size(12.0).color(ERROR)).truncate())
-                    .on_hover_text(errors);
-            }
-        });
-        let current = self
-            .document_visible_row()
-            .filter(|row| row.is_provisional() || row.is_confirmed());
-        let mode = super::live_view::latest_mode(
-            current.is_none() && !self.asr_partial.trim().is_empty(),
-            current.is_some(),
-        );
-        let mut read_requested = live_latest_panel(
-            ui,
-            current,
-            &self.asr_partial,
-            mode,
-            layout,
-            (
-                self.settings.font_size,
-                self.settings.live_show_original,
-                self.settings.auto_scroll,
-            ),
-        );
-        ui.add_space(4.0);
-        ui.label(RichText::new("文章の履歴").size(14.0).color(SECONDARY));
-        let history_ids: Vec<u64> = self
-            .rows
-            .iter()
-            .filter(|row| history_row_visible(row, self.current_live_id))
-            .map(|row| row.record.id)
-            .collect();
-        self.live_view.prepare_history(self.settings.auto_scroll);
-        let area = egui::ScrollArea::vertical()
-            .id_salt("live-confirmed-history")
-            .auto_shrink([false, false])
-            .stick_to_bottom(self.settings.auto_scroll);
-        let output = area.show_viewport(ui, |ui, viewport| {
-            let origin = ui.cursor().top();
-            let mut geometry = Vec::with_capacity(history_ids.len());
-            if history_ids.is_empty() {
-                card().show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.label("まとまった文章がここに並びます。");
-                    secondary(ui, "YouTube字幕またはPC音声をオンにしてください。");
-                });
-            }
-            for row in self
+            ui.add_space(theme::SPACE_2);
+            let history_ids: Vec<u64> = self
                 .rows
                 .iter()
                 .filter(|row| history_row_visible(row, self.current_live_id))
-            {
-                let rect = ui
-                    .push_id(("history-row", row.record.id), |ui| {
-                        live_history_card(
-                            ui,
-                            row,
-                            self.settings.font_size,
-                            self.settings.live_show_original,
-                            &mut read_requested,
-                        )
-                    })
-                    .inner;
-                geometry.push(super::live_view::RowGeometry {
-                    id: row.record.id,
-                    top: rect.top() - origin,
-                    bottom: rect.bottom() - origin,
-                });
-                ui.add_space(4.0);
-            }
-            (geometry, viewport)
-        });
-        let pointer = ui.input(|input| input.pointer.hover_pos());
-        #[cfg(test)]
-        {
-            self.live_view.history_viewport_height = output
-                .inner_rect
-                .intersect(ui.clip_rect())
-                .height()
-                .max(0.0);
-            self.live_view.history_order = output.inner.0.iter().map(|row| row.id).collect();
-            self.live_view.history_geometry = output.inner.0.clone();
-            self.live_view.history_offset = output.state.offset.y;
-            self.live_view.history_rect = Some(output.inner_rect.intersect(ui.clip_rect()));
-        }
-        let hovering = pointer.is_some_and(|point| output.inner_rect.expand(18.0).contains(point));
-        let user_scrolling = hovering
-            && ui.input(|input| input.smooth_scroll_delta.y != 0.0 || input.pointer.any_down())
-            || output.state.velocity().y.abs() > 0.1;
-        if let Some(offset) = self.live_view.finish(
-            &output.inner.0,
-            output.state.offset.y,
-            output.inner_rect.height(),
-            output.content_size.y,
-            user_scrolling,
-        ) {
-            let mut state = output.state;
-            state.offset.y = offset;
-            state.store(ui.ctx(), output.id);
-            // Correct the sizing pass before presenting resized history content.
-            // If another widget used the extra pass, the stored offset still
-            // applies on the following repaint rather than accumulating drift.
-            ui.ctx().request_discard("keep live history row anchored");
-            ui.ctx().request_repaint();
-        }
-        if let Some(text) = read_requested.filter(|_| !ui.ctx().will_discard()) {
-            self.read_translation(text);
-        }
-    }
-    pub(super) fn files_ui(&mut self, ui: &mut egui::Ui) {
-        self.workspace_heading(ui, "ファイル・履歴");
-        secondary(
-            ui,
-            "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。",
-        );
-        ui.add_space(8.0);
-        self.languages(ui);
-        self.backend_notice(ui);
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    self.backend_ready && !self.file_busy,
-                    primary("ファイルを選んで翻訳"),
-                )
-                .clicked()
-            {
-                self.translate_file();
-            }
-            if self.file_busy {
-                ui.spinner();
-                if ui.add(standard("中止")).clicked() {
-                    self.file_cancel.store(true, Ordering::Relaxed);
-                }
-            }
-            if ui
-                .add_enabled(!self.rows.is_empty(), standard("タイムラインを書き出す"))
-                .clicked()
-            {
-                self.export_history();
-            }
-        });
-        ui.add_space(8.0);
-        ui.add_sized(
-            [ui.available_width(), 36.0],
-            egui::TextEdit::singleline(&mut self.search)
-                .hint_text("原文・訳文を検索")
-                .margin(8.0),
-        );
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let search = self.search.to_lowercase();
-            for row in self.rows.iter().rev() {
-                if !search.is_empty()
-                    && !row.record.source.to_lowercase().contains(&search)
-                    && !row.record.translation.to_lowercase().contains(&search)
-                {
-                    continue;
-                }
-                card().show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
+                .map(|row| row.record.id)
+                .collect();
+            live_region(ui, "live-history-heading", HISTORY_HEADING_HEIGHT, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("これまでの文章").size(12.0).color(TEXT_MUTED));
                     ui.label(
-                        RichText::new(format!("{} · {}", row.record.created_at, row.record.kind))
+                        RichText::new(format!("{}件", history_ids.len()))
                             .size(12.0)
-                            .color(SECONDARY),
+                            .color(TEXT_MUTED),
                     );
-                    ui.add(
-                        egui::Label::new(RichText::new(&row.record.translation).size(17.0))
-                            .wrap()
-                            .selectable(true),
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(if self.settings.auto_scroll {
+                                "新しい順に追従"
+                            } else {
+                                "読んでいる位置を保持"
+                            })
+                            .size(11.0)
+                            .color(TEXT_MUTED),
+                        );
+                    });
+                });
+            });
+            self.live_view.prepare_history(self.settings.auto_scroll);
+            let area = egui::ScrollArea::vertical()
+                .id_salt("live-confirmed-history")
+                .auto_shrink([false, false])
+                .stick_to_bottom(self.settings.auto_scroll);
+            let output = area.show_viewport(ui, |ui, viewport| {
+                let origin = ui.cursor().top();
+                let mut geometry = Vec::with_capacity(history_ids.len());
+                if history_ids.is_empty() {
+                    ui.add_space(theme::SPACE_4);
+                    ui.label(
+                        RichText::new("まとまった文章がここに並びます。")
+                            .size(16.0)
+                            .color(TEXT_SECONDARY),
                     );
                     ui.add(
                         egui::Label::new(
-                            RichText::new(&row.record.source)
-                                .size(15.0)
-                                .color(SECONDARY),
+                            RichText::new("YouTube字幕またはPC音声をオンにしてください。")
+                                .size(13.0)
+                                .color(TEXT_MUTED),
                         )
-                        .wrap()
-                        .selectable(true),
+                        .wrap(),
                     );
-                });
+                }
+                for row in self
+                    .rows
+                    .iter()
+                    .filter(|row| history_row_visible(row, self.current_live_id))
+                {
+                    let rect = ui
+                        .push_id(("history-row", row.record.id), |ui| {
+                            live_history_card(
+                                ui,
+                                row,
+                                self.settings.font_size,
+                                self.settings.live_show_original,
+                                &mut read_requested,
+                            )
+                        })
+                        .inner;
+                    geometry.push(super::live_view::RowGeometry {
+                        id: row.record.id,
+                        top: rect.top() - origin,
+                        bottom: rect.bottom() - origin,
+                    });
+                    ui.add_space(theme::SPACE_2);
+                    ui.separator();
+                    ui.add_space(theme::SPACE_2);
+                }
+                (geometry, viewport)
+            });
+            let pointer = ui.input(|input| input.pointer.hover_pos());
+            #[cfg(test)]
+            {
+                self.live_view.history_viewport_height = output
+                    .inner_rect
+                    .intersect(ui.clip_rect())
+                    .height()
+                    .max(0.0);
+                self.live_view.history_order = output.inner.0.iter().map(|row| row.id).collect();
+                self.live_view.history_geometry = output.inner.0.clone();
+                self.live_view.history_offset = output.state.offset.y;
+                self.live_view.history_rect = Some(output.inner_rect.intersect(ui.clip_rect()));
             }
-            if self.rows.is_empty() {
-                secondary(ui, "翻訳履歴はここに表示されます。");
+            let hovering =
+                pointer.is_some_and(|point| output.inner_rect.expand(18.0).contains(point));
+            let user_scrolling = hovering
+                && ui.input(|input| input.smooth_scroll_delta.y != 0.0 || input.pointer.any_down())
+                || output.state.velocity().y.abs() > 0.1;
+            if let Some(offset) = self.live_view.finish(
+                &output.inner.0,
+                output.state.offset.y,
+                output.inner_rect.height(),
+                output.content_size.y,
+                user_scrolling,
+            ) {
+                let mut state = output.state;
+                state.offset.y = offset;
+                state.store(ui.ctx(), output.id);
+                // Correct the sizing pass before presenting resized history content.
+                // If another widget used the extra pass, the stored offset still
+                // applies on the following repaint rather than accumulating drift.
+                ui.ctx().request_discard("keep live history row anchored");
+                ui.ctx().request_repaint();
+            }
+            if let Some(text) = read_requested.filter(|_| !ui.ctx().will_discard()) {
+                self.read_translation(text);
             }
         });
     }
+
+    pub(super) fn files_ui(&mut self, ui: &mut egui::Ui) {
+        content_column(ui, |ui| {
+            let ready = self.backend_ready && !self.file_busy;
+            let has_rows = !self.rows.is_empty();
+            let mut translate_file = false;
+            let mut cancel_file = false;
+            let mut export = false;
+            self.page_header(
+                ui,
+                "ファイル・履歴",
+                "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。",
+                |ui| {
+                    if ui
+                        .add_enabled(has_rows, standard("タイムラインを書き出す"))
+                        .clicked()
+                    {
+                        export = true;
+                    }
+                    if ui
+                        .add_enabled(ready, primary("ファイルを選んで翻訳"))
+                        .clicked()
+                    {
+                        translate_file = true;
+                    }
+                },
+            );
+            if translate_file {
+                self.translate_file();
+            }
+            if export {
+                self.export_history();
+            }
+            ui.add_space(theme::SPACE_2);
+            live_region(ui, "files-languages", 36.0, |ui| {
+                self.languages(ui);
+            });
+            self.backend_notice(ui);
+            if self.file_busy {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("ファイルを翻訳しています")
+                            .size(13.0)
+                            .color(TEXT_SECONDARY),
+                    );
+                    if ui.add(standard("中止")).clicked() {
+                        cancel_file = true;
+                    }
+                });
+                if cancel_file {
+                    self.file_cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            ui.add_space(theme::SPACE_2);
+            ui.add_sized(
+                [ui.available_width(), theme::CONTROL_H],
+                egui::TextEdit::singleline(&mut self.search)
+                    .hint_text("原文・訳文を検索")
+                    .margin(8.0),
+            );
+            ui.add_space(theme::SPACE_2);
+            egui::ScrollArea::vertical()
+                .id_salt("file-history")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let search = self.search.to_lowercase();
+                    let mut shown = 0usize;
+                    for row in self.rows.iter().rev() {
+                        if !search.is_empty()
+                            && !row.record.source.to_lowercase().contains(&search)
+                            && !row.record.translation.to_lowercase().contains(&search)
+                        {
+                            continue;
+                        }
+                        shown += 1;
+                        ui.add_space(theme::SPACE_2);
+                        ui.label(
+                            RichText::new(format!(
+                                "{} · {}",
+                                row.record.created_at, row.record.kind
+                            ))
+                            .size(12.0)
+                            .color(TEXT_MUTED),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&row.record.translation)
+                                    .size(theme::reading_size(self.settings.font_size - 2.0))
+                                    .color(TEXT),
+                            )
+                            .wrap()
+                            .selectable(true),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&row.record.source)
+                                    .size(14.0)
+                                    .color(TEXT_MUTED),
+                            )
+                            .wrap()
+                            .selectable(true),
+                        );
+                        ui.add_space(theme::SPACE_2);
+                        ui.separator();
+                    }
+                    if self.rows.is_empty() {
+                        ui.add_space(theme::SPACE_4);
+                        ui.label(theme::body("翻訳履歴はここに表示されます。"));
+                    } else if shown == 0 {
+                        ui.add_space(theme::SPACE_4);
+                        ui.label(
+                            RichText::new("一致する履歴がありません。")
+                                .size(15.0)
+                                .color(TEXT_SECONDARY),
+                        );
+                    }
+                });
+        });
+    }
+
     pub(super) fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let previous_asr = (
             self.settings.asr_backend.clone(),
@@ -1092,214 +1317,271 @@ impl App {
             self.settings.asr_device.clone(),
             self.settings.nemotron_context,
         );
-        egui::ScrollArea::vertical().show(ui, |ui| {
-        self.workspace_heading(ui, "設定");
-            secondary(ui, "翻訳と音声認識はこのPC内で処理します。");
-            ui.add_space(8.0);
-            card().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.label(RichText::new("翻訳モデル").strong());
-                ui.label(self.setup_summary());
-                secondary(ui, self.connection_label());
-                if ui.add(standard("モデルを変更")).clicked() {
-                    self.open_setup();
-                }
-            });
-            card().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                self.screen_ocr_settings_ui(ui);
-            });
-            card().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.label(RichText::new("音声認識").strong());
-                egui::ComboBox::from_id_salt("asr-backend")
-                    .selected_text(match self.settings.asr_backend.as_str() {
-                        "nemotron" => "Nemotron Speech · 英語 / 連続認識",
-                        "qwen" => "Qwen3-ASR · 多言語",
-                        _ => "Whisper · 多言語 / CPU",
-                    })
-                    .show_ui(ui, |ui| {
-                        if ui.selectable_value(&mut self.settings.asr_backend, "nemotron".into(), "Nemotron Speech · 英語 / 連続認識").changed() {
-                            self.settings.asr_model = "nvidia/nemotron-speech-streaming-en-0.6b".into();
-                            self.settings.asr_endpoint = "http://127.0.0.1:17864".into();
-                            self.settings.asr_device = "auto".into();
-                        }
-                        if ui
-                            .selectable_value(
-                                &mut self.settings.asr_backend,
-                                "qwen".into(),
-                                "Qwen3-ASR · 多言語",
-                            )
-                            .changed()
-                        {
-                            self.settings.asr_model = "Qwen/Qwen3-ASR-0.6B-hf".into();
-                            self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
-                            self.settings.asr_device = self
-                                .setup
-                                .recommendation
-                                .as_ref()
-                                .filter(|rec| rec.asr_backend == "qwen")
-                                .map(|rec| rec.asr_device.clone())
-                                .unwrap_or_else(|| "cpu".into());
-                        }
-                        if ui
-                            .selectable_value(
-                                &mut self.settings.asr_backend,
-                                "whisper".into(),
-                                "Whisper · 多言語 / CPU",
-                            )
-                            .changed()
-                        {
-                            self.settings.asr_model = "base".into();
-                            self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
-                            self.settings.asr_device = "cpu".into();
-                        }
-                    });
-                if self.settings.asr_backend == "nemotron" {
-                    secondary(ui, "英語専用です。続きの原文をつないで訳文を更新し、まとまった文章を保存します。");
-                    ui.horizontal_wrapped(|ui| {
-                        secondary(ui, "認識モード");
-                        ui.selectable_value(&mut self.settings.nemotron_context, 6, "精度優先 · 560ms");
-                        ui.selectable_value(&mut self.settings.nemotron_context, 1, "速さ優先 · 160ms");
-                    });
-                    secondary(ui, "上の時間はモデルの音声処理単位です。表示までの時間には、文の区切りと翻訳の待ち時間も含まれます。");
-                    ui.horizontal_wrapped(|ui| {
-                        secondary(ui, "実行方式");
-                        for (value, label) in [("auto", "自動"), ("vulkan", "GPU · Vulkan"), ("cpu", "CPU")] {
-                            ui.selectable_value(&mut self.settings.asr_device, value.into(), label);
-                        }
-                    });
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        secondary(ui, "音声の区切り");
-                        for (value, label) in [(2.0, "短め"), (3.0, "標準"), (4.0, "長め")] {
-                            ui.selectable_value(&mut self.settings.audio_seconds, value, label);
-                        }
-                    });
-                }
-                secondary(
-                    ui,
-                    if self.asr_ready {
-                        "音声認識の準備完了"
-                    } else {
-                        "初回は必要なモデルを準備します"
-                    },
-                );
-                if ui.add(standard("音声認識を準備")).clicked() {
-                    self.prepare_audio();
-                }
-            });
-            card().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                self.paragraph_tools_settings_ui(ui);
-            });
-            card().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                self.readout_settings_ui(ui);
-            });
-            card().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.label(RichText::new("YouTube字幕の接続").strong());
-                secondary(
-                    ui,
-                    "ブラウザーの字幕連携に、下の接続キーを設定してください。",
-                );
-                ui.label(RichText::new("接続キー").size(14.0));
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.settings.bridge_token)
-                            .password(true)
-                            .interactive(false)
-                            .desired_width(220.0),
-                    );
-                    if ui.add(standard("接続キーをコピー")).clicked()
-                        && let Ok(mut clipboard) = arboard::Clipboard::new()
-                    {
-                        let _ = clipboard.set_text(self.settings.bridge_token.clone());
-                    }
-                });
-                if ui.add(standard("字幕連携のフォルダーを開く")).clicked() {
-                    let mut command = Command::new("explorer.exe");
-                    command.arg(app_root().join("extension"));
-                    command_hidden(&mut command);
-                    let _ = command.spawn();
-                }
-                secondary(ui, "拡張機能の追加はブラウザーで行ってください。");
-            });
-            card().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.label(RichText::new("用語集と文脈").strong());
-                secondary(ui, "1行に「原語 = 訳語」を入力します。例: inference = 推論");
-                ui.add_sized(
-                    [ui.available_width(), 160.0],
-                    egui::TextEdit::multiline(&mut self.glossary_input)
-                        .desired_width(f32::INFINITY)
-                        .margin(12.0),
-                );
-                if let Err(error) = parse_glossary(&self.glossary_input) {
-                    ui.colored_label(ERROR, error);
-                }
-                ui.label(RichText::new("文脈（翻訳する文章の背景）").size(14.0));
-                ui.add_sized(
-                    [ui.available_width(), 88.0],
-                    egui::TextEdit::multiline(&mut self.settings.translation.context)
-                        .desired_width(f32::INFINITY)
-                        .margin(12.0),
-                );
-            });
-            card().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.label(RichText::new("ショートカットと保存先").strong());
-                secondary(ui, "範囲翻訳: Ctrl + Alt + T　 音声翻訳: Ctrl + Alt + L");
-                if ui.add(standard("保存フォルダーを開く")).clicked() {
-                    self.open_data_folder();
-                }
-            });
-            egui::CollapsingHeader::new("詳細（トラブル時）")
-                .default_open(false)
+        content_column(ui, |ui| {
+            self.page_header(ui, "設定", "翻訳と音声認識はこのPC内で処理します。", |_| {});
+            ui.add_space(theme::SPACE_2);
+            egui::ScrollArea::vertical()
+                .id_salt("settings-scroll")
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for (label, value) in [
-                        ("翻訳モデルのファイル", &mut self.settings.model),
-                        ("翻訳エンジン", &mut self.settings.llama_server),
-                        ("翻訳サーバー", &mut self.settings.translation.endpoint),
-                        ("音声認識モデル", &mut self.settings.asr_model),
-                        ("音声認識の実行環境", &mut self.settings.python),
-                        ("音声認識サーバー", &mut self.settings.asr_endpoint),
-                    ] {
-                        ui.label(RichText::new(label).size(14.0));
-                        ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
-                    }
-                    ui.label(
-                        RichText::new(format!("保存先: {}", data_root().display())).size(12.0),
-                    );
-                    if ui.add(standard("翻訳エンジンを起動")).clicked() {
-                        self.start_translation_server();
-                    }
-                });
-            if ui
-                .add_enabled(
-                    parse_glossary(&self.glossary_input).is_ok(),
-                    primary("設定を保存"),
-                )
-                .clicked()
-            {
-                match parse_glossary(&self.glossary_input) {
-                    Ok(glossary) => {
-                        self.settings.translation.glossary = glossary;
-                        match self.persist_preferences() {
-                            Ok(()) => {
-                                self.settings_load_failed = false;
-                                self.status = "設定を保存しました。".into();
+                    card().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.label(RichText::new("翻訳モデル").strong());
+                        ui.label(self.setup_summary());
+                        secondary(ui, self.connection_label());
+                        if ui.add(standard("モデルを変更")).clicked() {
+                            self.open_setup();
+                        }
+                    });
+                    ui.add_space(theme::SPACE_2);
+                    card().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        self.readout_settings_ui(ui);
+                    });
+                    ui.add_space(theme::SPACE_2);
+                    card().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.label(RichText::new("音声認識").strong());
+                        egui::ComboBox::from_id_salt("asr-backend")
+                            .selected_text(match self.settings.asr_backend.as_str() {
+                                "nemotron" => "Nemotron Speech · 英語 / 連続認識",
+                                "qwen" => "Qwen3-ASR · 多言語",
+                                _ => "Whisper · 多言語 / CPU",
+                            })
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.settings.asr_backend,
+                                        "nemotron".into(),
+                                        "Nemotron Speech · 英語 / 連続認識",
+                                    )
+                                    .changed()
+                                {
+                                    self.settings.asr_model =
+                                        "nvidia/nemotron-speech-streaming-en-0.6b".into();
+                                    self.settings.asr_endpoint = "http://127.0.0.1:17864".into();
+                                    self.settings.asr_device = "auto".into();
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut self.settings.asr_backend,
+                                        "qwen".into(),
+                                        "Qwen3-ASR · 多言語",
+                                    )
+                                    .changed()
+                                {
+                                    self.settings.asr_model = "Qwen/Qwen3-ASR-0.6B-hf".into();
+                                    self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
+                                    self.settings.asr_device = self
+                                        .setup
+                                        .recommendation
+                                        .as_ref()
+                                        .filter(|rec| rec.asr_backend == "qwen")
+                                        .map(|rec| rec.asr_device.clone())
+                                        .unwrap_or_else(|| "cpu".into());
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut self.settings.asr_backend,
+                                        "whisper".into(),
+                                        "Whisper · 多言語 / CPU",
+                                    )
+                                    .changed()
+                                {
+                                    self.settings.asr_model = "base".into();
+                                    self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
+                                    self.settings.asr_device = "cpu".into();
+                                }
+                            });
+                        secondary(
+                            ui,
+                            if self.asr_ready {
+                                "音声認識の準備完了"
+                            } else {
+                                "初回は必要なモデルを準備します"
+                            },
+                        );
+                        egui::CollapsingHeader::new("音声認識の詳細")
+                            .id_salt("asr-details")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                if self.settings.asr_backend == "nemotron" {
+                                    secondary(ui, "英語専用です。続きの原文をつないで訳文を更新し、まとまった文章を保存します。");
+                                    ui.horizontal_wrapped(|ui| {
+                                        secondary(ui, "認識モード");
+                                        ui.selectable_value(
+                                            &mut self.settings.nemotron_context,
+                                            6,
+                                            "精度優先 · 560ms",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.settings.nemotron_context,
+                                            1,
+                                            "速さ優先 · 160ms",
+                                        );
+                                    });
+                                    secondary(ui, "上の時間はモデルの音声処理単位です。表示までの時間には、文の区切りと翻訳の待ち時間も含まれます。");
+                                    ui.horizontal_wrapped(|ui| {
+                                        secondary(ui, "実行方式");
+                                        for (value, label) in [
+                                            ("auto", "自動"),
+                                            ("vulkan", "GPU · Vulkan"),
+                                            ("cpu", "CPU"),
+                                        ] {
+                                            ui.selectable_value(
+                                                &mut self.settings.asr_device,
+                                                value.into(),
+                                                label,
+                                            );
+                                        }
+                                    });
+                                } else {
+                                    ui.horizontal_wrapped(|ui| {
+                                        secondary(ui, "音声の区切り");
+                                        for (value, label) in
+                                            [(2.0, "短め"), (3.0, "標準"), (4.0, "長め")]
+                                        {
+                                            ui.selectable_value(
+                                                &mut self.settings.audio_seconds,
+                                                value,
+                                                label,
+                                            );
+                                        }
+                                    });
+                                }
+                            });
+                        ui.add_space(theme::SPACE_1);
+                        if ui.add(standard("音声認識を準備")).clicked() {
+                            self.prepare_audio();
+                        }
+                    });
+                    ui.add_space(theme::SPACE_2);
+                    card().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        self.screen_ocr_settings_ui(ui);
+                    });
+                    ui.add_space(theme::SPACE_2);
+                    card().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        self.paragraph_tools_settings_ui(ui);
+                    });
+                    ui.add_space(theme::SPACE_2);
+                    card().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.label(RichText::new("YouTube字幕の接続").strong());
+                        secondary(
+                            ui,
+                            "ブラウザーの字幕連携に、下の接続キーを設定してください。",
+                        );
+                        ui.label(RichText::new("接続キー").size(14.0));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.settings.bridge_token)
+                                    .password(true)
+                                    .interactive(false)
+                                    .desired_width(220.0),
+                            );
+                            if ui.add(standard("接続キーをコピー")).clicked()
+                                && let Ok(mut clipboard) = arboard::Clipboard::new()
+                            {
+                                let _ = clipboard.set_text(self.settings.bridge_token.clone());
                             }
-                            Err(error) => self.status = error.to_string(),
+                        });
+                        if ui.add(standard("字幕連携のフォルダーを開く")).clicked() {
+                            let mut command = Command::new("explorer.exe");
+                            command.arg(app_root().join("extension"));
+                            command_hidden(&mut command);
+                            let _ = command.spawn();
+                        }
+                        secondary(ui, "拡張機能の追加はブラウザーで行ってください。");
+                    });
+                    ui.add_space(theme::SPACE_2);
+                    egui::CollapsingHeader::new("用語集と文脈")
+                        .id_salt("glossary")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            secondary(ui, "1行に「原語 = 訳語」を入力します。例: inference = 推論");
+                            ui.add_sized(
+                                [ui.available_width(), 160.0],
+                                egui::TextEdit::multiline(&mut self.glossary_input)
+                                    .desired_width(f32::INFINITY)
+                                    .margin(12.0),
+                            );
+                            if let Err(error) = parse_glossary(&self.glossary_input) {
+                                ui.colored_label(ERROR, error);
+                            }
+                            ui.label(RichText::new("文脈（翻訳する文章の背景）").size(14.0));
+                            ui.add_sized(
+                                [ui.available_width(), 88.0],
+                                egui::TextEdit::multiline(&mut self.settings.translation.context)
+                                    .desired_width(f32::INFINITY)
+                                    .margin(12.0),
+                            );
+                        });
+                    egui::CollapsingHeader::new("ショートカットと保存先")
+                        .id_salt("shortcuts")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            secondary(ui, "範囲翻訳: Ctrl + Alt + T　 音声翻訳: Ctrl + Alt + L");
+                            if ui.add(standard("保存フォルダーを開く")).clicked() {
+                                self.open_data_folder();
+                            }
+                        });
+                    egui::CollapsingHeader::new("詳細（トラブル時）")
+                        .id_salt("diagnostics")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for (label, value) in [
+                                ("翻訳モデルのファイル", &mut self.settings.model),
+                                ("翻訳エンジン", &mut self.settings.llama_server),
+                                ("翻訳サーバー", &mut self.settings.translation.endpoint),
+                                ("音声認識モデル", &mut self.settings.asr_model),
+                                ("音声認識の実行環境", &mut self.settings.python),
+                                ("音声認識サーバー", &mut self.settings.asr_endpoint),
+                            ] {
+                                ui.label(RichText::new(label).size(14.0));
+                                ui.add(
+                                    egui::TextEdit::singleline(value)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            }
+                            ui.label(
+                                RichText::new(format!("保存先: {}", data_root().display()))
+                                    .size(12.0)
+                                    .color(TEXT_MUTED),
+                            );
+                            if ui.add(standard("翻訳エンジンを起動")).clicked() {
+                                self.start_translation_server();
+                            }
+                        });
+                    ui.add_space(theme::SPACE_3);
+                    if ui
+                        .add_enabled(
+                            parse_glossary(&self.glossary_input).is_ok(),
+                            primary("設定を保存"),
+                        )
+                        .clicked()
+                    {
+                        match parse_glossary(&self.glossary_input) {
+                            Ok(glossary) => {
+                                self.settings.translation.glossary = glossary;
+                                match self.persist_preferences() {
+                                    Ok(()) => {
+                                        self.settings_load_failed = false;
+                                        self.status = "設定を保存しました。".into();
+                                    }
+                                    Err(error) => self.status = error.to_string(),
+                                }
+                            }
+                            Err(error) => self.status = error,
                         }
                     }
-                    Err(error) => self.status = error,
-                }
-            }
-            if ui.add(standard("アプリを終了")).clicked() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+                    ui.add_space(theme::SPACE_4);
+                    if ui.add(standard("アプリを終了")).clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    ui.add_space(theme::SPACE_4);
+                });
         });
         if previous_asr
             != (
@@ -1322,6 +1604,137 @@ impl App {
             self.request_service_status();
         }
     }
+
+    fn rail(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("rail")
+            .exact_width(theme::RAIL_WIDTH)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(SURFACE)
+                    .inner_margin(egui::Margin::symmetric(8, 12)),
+            )
+            .show(ctx, |ui| {
+                #[cfg(test)]
+                {
+                    self.ui_probe.rail_width = theme::RAIL_WIDTH;
+                }
+                ui.vertical_centered(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("地元翻訳くん")
+                                .size(11.0)
+                                .strong()
+                                .color(TEXT),
+                        )
+                        .wrap(),
+                    );
+                    ui.add(egui::Label::new(RichText::new("translated by PLaMo").size(8.5)).wrap());
+                });
+                ui.add_space(theme::SPACE_4);
+                for (tab, label) in [
+                    (Tab::Text, "文章"),
+                    (Tab::Live, "ライブ"),
+                    (Tab::Files, "履歴"),
+                    (Tab::Settings, "設定"),
+                ] {
+                    let response = rail_item(ui, label, self.tab == tab);
+                    #[cfg(test)]
+                    {
+                        self.ui_probe.nav_heights.push(response.rect.height());
+                    }
+                    if response.clicked() {
+                        self.tab = tab;
+                    }
+                    ui.add_space(theme::SPACE_1);
+                }
+                // Pin the quick actions to the bottom so a shortage of height
+                // can never push the last control outside the window.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("翻訳はこのPC内で処理します")
+                                .size(10.0)
+                                .color(TEXT_MUTED),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(theme::SPACE_2);
+                    if !self.backend_ready
+                        && ui
+                            .add_sized([ui.available_width(), theme::CONTROL_H], standard("モデル"))
+                            .on_hover_text("翻訳モデルの準備を開きます")
+                            .clicked()
+                    {
+                        self.open_setup();
+                    }
+                    let audio_label = if self.audio_enabled {
+                        "音声停止"
+                    } else if self.audio_start_requested {
+                        "開始取消"
+                    } else {
+                        "音声翻訳"
+                    };
+                    let can_toggle =
+                        self.backend_ready || self.audio_enabled || self.audio_start_requested;
+                    if ui
+                        .add_enabled_ui(can_toggle, |ui| {
+                            ui.add_sized(
+                                [ui.available_width(), theme::CONTROL_H_LARGE],
+                                standard(audio_label),
+                            )
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        if self.audio_start_requested && !self.audio_enabled {
+                            self.audio_start_requested = false;
+                        } else if self.audio_enabled
+                            || (self.audio_environment_ready()
+                                && self.asr_ready
+                                && self.backend_ready)
+                        {
+                            self.toggle_audio();
+                        } else {
+                            self.audio_start_requested = true;
+                            self.prepare_audio();
+                        }
+                    }
+                    ui.add_space(theme::SPACE_1);
+                    let capture_ready = self.backend_ready && !self.capture_busy;
+                    if ui
+                        .add_enabled(
+                            capture_ready,
+                            egui::Button::new(RichText::new("範囲翻訳").size(13.0).color(TEXT))
+                                .min_size(Vec2::new(ui.available_width(), theme::CONTROL_H_LARGE)),
+                        )
+                        .on_hover_text("画面の一部を選んで翻訳します。Ctrl + Alt + T")
+                        .clicked()
+                    {
+                        self.capture(ctx);
+                    }
+                    if self.screens.len() > 1 {
+                        let mut index = self.screen_index;
+                        egui::ComboBox::from_id_salt("screen")
+                            .width(ui.available_width())
+                            .selected_text(format!("画面 {}", index + 1))
+                            .show_ui(ui, |ui| {
+                                for (position, screen) in self.screens.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut index,
+                                        position,
+                                        format!("{}: {}", position + 1, screen.name),
+                                    );
+                                }
+                            });
+                        self.screen_index = index;
+                    }
+                    ui.add_space(theme::SPACE_2);
+                    ui.separator();
+                });
+            });
+    }
+
     pub(super) fn render_ui(&mut self, ctx: &egui::Context) {
         if self.close_after_restore.is_some() {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -1353,8 +1766,8 @@ impl App {
             .min_height(28.0)
             .frame(
                 egui::Frame::new()
-                    .fill(SIDEBAR)
-                    .inner_margin(egui::Margin::symmetric(12, 6)),
+                    .fill(SURFACE)
+                    .inner_margin(egui::Margin::symmetric(theme::GUTTER as i8, 4)),
             )
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -1366,13 +1779,13 @@ impl App {
                         ))
                         .size(12.0)
                         .color(if self.backend_ready {
-                            MINT
+                            ACCENT
                         } else {
-                            SECONDARY
+                            TEXT_MUTED
                         }),
                     );
                     if !self.status.is_empty() {
-                        ui.label(RichText::new(&self.status).size(12.0).color(SECONDARY));
+                        ui.label(RichText::new(&self.status).size(12.0).color(TEXT_SECONDARY));
                     }
                     if !self.readout.error.is_empty() {
                         ui.label(RichText::new(&self.readout.error).size(12.0).color(ERROR));
@@ -1380,140 +1793,21 @@ impl App {
                         ui.label(
                             RichText::new(&self.readout.status)
                                 .size(12.0)
-                                .color(SECONDARY),
+                                .color(TEXT_SECONDARY),
                         );
                     }
                 });
             });
-        egui::SidePanel::left("sidebar")
-            .exact_width(200.0)
-            .resizable(false)
-            .frame(egui::Frame::new().fill(SIDEBAR).inner_margin(12.0))
-            .show(ctx, |ui| {
-                ui.add_space(12.0);
-                ui.label(
-                    RichText::new("地元翻訳くん")
-                        .size(20.0)
-                        .strong()
-                        .color(TEXT),
-                );
-                ui.label(
-                    RichText::new("translated by PLaMo")
-                        .size(12.0)
-                        .color(SECONDARY),
-                );
-                ui.add_space(24.0);
-                for (tab, label) in [
-                    (Tab::Text, "文章翻訳"),
-                    (Tab::Live, "ライブ翻訳"),
-                    (Tab::Files, "ファイル・履歴"),
-                    (Tab::Settings, "設定"),
-                ] {
-                    let selected = self.tab == tab;
-                    let response = ui.add_sized(
-                        [ui.available_width(), 36.0],
-                        egui::Button::new(RichText::new(label).size(14.0).color(TEXT))
-                            .fill(if selected {
-                                Color32::from_rgb(31, 38, 48)
-                            } else {
-                                SIDEBAR
-                            })
-                            .stroke(egui::Stroke::NONE),
-                    );
-                    if selected {
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                response.rect.min,
-                                Vec2::new(3.0, response.rect.height()),
-                            ),
-                            0.0,
-                            MINT,
-                        );
-                    }
-                    if response.clicked() {
-                        self.tab = tab;
-                    }
-                }
-                ui.add_space(16.0);
-                ui.separator();
-                ui.add_space(8.0);
-                if ui
-                    .add_sized([ui.available_width(), 36.0], standard("モデルの準備"))
-                    .clicked()
-                {
-                    self.open_setup();
-                }
-                ui.add_space(16.0);
-                if ui
-                    .add_enabled(
-                        self.backend_ready && !self.capture_busy,
-                        egui::Button::new("範囲を翻訳")
-                            .min_size(Vec2::new(ui.available_width(), 40.0)),
-                    )
-                    .clicked()
-                {
-                    self.capture(ctx);
-                }
-                ui.label(RichText::new("Ctrl + Alt + T").size(12.0).color(SECONDARY));
-                if !self.backend_ready {
-                    ui.label(
-                        RichText::new("モデルの準備が必要です")
-                            .size(12.0)
-                            .color(SECONDARY),
-                    );
-                }
-                if self.screens.len() > 1 {
-                    egui::ComboBox::from_id_salt("screen")
-                        .width(ui.available_width())
-                        .selected_text(format!("画面 {}", self.screen_index + 1))
-                        .show_ui(ui, |ui| {
-                            for (index, screen) in self.screens.iter().enumerate() {
-                                ui.selectable_value(
-                                    &mut self.screen_index,
-                                    index,
-                                    format!("{}: {}", index + 1, screen.name),
-                                );
-                            }
-                        });
-                }
-                ui.add_space(8.0);
-                let audio_label = if self.audio_enabled {
-                    "音声翻訳を停止"
-                } else if self.audio_start_requested {
-                    "開始を取り消す"
-                } else {
-                    "音声翻訳を開始"
-                };
-                let can_toggle =
-                    self.backend_ready || self.audio_enabled || self.audio_start_requested;
-                if ui
-                    .add_enabled_ui(can_toggle, |ui| {
-                        ui.add_sized([ui.available_width(), 40.0], standard(audio_label))
-                    })
-                    .inner
-                    .clicked()
-                {
-                    if self.audio_start_requested && !self.audio_enabled {
-                        self.audio_start_requested = false;
-                    } else if self.audio_enabled
-                        || (self.audio_environment_ready() && self.asr_ready && self.backend_ready)
-                    {
-                        self.toggle_audio();
-                    } else {
-                        self.audio_start_requested = true;
-                        self.prepare_audio();
-                    }
-                }
-                ui.label(RichText::new("Ctrl + Alt + L").size(12.0).color(SECONDARY));
-                ui.add_space(16.0);
-                ui.label(
-                    RichText::new("翻訳はこのPC内で処理します")
-                        .size(12.0)
-                        .color(SECONDARY),
-                );
-            });
+        self.rail(ctx);
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BG).inner_margin(24.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(CANVAS)
+                    .inner_margin(egui::Margin::symmetric(
+                        theme::GUTTER as i8,
+                        theme::SPACE_4 as i8,
+                    )),
+            )
             .show(ctx, |ui| match self.tab {
                 Tab::Text => self.text_ui(ui),
                 Tab::Live => self.live_ui(ui),
@@ -1523,7 +1817,6 @@ impl App {
             });
     }
 }
-
 #[cfg(test)]
 mod live_layout_tests {
     use super::*;
@@ -1921,5 +2214,107 @@ mod live_layout_tests {
             app.live_view.history_offset > tail + 50.0,
             "tail did not follow the next append"
         );
+    }
+
+    fn live_window(app: &mut App, width: f32, height: f32) -> egui::Context {
+        let context = egui::Context::default();
+        configure_theme(&context);
+        for frame in 0..3 {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, height),
+                    )),
+                    time: Some(frame as f64 / 60.0),
+                    ..Default::default()
+                },
+                |context| app.render_ui(context),
+            );
+        }
+        context
+    }
+
+    #[test]
+    fn minimum_window_keeps_32_point_targets_and_a_large_reading_font() {
+        let mut app = App::inert();
+        app.backend_ready = true;
+        app.tab = Tab::Live;
+        app.rows = vec![row(1, false, false)];
+        app.current_live_id = Some(1);
+        live_window(&mut app, 860.0, 620.0);
+        assert_eq!(app.ui_probe.rail_width, theme::RAIL_WIDTH);
+        assert!(app.ui_probe.nav_heights.len() >= 4);
+        assert!(
+            app.ui_probe.nav_heights.iter().all(|h| *h >= 32.0),
+            "navigation targets under 32 points: {:?}",
+            app.ui_probe.nav_heights
+        );
+        assert!(
+            app.ui_probe.reading_font >= 20.0,
+            "reading font {} is below 20 points",
+            app.ui_probe.reading_font
+        );
+        assert!(
+            app.live_view.history_viewport_height > 100.0,
+            "history viewport {} at 860x620",
+            app.live_view.history_viewport_height
+        );
+        let now = app.ui_probe.now_rect.unwrap();
+        assert!(
+            now.height() >= 150.0,
+            "in-progress area is only {} points",
+            now.height()
+        );
+    }
+
+    #[test]
+    fn growing_translation_never_moves_the_header_or_history_viewport() {
+        let mut app = App::inert();
+        app.backend_ready = true;
+        app.tab = Tab::Live;
+        let mut active = row(2, false, false);
+        active.record.translation = "短い訳。".into();
+        app.rows = vec![row(1, false, false), active];
+        app.current_live_id = Some(2);
+        live_window(&mut app, 1280.0, 800.0);
+        let now_before = app.ui_probe.now_rect.unwrap();
+        let history_before = app.live_view.history_rect.unwrap();
+        app.rows[1].record.translation = "段落全体を更新する長い日本語の訳文です。".repeat(40);
+        live_window(&mut app, 1280.0, 800.0);
+        let now_after = app.ui_probe.now_rect.unwrap();
+        let history_after = app.live_view.history_rect.unwrap();
+        assert!((now_before.top() - now_after.top()).abs() < 0.5);
+        assert!((now_before.height() - now_after.height()).abs() < 0.5);
+        assert!((history_before.top() - history_after.top()).abs() < 0.5);
+        assert!((history_before.height() - history_after.height()).abs() < 0.5);
+    }
+
+    #[test]
+    fn unconfirmed_paragraph_is_labelled_apart_from_confirmed_history() {
+        use plamo_translate::journal::{ParagraphMeta, ParagraphState};
+        let mut app = App::inert();
+        app.backend_ready = true;
+        app.tab = Tab::Live;
+        let mut confirmed = row(1, false, false);
+        confirmed.record.paragraph = Some(ParagraphMeta {
+            revision: 3,
+            state: ParagraphState::Final,
+            close_reason: None,
+        });
+        let mut open = row(2, false, false);
+        open.record.paragraph = Some(ParagraphMeta {
+            revision: 1,
+            state: ParagraphState::Open,
+            close_reason: None,
+        });
+        assert_eq!(paragraph_label(&confirmed), "確定した文章");
+        assert!(paragraph_label(&open).contains("更新中"));
+        app.rows = vec![confirmed, open];
+        app.current_live_id = Some(2);
+        assert!(!history_row_visible(&app.rows[1], Some(2)));
+        assert!(history_row_visible(&app.rows[0], Some(2)));
+        assert!(row_is_unfinished(&app.rows[1]));
+        assert!(!row_is_unfinished(&app.rows[0]));
     }
 }

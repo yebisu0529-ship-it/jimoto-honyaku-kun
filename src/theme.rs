@@ -41,6 +41,11 @@ pub const ERROR: Color32 = Color32::from_rgb(255, 146, 146);
 pub const WARNING: Color32 = Color32::from_rgb(244, 196, 124);
 pub const SUCCESS: Color32 = Color32::from_rgb(132, 222, 186);
 
+/// Source labels in the live timeline. Each stays readable on a raised surface.
+pub const SOURCE_YOUTUBE: Color32 = Color32::from_rgb(226, 160, 118);
+pub const SOURCE_AUDIO: Color32 = Color32::from_rgb(141, 180, 234);
+pub const SOURCE_OTHER: Color32 = Color32::from_rgb(186, 166, 224);
+
 // ---------------------------------------------------------------------------
 // Spacing, radius and control sizes (8-point scale with 4-point half steps).
 // ---------------------------------------------------------------------------
@@ -82,6 +87,8 @@ pub const SIZE_CAPTION: f32 = 12.0;
 pub const READING_MIN: f32 = 20.0;
 pub const READING_DEFAULT: f32 = 22.0;
 pub const READING_MAX: f32 = 28.0;
+/// The separate subtitle window is read from a distance, so it may grow further.
+pub const SUBTITLE_READING_MAX: f32 = 36.0;
 
 /// Clamp a user-chosen reading size into the supported range.
 pub fn reading_size(size: f32) -> f32 {
@@ -266,6 +273,9 @@ mod tests {
             ("success/surface", SUCCESS, SURFACE, 4.5),
             ("border/surface", BORDER_STRONG, SURFACE, 3.0),
             ("focus/canvas", ACCENT, CANVAS, 3.0),
+            ("youtube/raised", SOURCE_YOUTUBE, SURFACE_RAISED, 4.5),
+            ("audio/raised", SOURCE_AUDIO, SURFACE_RAISED, 4.5),
+            ("other-source/raised", SOURCE_OTHER, SURFACE_RAISED, 4.5),
         ] {
             let ratio = contrast_ratio(fg, bg);
             assert!(
@@ -294,6 +304,64 @@ mod tests {
                 .map(|font| font.size),
             Some(SIZE_BODY)
         );
+    }
+
+    /// Screens take sizes and colours from this module. A literal in a UI
+    /// source fails here with its file and line.
+    #[test]
+    fn ui_sources_take_type_and_colour_from_tokens() {
+        // UI_UX_BRIEF section 5: the credit keeps these sizes until it has a
+        // roomier place on screen.
+        let allowed = [("ui.rs", ".size(7.5)"), ("mini.rs", ".size(9.0)")];
+        for (file, source) in [
+            ("ui.rs", include_str!("ui.rs")),
+            ("mini.rs", include_str!("mini.rs")),
+            ("setup.rs", include_str!("setup.rs")),
+            ("screen_ocr.rs", include_str!("screen_ocr.rs")),
+            ("readout.rs", include_str!("readout.rs")),
+            ("subtitle_window.rs", include_str!("subtitle_window.rs")),
+            ("main.rs", include_str!("main.rs")),
+        ] {
+            for (index, line) in source.lines().enumerate() {
+                for pattern in [
+                    ".size(",
+                    "FontId::proportional(",
+                    "FontId::monospace(",
+                    "FontId::new(",
+                    "Color32::from_rgb(",
+                    "Color32::from_gray(",
+                    "Color32::from_rgba_premultiplied(",
+                    "Color32::from_rgba_unmultiplied(",
+                ] {
+                    for (at, _) in line.match_indices(pattern) {
+                        let rest = &line[at + pattern.len()..];
+                        let literal = rest.starts_with(|c: char| c.is_ascii_digit());
+                        let excused = line.contains("credit::")
+                            && allowed
+                                .iter()
+                                .any(|(name, text)| *name == file && line[at..].starts_with(text));
+                        assert!(
+                            !literal || excused,
+                            "{file}:{}: literal value after `{pattern}`; use a theme token",
+                            index + 1
+                        );
+                    }
+                }
+                // White is the identity tint for images, not a UI colour.
+                for (at, _) in line.match_indices("Color32::") {
+                    let name: String = line[at + "Color32::".len()..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_uppercase() || *c == '_')
+                        .collect();
+                    assert!(
+                        name.is_empty()
+                            || ["WHITE", "TRANSPARENT", "PLACEHOLDER"].contains(&name.as_str()),
+                        "{file}:{}: named colour Color32::{name}; use a theme token",
+                        index + 1
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -230,9 +230,9 @@ impl App {
     pub(super) fn setup_ui(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().id_salt("model-setup-scroll").show(ui,|ui|{
             ui.heading(if self.setup.completed{"翻訳の準備ができました"}else{"このPCに合うモデルを準備"});
-            ui.label(RichText::new("PCの空き容量を確認し、使い方に合う翻訳モデルを選びます。").color(Color32::from_rgb(163,173,186)));
+            ui.label(RichText::new("PCの空き容量を確認し、使い方に合う翻訳モデルを選びます。").color(theme::TEXT_SECONDARY));
             ui.add_space(16.0);
-            ui.horizontal_wrapped(|ui|{for(number,label,active)in [("1","PCを確認",self.setup.hardware.is_none()),("2","モデルを選択",self.setup.hardware.is_some()&&!self.setup.installing&&!self.setup.completed),("3","ダウンロード",self.setup.installing||self.setup.completed)]{ui.label(RichText::new(format!("{number}  {label}")).color(if active{ACCENT}else{Color32::from_rgb(163,173,186)}).strong());ui.add_space(12.0);}});
+            ui.horizontal_wrapped(|ui|{for(number,label,active)in [("1","PCを確認",self.setup.hardware.is_none()),("2","モデルを選択",self.setup.hardware.is_some()&&!self.setup.installing&&!self.setup.completed),("3","ダウンロード",self.setup.installing||self.setup.completed)]{ui.label(RichText::new(format!("{number}  {label}")).color(if active{ACCENT}else{theme::TEXT_SECONDARY}).strong());ui.add_space(12.0);}});
             ui.add_space(16.0);
             if self.setup.detecting {ui.horizontal(|ui|{ui.spinner();ui.label("GPU・メモリ・空き容量を確認しています…");});}
             if self.setup.hardware.is_none()&&!self.setup.detecting
@@ -240,7 +240,7 @@ impl App {
                 self.detect_capacity();
             }
             if let Some(hardware)=self.setup.hardware.clone() {
-                egui::Frame::new().fill(Color32::from_rgb(27,33,42)).stroke(egui::Stroke::new(1.0_f32,Color32::from_rgb(42,50,61))).corner_radius(8).inner_margin(16).show(ui,|ui|{
+                egui::Frame::new().fill(theme::SURFACE).stroke(egui::Stroke::new(1.0_f32,theme::BORDER)).corner_radius(8).inner_margin(16).show(ui,|ui|{
                     ui.set_min_width(ui.available_width());
                     let gpu=hardware.gpus.iter().find(|g|!g.is_software);
                     ui.horizontal_wrapped(|ui|{ui.label(RichText::new(gpu.map(|g|g.name.as_str()).unwrap_or("CPUで実行")).strong());
@@ -252,7 +252,7 @@ impl App {
                         if ui.add_enabled(!self.setup.installing,egui::Button::new("保存先を変更")).clicked() && let Some(folder)=rfd::FileDialog::new().pick_folder(){self.settings.model_store=folder.join("地元翻訳くん/engine").to_string_lossy().into();self.detect_capacity();}
                         let old=self.setup.force_cpu;ui.add_enabled_ui(!self.setup.installing,|ui|{ui::toggle(ui,&mut self.setup.force_cpu,"GPUを使わずCPUで実行する");});if old!=self.setup.force_cpu{self.recalculate_recommendation();}
                     });
-                    ui.label(RichText::new("PC情報は外部へ送信しません。").size(12.0).color(Color32::from_rgb(163,173,186)));
+                    ui.label(theme::caption("PC情報は外部へ送信しません。"));
                 });
             }
             ui.add_space(12.0);
@@ -262,13 +262,13 @@ impl App {
             if let Some(rec)=self.setup.recommendation.clone() {
                 let model=self.setup_model().unwrap_or_else(||rec.selected.clone());
                 ui.add_space(12.0);
-                egui::Frame::new().fill(Color32::from_rgb(27,42,40)).stroke(egui::Stroke::new(1.0_f32,ACCENT)).corner_radius(8).inner_margin(16).show(ui,|ui|{
+                egui::Frame::new().fill(theme::SURFACE).stroke(egui::Stroke::new(1.0_f32,ACCENT)).corner_radius(8).inner_margin(16).show(ui,|ui|{
                     ui.set_min_width(ui.available_width());
-                    ui.label(RichText::new(if model.id==rec.selected.id{"このPCへのおすすめ"}else{"選択中のモデル"}).color(ACCENT).size(14.0).strong());
-                    ui.label(RichText::new(&model.label).size(22.0).strong());
+                    ui.label(RichText::new(if model.id==rec.selected.id{"このPCへのおすすめ"}else{"選択中のモデル"}).color(ACCENT).size(theme::SIZE_LABEL).strong());
+                    ui.label(RichText::new(&model.label).size(theme::SIZE_TITLE).strong());
                     ui.horizontal_wrapped(|ui|{ui.label(format!("ダウンロード {}",bytes(model.bytes)));ui.label(format!("実行: {}",match rec.backend.as_str(){"cuda"=>"NVIDIA GPU","vulkan"=>"GPU","cpu"=>"CPU",_=>"CPU"}));ui.label(format!("必要な空き容量 約{}",bytes(2*model.bytes+6*1_073_741_824)));});
                     ui.label("空きメモリと同時利用の余裕から選んだ目安です。速度を実測した結果ではありません。");
-                    egui::CollapsingHeader::new("選んだ理由を見る").show(ui,|ui|{for reason in &rec.reasons{ui.label(reason);}for warning in &rec.warnings{ui.colored_label(Color32::from_rgb(229,180,84),warning);}});
+                    egui::CollapsingHeader::new("選んだ理由を見る").show(ui,|ui|{for reason in &rec.reasons{ui.label(reason);}for warning in &rec.warnings{ui.colored_label(theme::WARNING,warning);}});
                 });
                 ui.add_space(12.0);
                 egui::CollapsingHeader::new("ほかのモデルから選ぶ（14種類）").show(ui,|ui|{
@@ -279,7 +279,7 @@ impl App {
                                     self.setup.selected_id=alternative.model.id.clone();
                                     self.setup.cancelled=false;
                                 }
-                                if !alternative.fits {ui.label(RichText::new("容量などの条件を満たしません").size(12.0).color(Color32::from_rgb(229,180,84))).on_hover_text(alternative.reasons.join("\n"));}
+                                if !alternative.fits {ui.label(RichText::new("容量などの条件を満たしません").size(theme::SIZE_CAPTION).color(theme::WARNING)).on_hover_text(alternative.reasons.join("\n"));}
                             });
                         }
                     });
@@ -288,7 +288,7 @@ impl App {
                 ui.add_enabled_ui(!self.setup.installing, |ui| {
                     ui.checkbox(&mut self.settings.english_punctuation, "英語の文章区切り補助も準備する（追加で約86MB）");
                 });
-                ui.label(RichText::new("原文を段落につなぎ、意味の区切りで訳文をまとめます。補助モデルはApache 2.0です。").size(12.0));
+                ui.label(theme::caption("原文を段落につなぎ、意味の区切りで訳文をまとめます。補助モデルはApache 2.0です。"));
                 if self.paragraph_tools.preparing || self.paragraph_tools.loading {
                     ui.horizontal(|ui| { ui.spinner(); ui.label("英語の文章区切り補助を準備しています。翻訳は先に始められます。"); });
                     if let Some(p) = &self.paragraph_tools.progress { ui.label(&p.message); }
@@ -307,14 +307,14 @@ impl App {
                     if self.setup.cancelled {ui.label("中止しました。続きから再開するか、別のモデルを選べます。");}
                     let label=if self.setup.error.is_empty()&&!self.setup.cancelled{format!("ダウンロードして準備（{}）",bytes(model.bytes))}else{format!("続きから再開（{}）",bytes(model.bytes))};
                     if ui.add_enabled(self.setup_model_fits(),ui::primary(&label).min_size(Vec2::new(260.0,38.0))).clicked(){self.begin_install();}
-                    if !self.setup_model_fits(){ui.colored_label(Color32::from_rgb(229,180,84),"容量の条件を確認できません。空き容量を増やすか、別のモデルを選んでください。");}
+                    if !self.setup_model_fits(){ui.colored_label(theme::WARNING,"容量の条件を確認できません。空き容量を増やすか、別のモデルを選んでください。");}
                 }
                 ui.add_space(12.0);
                 ui.hyperlink_to("PLaMoのモデル利用条件", "https://plamo.preferredai.jp/info/plamo-community-license-ja");
-                ui.label(RichText::new("モデルはPFN公式、実行環境はllama.cpp公式から取得します。音声認識の追加準備はライブ画面から行えます。").size(12.0).color(Color32::from_rgb(163,173,186)));
+                ui.label(theme::caption("モデルはPFN公式、実行環境はllama.cpp公式から取得します。音声認識の追加準備はライブ画面から行えます。"));
             }
-            if !self.setup.error.is_empty(){ui.add_space(12.0);ui.colored_label(Color32::from_rgb(240,122,122),"準備を完了できませんでした。取得済みのデータは保持しています。");egui::CollapsingHeader::new("エラーの詳細").show(ui,|ui|{ui.label(&self.setup.error);});}
-            if !self.service_error.is_empty(){ui.colored_label(Color32::from_rgb(240,122,122),&self.service_error);}
+            if !self.setup.error.is_empty(){ui.add_space(12.0);ui.colored_label(theme::ERROR,"準備を完了できませんでした。取得済みのデータは保持しています。");egui::CollapsingHeader::new("エラーの詳細").show(ui,|ui|{ui.label(&self.setup.error);});}
+            if !self.service_error.is_empty(){ui.colored_label(theme::ERROR,&self.service_error);}
         });
     }
 }

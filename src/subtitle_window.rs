@@ -244,11 +244,18 @@ impl State {
             ui.checkbox(&mut self.always_on_top, "最前面");
             ui.checkbox(&mut self.show_source, "原文");
             ui.menu_button("表示", |ui| {
-                ui.label(RichText::new("文字サイズ").size(14.0).color(MUTED));
+                ui.label(
+                    RichText::new("文字サイズ")
+                        .size(theme::SIZE_LABEL)
+                        .color(MUTED),
+                );
                 ui.add(
-                    egui::Slider::new(&mut self.font_size, theme::READING_MIN..=36.0)
-                        .integer()
-                        .suffix(" pt"),
+                    egui::Slider::new(
+                        &mut self.font_size,
+                        theme::READING_MIN..=theme::SUBTITLE_READING_MAX,
+                    )
+                    .integer()
+                    .suffix(" pt"),
                 );
                 ui.checkbox(&mut self.follow_latest, "末尾に追従する");
             });
@@ -261,7 +268,7 @@ impl State {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 closed = ui
                     .add(
-                        egui::Button::new(RichText::new("閉じる").size(14.0))
+                        egui::Button::new(RichText::new("閉じる").size(theme::SIZE_LABEL))
                             .min_size(egui::vec2(72.0, theme::CONTROL_H)),
                     )
                     .clicked();
@@ -270,14 +277,14 @@ impl State {
         ui.add_space(6.0);
         let (label, color) = self.status();
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(label).size(14.0).color(color));
+            ui.label(RichText::new(label).size(theme::SIZE_LABEL).color(color));
             if let Some(view) = &self.view {
                 ui.label(
                     RichText::new(match view.stamp.kind {
                         SourceKind::Audio => "PC音声",
                         SourceKind::Caption => "YouTube字幕",
                     })
-                    .size(12.0)
+                    .size(theme::SIZE_CAPTION)
                     .color(MUTED),
                 );
             }
@@ -299,10 +306,17 @@ impl State {
                 ui.add(
                     egui::Label::new(
                         RichText::new(&view.target)
-                            .size(self.font_size.clamp(theme::READING_MIN, 36.0))
+                            .size(
+                                self.font_size
+                                    .clamp(theme::READING_MIN, theme::SUBTITLE_READING_MAX),
+                            )
                             .color(TEXT)
                             .line_height(Some(
-                                (self.font_size.clamp(theme::READING_MIN, 36.0) * 1.55).ceil(),
+                                (self
+                                    .font_size
+                                    .clamp(theme::READING_MIN, theme::SUBTITLE_READING_MAX)
+                                    * 1.55)
+                                    .ceil(),
                             )),
                     )
                     .wrap()
@@ -315,10 +329,12 @@ impl State {
                         .corner_radius(8)
                         .inner_margin(10)
                         .show(ui, |ui| {
-                            ui.label(RichText::new("原文").size(12.0).color(MUTED));
+                            ui.label(RichText::new("原文").size(theme::SIZE_CAPTION).color(MUTED));
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(&view.source).size(15.0).color(MUTED),
+                                    RichText::new(&view.source)
+                                        .size(theme::SIZE_BODY)
+                                        .color(MUTED),
                                 )
                                 .wrap()
                                 .selectable(true),
@@ -329,13 +345,13 @@ impl State {
                 ui.add_space(12.0);
                 ui.label(
                     RichText::new("まとまった訳文を待っています。")
-                        .size(20.0)
+                        .size(theme::SIZE_TITLE)
                         .color(TEXT),
                 );
                 ui.add_space(8.0);
                 ui.label(
                     RichText::new("YouTube字幕またはPC音声の訳文がここに表示されます。")
-                        .size(14.0)
+                        .size(theme::SIZE_LABEL)
                         .color(MUTED),
                 );
             }

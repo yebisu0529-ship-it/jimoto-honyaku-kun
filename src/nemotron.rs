@@ -946,6 +946,9 @@ mod tests {
                     capture(&engine);
                     thread::sleep(Duration::from_millis(10));
                 }
+                // Ends the mutable borrows held by the closure before the
+                // assertions below; the closure itself implements no Drop.
+                #[allow(clippy::drop_non_drop)]
                 drop(capture);
                 assert!(first_final.is_some());
                 assert!(last_final_end > 0);

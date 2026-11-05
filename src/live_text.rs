@@ -47,7 +47,7 @@ pub struct Policy {
     pub previous_pairs: usize,
     pub retries: u32,
     /// Final safety bound when neither sentence punctuation nor an acoustic
-    /// gap provides a useful boundary. The ordinary 360/180 limit is a trigger.
+    /// gap provides a useful boundary. The ordinary 900/450 limit is a trigger.
     pub absolute_max_chars: usize,
     pub acoustic_gap_ms: u64,
 }
@@ -57,21 +57,21 @@ impl Default for Policy {
         Self {
             debounce_ms: 1_200,
             retry_ms: 1_500,
-            idle_close_ms: 2_500,
+            idle_close_ms: 12_000,
             boundary_grace_ms: 0,
-            min_boundary_chars: 220,
+            min_boundary_chars: 600,
             min_request_chars: 1,
-            max_paragraph_chars: 360,
-            max_paragraph_ms: 20_000,
+            max_paragraph_chars: 900,
+            max_paragraph_ms: 60_000,
             max_pending_closed: 8,
             prior_context_chars: 1_600,
             max_fragment_chars: 16_000,
             audio_dedupe_entries: 256,
-            short_idle_close_ms: 6_000,
+            short_idle_close_ms: 15_000,
             short_chars: 40,
             short_words: 6,
-            min_boundary_cjk_chars: 110,
-            max_paragraph_cjk_chars: 180,
+            min_boundary_cjk_chars: 300,
+            max_paragraph_cjk_chars: 450,
             first_words: 6,
             first_cjk_chars: 12,
             interim_interval_ms: 2_000,
@@ -79,8 +79,8 @@ impl Default for Policy {
             interim_added_cjk_chars: 16,
             previous_pairs: 3,
             retries: 1,
-            absolute_max_chars: 1_200,
-            acoustic_gap_ms: 600,
+            absolute_max_chars: 3_000,
+            acoustic_gap_ms: 12_000,
         }
     }
 }
@@ -155,6 +155,7 @@ struct Paragraph {
     snapshot: ParagraphSnapshot,
     created_at: u64,
     changed_at: u64,
+    activity_at: u64,
     dirty_since: u64,
     retry_at: u64,
     sent: Option<(u64, bool)>,
@@ -192,6 +193,7 @@ impl Paragraph {
         }
         self.snapshot.revision = self.snapshot.revision.saturating_add(1);
         self.changed_at = now_ms;
+        self.activity_at = self.activity_at.max(now_ms);
         self.failures = 0;
     }
 }
@@ -226,7 +228,7 @@ impl Accumulator {
         policy.max_pending_closed = policy.max_pending_closed.max(1);
         policy.max_fragment_chars = policy.max_fragment_chars.max(policy.max_paragraph_chars);
         policy.audio_dedupe_entries = policy.audio_dedupe_entries.max(1);
-        policy.absolute_max_chars = policy.absolute_max_chars.clamp(1, 1_200);
+        policy.absolute_max_chars = policy.absolute_max_chars.clamp(1, 3_000);
         Self {
             stamp,
             policy,
@@ -277,6 +279,15 @@ impl Accumulator {
 
     pub fn is_inflight(&self) -> bool {
         self.inflight.is_some()
+    }
+
+    /// Playback/capture progress can keep an unchanged source alive without
+    /// dirtying it or requesting another translation. The caller must validate
+    /// activity (e.g. advancing, unpaused caption position) before calling this.
+    pub fn note_activity(&mut self, now_ms: u64) {
+        if let Some(p) = self.current.as_mut() {
+            p.activity_at = p.activity_at.max(now_ms);
+        }
     }
 
     pub fn push_audio(&mut self, fragment: AudioFragment, now_ms: u64) -> Result<PushOutcome> {
@@ -330,7 +341,8 @@ impl Accumulator {
         }
         let old = self.caption.clone();
         if old.as_ref().is_some_and(|w| w.text == text) {
-            // Heartbeats are not speech activity and must not defer idle close.
+            // Equal text alone is not proof of activity. The caller may have
+            // separately validated advancing playback via note_activity.
             return Ok(self.tick(now_ms));
         }
         let mut outcome = self.tick(now_ms);
@@ -525,6 +537,7 @@ impl Accumulator {
                     },
                     created_at: now_ms,
                     changed_at: now_ms,
+                    activity_at: now_ms,
                     dirty_since: now_ms,
                     retry_at: 0,
                     sent: None,
@@ -603,7 +616,7 @@ impl Accumulator {
     /// Perform idle/boundary/maximum-duration closure even without new input.
     pub fn tick(&mut self, now_ms: u64) -> PushOutcome {
         let idle_close = self.current.as_ref().is_some_and(|p| {
-            let idle = now_ms.saturating_sub(p.changed_at);
+            let idle = now_ms.saturating_sub(p.activity_at);
             let short = p.snapshot.text.chars().count() < self.policy.short_chars
                 || (cjk_count(&p.snapshot.text) == 0
                     && word_count(&p.snapshot.text) < self.policy.short_words);
@@ -662,7 +675,7 @@ impl Accumulator {
                         .next_back()
                         .is_some_and(|c| !c.is_whitespace())
                     && text[cut..].chars().next().is_some_and(char::is_whitespace)
-                    && word_count(&text[cut..]) >= self.policy.first_words.max(6)
+                    && self.has_right_context(&text[cut..])
             })
             .max();
         let Some(cut) = cut else {
@@ -690,19 +703,30 @@ impl Accumulator {
         }
     }
 
+    fn has_right_context(&self, tail: &str) -> bool {
+        if cjk_count(tail) > 0 {
+            cjk_count(tail) >= self.policy.first_cjk_chars.max(12)
+        } else {
+            word_count(tail) >= self.policy.first_words.max(6)
+        }
+    }
+
     fn close_at_boundary(&mut self, now_ms: u64) -> PushOutcome {
         let Some(p) = self.current.as_ref() else {
             return PushOutcome::default();
         };
         let chars = p.snapshot.text.chars().count();
-        let soft_trigger = chars >= self.soft_limit(&p.snapshot.text)
+        let trigger = (chars >= self.paragraph_limit(&p.snapshot.text)
+            || now_ms.saturating_sub(p.created_at) >= self.policy.max_paragraph_ms)
             && now_ms.saturating_sub(p.changed_at) >= self.policy.boundary_grace_ms;
-        let hard_trigger = chars >= self.paragraph_limit(&p.snapshot.text)
-            || now_ms.saturating_sub(p.created_at) >= self.policy.max_paragraph_ms;
-        if (soft_trigger || hard_trigger)
-            && let Some(cut) = last_sentence_boundary(&p.snapshot.text)
-            && (hard_trigger
-                || p.snapshot.text[..cut].chars().count() >= self.soft_limit(&p.snapshot.text))
+        if trigger
+            && let Some(cut) = sentence_boundaries(&p.snapshot.text)
+                .into_iter()
+                .rev()
+                .find(|&cut| {
+                    p.snapshot.text[..cut].chars().count() >= self.soft_limit(&p.snapshot.text)
+                        && self.has_right_context(&p.snapshot.text[cut..])
+                })
         {
             return self.split_current(cut, now_ms);
         }
@@ -1047,7 +1071,11 @@ impl Accumulator {
 }
 
 fn last_sentence_boundary(text: &str) -> Option<usize> {
-    let mut last = None;
+    sentence_boundaries(text).into_iter().last()
+}
+
+fn sentence_boundaries(text: &str) -> Vec<usize> {
+    let mut boundaries = Vec::new();
     for (i, c) in text.char_indices() {
         if !".!?。！？".contains(c) {
             continue;
@@ -1103,10 +1131,10 @@ fn last_sentence_boundary(text: &str) -> Option<usize> {
             .next()
             .is_none_or(|c| c.is_whitespace() || cjk(c))
         {
-            last = Some(end);
+            boundaries.push(end);
         }
     }
-    last
+    boundaries
 }
 
 fn cjk(c: char) -> bool {
@@ -1500,15 +1528,15 @@ mod tests {
         let mut a = Accumulator::new(stamp(SourceKind::Audio), policy);
         let first = "The first sentence is complete. Each description has about 150";
         let outcome = audio(&mut a, 1, first, 0);
-        assert_eq!(outcome.closed[0].text, "The first sentence is complete.");
-        assert_eq!(
-            a.current_snapshot().unwrap().text,
-            "Each description has about 150"
+        assert!(
+            outcome.closed.is_empty(),
+            "five-word continuation is not enough right context"
         );
         audio(&mut a, 2, "words in English.", 100);
         let all = a.pending_snapshots();
+        assert_eq!(all[0].text, "The first sentence is complete.");
         assert_eq!(
-            all[1].text,
+            a.current_snapshot().unwrap().text,
             "Each description has about 150 words in English."
         );
         audio(
@@ -1565,7 +1593,7 @@ mod tests {
     #[test]
     fn carried_span_clock_is_monotonic_and_crossing_request_is_rejected() {
         let policy = Policy {
-            min_boundary_chars: 1_000,
+            min_boundary_chars: 20,
             max_paragraph_chars: 1_000,
             max_paragraph_ms: 1_000,
             absolute_max_chars: 1_200,
@@ -1575,7 +1603,7 @@ mod tests {
         a.push_audio(
             AudioFragment {
                 id: 1,
-                text: "The first sentence ends here. The next sentence is growing".into(),
+                text: "The first sentence ends here. The next sentence is growing steadily".into(),
                 start_ms: 10_000,
                 end_ms: 12_000,
             },
@@ -1606,14 +1634,14 @@ mod tests {
         };
         let mut a = Accumulator::new(stamp(SourceKind::Caption), policy);
         a.push_caption(
-            "The first sentence is complete. The next exhibit is blue",
+            "The first sentence is complete. The next exhibit is blue today",
             0,
             1_000,
             0,
         )
         .unwrap();
         a.push_caption(
-            "The first sentence is complete. The next exhibit is green",
+            "The first sentence is complete. The next exhibit is green today",
             0,
             1_000,
             100,
@@ -1625,13 +1653,13 @@ mod tests {
         );
         assert_eq!(
             a.current_snapshot().unwrap().text,
-            "The next exhibit is green"
+            "The next exhibit is green today"
         );
-        a.push_caption("exhibit is green and open", 100, 1_100, 200)
+        a.push_caption("exhibit is green today and open", 100, 1_100, 200)
             .unwrap();
         assert_eq!(
             a.current_snapshot().unwrap().text,
-            "The next exhibit is green and open"
+            "The next exhibit is green today and open"
         );
     }
 
@@ -1642,6 +1670,7 @@ mod tests {
             max_paragraph_chars: 30,
             max_paragraph_ms: 100,
             absolute_max_chars: 120,
+            acoustic_gap_ms: 600,
             ..Policy::default()
         };
         let mut a = Accumulator::new(stamp(SourceKind::Audio), policy.clone());
@@ -1924,7 +1953,7 @@ mod tests {
         }
         closed.extend(a.close(60_000).closed);
         assert!(
-            (3..=6).contains(&closed.len()),
+            (1..=2).contains(&closed.len()),
             "{} paragraphs",
             closed.len()
         );
@@ -1935,7 +1964,211 @@ mod tests {
                 .sum::<usize>(),
             40 * 5
         );
-        assert!(closed.iter().all(|p| p.text.chars().count() <= 360));
+        assert!(closed.iter().all(|p| p.text.chars().count() <= 900));
+    }
+
+    #[test]
+    fn advancing_activity_extends_idle_without_changing_source_or_translation_work() {
+        let mut a = Accumulator::new(stamp(SourceKind::Caption), Policy::default());
+        a.push_caption(
+            "The library has enough words for an initial translation",
+            1_000,
+            4_000,
+            0,
+        )
+        .unwrap();
+        let request = a.next_request(0).unwrap();
+        assert!(matches!(
+            a.accept(&request, "coherent interim", 1),
+            Acceptance::Interim { .. }
+        ));
+        let before = a.current_snapshot().unwrap();
+        for now in [3_000, 7_000, 12_000, 18_000, 25_000, 30_000] {
+            a.note_activity(now);
+            assert!(a.tick(now).closed.is_empty());
+            assert_eq!(a.current_snapshot().unwrap(), before);
+            assert!(a.next_request(now).is_none());
+        }
+        assert!(a.tick(41_999).closed.is_empty());
+        assert_eq!(a.tick(42_000).closed.len(), 1);
+        assert_eq!(a.interim().unwrap().target, "coherent interim");
+    }
+
+    #[test]
+    fn elapsed_time_alone_does_not_finalize_a_short_cue_and_audio_gaps_stay_joined() {
+        let mut a = Accumulator::new(stamp(SourceKind::Caption), Policy::default());
+        a.push_caption("The rate remains around 4.1", 100, 3_100, 0)
+            .unwrap();
+        a.note_activity(60_000);
+        assert!(a.tick(60_000).closed.is_empty());
+        assert_eq!(
+            a.current_snapshot().unwrap().text,
+            "The rate remains around 4.1"
+        );
+        a.push_caption(
+            "percent while other conditions remain stable",
+            3_100,
+            6_100,
+            60_001,
+        )
+        .unwrap();
+        assert!(a.pending_snapshots().is_empty());
+        assert!(a.current_snapshot().unwrap().text.contains("4.1 percent"));
+        let mut b = Accumulator::new(stamp(SourceKind::Audio), Policy::default());
+        let source = "The library reviews the evidence carefully ".repeat(16);
+        b.push_audio(
+            AudioFragment {
+                id: 1,
+                text: source.clone(),
+                start_ms: 0,
+                end_ms: 1_000,
+            },
+            0,
+        )
+        .unwrap();
+        let outcome = b
+            .push_audio(
+                AudioFragment {
+                    id: 2,
+                    text: "and records the complete account".into(),
+                    start_ms: 8_000,
+                    end_ms: 9_000,
+                },
+                7_000,
+            )
+            .unwrap();
+        assert!(outcome.closed.is_empty());
+        assert!(
+            b.current_snapshot()
+                .unwrap()
+                .text
+                .ends_with("and records the complete account")
+        );
+    }
+
+    #[test]
+    #[ignore = "private actual-A text-only replay; requires explicit fixture and report paths"]
+    fn actual_a_caption_replay_opt_in() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct Cue {
+            id: u64,
+            start_ms: u64,
+            end_ms: u64,
+            text: String,
+        }
+        #[derive(Deserialize)]
+        struct Fixture {
+            video_id: String,
+            cues: Vec<Cue>,
+        }
+        fn drain(a: &mut Accumulator, now: u64, finals: &mut Vec<ParagraphSnapshot>) {
+            while let Some(request) = a.next_request(now) {
+                if request.snapshot.closed {
+                    finals.push(request.snapshot.clone());
+                }
+                assert!(!matches!(
+                    a.accept(&request, "text-only replay placeholder", now),
+                    Acceptance::Rejected
+                ));
+            }
+        }
+        fn replay(fixture: &Fixture, policy: Policy, activity: bool) -> Vec<ParagraphSnapshot> {
+            let mut a = Accumulator::new(
+                SourceStamp {
+                    video_id: fixture.video_id.clone(),
+                    ..stamp(SourceKind::Caption)
+                },
+                policy,
+            );
+            let origin = fixture.cues[0].start_ms;
+            let mut now = 0;
+            let mut finals = Vec::new();
+            for cue in &fixture.cues {
+                let arrival = cue.end_ms.saturating_sub(origin).max(now);
+                while now < arrival {
+                    now = (now + 250).min(arrival);
+                    if activity {
+                        a.note_activity(now);
+                    }
+                    assert!(a.tick(now).overflow.is_empty());
+                    drain(&mut a, now, &mut finals);
+                }
+                if activity {
+                    a.note_activity(now);
+                }
+                assert!(
+                    a.push_caption(&cue.text, cue.start_ms, cue.end_ms, now)
+                        .unwrap()
+                        .overflow
+                        .is_empty()
+                );
+                drain(&mut a, now, &mut finals);
+            }
+            assert!(a.close(now).overflow.is_empty());
+            drain(&mut a, now, &mut finals);
+            finals
+        }
+        let fixture_path =
+            std::env::var_os("JIMOTO_ACTUAL_A_FIXTURE").expect("JIMOTO_ACTUAL_A_FIXTURE");
+        let report = std::env::var_os("JIMOTO_ACTUAL_A_REPORT").expect("JIMOTO_ACTUAL_A_REPORT");
+        let raw = std::fs::read_to_string(fixture_path).unwrap();
+        let fixture: Fixture = serde_json::from_str(raw.trim_start_matches('\u{feff}')).unwrap();
+        let old = Policy {
+            idle_close_ms: 2_500,
+            short_idle_close_ms: 6_000,
+            min_boundary_chars: 220,
+            max_paragraph_chars: 360,
+            min_boundary_cjk_chars: 110,
+            max_paragraph_cjk_chars: 180,
+            max_paragraph_ms: 20_000,
+            absolute_max_chars: 1_200,
+            acoustic_gap_ms: 600,
+            ..Policy::default()
+        };
+        let baseline = replay(&fixture, old, false);
+        let revised = replay(&fixture, Policy::default(), true);
+        assert!(
+            (3..=6).contains(&revised.len()),
+            "{} paragraphs",
+            revised.len()
+        );
+        let expected = fixture
+            .cues
+            .iter()
+            .map(|cue| cue.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let actual = revised
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            actual.split_whitespace().eq(expected.split_whitespace()),
+            "Source words/order changed"
+        );
+        let protected = [
+            "4.1 percent",
+            "3.6 percent",
+            "3.2 and 2.4 percent",
+            "2 percent PCE inflation objective",
+        ];
+        for phrase in protected {
+            assert!(
+                revised.iter().any(|p| p.text.contains(phrase)),
+                "phrase split: {phrase}"
+            );
+        }
+        assert!(
+            revised
+                .windows(2)
+                .all(|pair| pair[0].end_ms <= pair[1].start_ms)
+        );
+        let as_json = |snapshots: &[ParagraphSnapshot]| {
+            snapshots.iter().map(|p|serde_json::json!({"key":p.key,"revision":p.revision,"source":p.text,"source_words":word_count(&p.text),"source_chars":p.text.chars().count(),"start_ms":p.start_ms,"end_ms":p.end_ms})).collect::<Vec<_>>()
+        };
+        std::fs::write(report,serde_json::to_vec_pretty(&serde_json::json!({"scope":"Only paragraph-tagged YouTube sources from explicitly specified actual-A journal","mode":"pure text replay; wall arrivals derived from source end times, advancing heartbeat simulated every 250ms; no model/GUI/audio/network","input_rows":fixture.cues.len(),"first_row_id":fixture.cues.first().unwrap().id,"last_row_id":fixture.cues.last().unwrap().id,"original_words":word_count(&expected),"original_chars":expected.chars().count(),"old_idle_policy_replay_paragraphs":baseline.len(),"new_policy_replay_paragraphs":revised.len(),"source_words_and_order_preserved":true,"protected_phrases_same_paragraph":protected,"source_clocks_monotonic":true,"old_policy_sources":as_json(&baseline),"new_policy_sources":as_json(&revised)})).unwrap()).unwrap();
     }
 
     #[test]
@@ -2027,8 +2260,8 @@ mod tests {
             0,
         )
         .unwrap();
-        assert!(a.tick(2_500).closed.is_empty());
-        assert_eq!(a.tick(6_000).closed.len(), 1);
+        assert!(a.tick(12_000).closed.is_empty());
+        assert_eq!(a.tick(15_000).closed.len(), 1);
         assert_eq!(a.pending_snapshots()[0].start_ms, 9_000_000);
     }
 

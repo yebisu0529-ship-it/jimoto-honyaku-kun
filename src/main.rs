@@ -35,6 +35,7 @@ mod screen_ocr;
 mod services;
 mod setup;
 mod streaming;
+mod subtitle_window;
 mod ui;
 mod window_mode;
 
@@ -54,6 +55,7 @@ struct Settings {
     audio_seconds: f32,
     nemotron_context: u32,
     show_original: bool,
+    live_show_original: bool,
     auto_scroll: bool,
     font_size: f32,
     template: String,
@@ -96,6 +98,7 @@ impl Default for Settings {
             audio_seconds: 3.0,
             nemotron_context: 6,
             show_original: true,
+            live_show_original: false,
             auto_scroll: true,
             font_size: 20.0,
             template: root
@@ -364,6 +367,7 @@ struct App {
     close_sent: bool,
     document: document::DocumentState,
     paragraph_tools: paragraph_tools::ToolsState,
+    subtitle_window: subtitle_window::State,
     overlay_text: String,
     overlay_source: String,
     overlay_time: Option<Instant>,
@@ -455,6 +459,7 @@ impl App {
             close_sent: false,
             document: document::DocumentState::default(),
             paragraph_tools: paragraph_tools::ToolsState::default(),
+            subtitle_window: subtitle_window::State::default(),
             overlay_text: String::new(),
             overlay_source: String::new(),
             overlay_time: None,
@@ -603,6 +608,7 @@ impl App {
             close_sent: false,
             document: document::DocumentState::default(),
             paragraph_tools: paragraph_tools::ToolsState::default(),
+            subtitle_window: subtitle_window::State::default(),
             overlay_text: String::new(),
             overlay_source: String::new(),
             overlay_time: None,
@@ -933,6 +939,7 @@ impl App {
         self.caption_enabled = enabled;
         self.caption_generation += 1;
         self.caption_paused = true;
+        self.document.caption_media_paused = true;
         self.last_caption = None;
         self.pending_caption = None;
         self.last_live_text.clear();
@@ -957,10 +964,10 @@ impl App {
             self.document_source_changed(plamo_translate::live_text::SourceKind::Caption);
         }
         self.caption_paused = caption.paused || caption.text.trim().is_empty();
+        self.document.caption_media_paused = caption.paused;
         if self.caption_paused {
-            if caption.paused {
-                self.document_close(plamo_translate::live_text::SourceKind::Caption);
-            }
+            // Pausing a player does not complete an unfinished sentence. Keep
+            // the paragraph for resume; explicit source OFF still flushes it.
             self.pending_caption = None;
             self.clear_overlay(Some(LiveKind::Caption));
         } else {
@@ -1050,6 +1057,16 @@ impl App {
         self.clear_overlay(None);
         self.archive_current_live(None);
         self.live_view = live_view::LiveViewState::default();
+        // A new timeline clears only the subtitle content, preserving the
+        // independent window and its presentation preferences.
+        let kind = self
+            .subtitle_window
+            .scope()
+            .map(|stamp| stamp.kind)
+            .unwrap_or(plamo_translate::live_text::SourceKind::Caption);
+        let stamp = self.document_stamp(kind);
+        self.subtitle_window
+            .update(Some(&stamp), None, subtitle_window::Playback::Stopped);
     }
     fn toggle_audio(&mut self) {
         if !self.audio_enabled && !self.asr_ready {
@@ -1703,6 +1720,8 @@ impl eframe::App for App {
         self.audio_setup_ui(ctx);
         self.readout_setup_ui(ctx);
         self.screen_ocr_setup_ui(ctx);
+        self.document_update_subtitle_window();
+        self.subtitle_window.show(ctx);
         self.selection_ui(ctx);
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q)) {
             self.request_app_close(ctx);

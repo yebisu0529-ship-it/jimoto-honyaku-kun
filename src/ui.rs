@@ -11,7 +11,7 @@ const SECONDARY: Color32 = Color32::from_rgb(163, 173, 186);
 const MINT: Color32 = Color32::from_rgb(60, 191, 164);
 const ERROR: Color32 = Color32::from_rgb(240, 122, 122);
 
-const LIVE_LATEST_HEIGHT: f32 = 224.0;
+const LIVE_LATEST_HEIGHT: f32 = 312.0;
 
 fn paragraph_label(row: &Row) -> &'static str {
     match row.record.paragraph.as_ref().map(|p| p.state) {
@@ -41,17 +41,24 @@ struct LiveLayout {
 }
 impl LiveLayout {
     fn for_height(height: f32) -> Self {
-        // Viewport geometry only: changing status/footer text must not switch
-        // modes. 800-point windows keep the established full layout.
-        let compact = height < 780.0;
+        // Viewport points, not physical pixels or changing source/status text.
+        // Grow with the window below 727 points without consuming the minimum
+        // history viewport; the common DPI-scaled window gets a full paragraph.
+        let compact = height < 840.0;
         Self {
-            latest_height: if compact { 152.0 } else { LIVE_LATEST_HEIGHT },
+            latest_height: if height < 727.0 {
+                152.0 + (height - 620.0).clamp(0.0, 107.0) * (108.0 / 107.0)
+            } else if compact {
+                260.0
+            } else {
+                LIVE_LATEST_HEIGHT
+            },
             status_height: if compact { 56.0 } else { 88.0 },
             compact,
         }
     }
     fn column_height(self) -> f32 {
-        (self.latest_height - 120.0).max(40.0)
+        (self.latest_height - 104.0).max(40.0)
     }
 }
 
@@ -103,111 +110,118 @@ fn live_latest_panel(
         .unwrap_or("");
     let mut read_requested = None;
     live_region(ui, "live-latest-panel", layout.latest_height, |ui| {
-        card().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.set_min_height(layout.latest_height - 32.0);
-            ui.horizontal(|ui| {
-                let width = (ui.available_width() - 176.0).max(40.0);
-                ui.add_sized(
-                    [width, 32.0],
-                    egui::Label::new(
-                        RichText::new("進行中の文章／最新の対訳")
-                            .strong()
-                            .size(15.0),
-                    )
-                    .truncate(),
-                );
-                if ui
-                    .add_enabled(!translation.is_empty(), standard("コピー"))
-                    .clicked()
-                    && let Ok(mut clipboard) = arboard::Clipboard::new()
-                {
-                    let _ = clipboard.set_text(translation.to_owned());
-                }
-                if ui
-                    .add_enabled(
-                        selected.is_some_and(Row::is_confirmed),
-                        standard("読み上げ"),
-                    )
-                    .clicked()
-                {
-                    read_requested = Some(translation.to_owned());
-                }
-            });
-            let state = match mode {
-                LatestMode::Draft => "認識途中 · 原文をつないで翻訳します".into(),
-                LatestMode::Current => selected
-                    .map(|row| {
-                        format!(
-                            "{} · {} · {}",
-                            clock(row.record.start_ms),
-                            row.record.kind,
-                            paragraph_label(row)
+        card()
+            .inner_margin(egui::Margin::symmetric(16, 12))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.set_min_width(ui.available_width());
+                ui.set_min_height(layout.latest_height - 24.0);
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - 176.0).max(40.0);
+                    ui.add_sized(
+                        [width, 32.0],
+                        egui::Label::new(
+                            RichText::new("進行中の文章／最新の対訳")
+                                .strong()
+                                .size(15.0),
                         )
-                    })
-                    .unwrap_or_default(),
-                LatestMode::Empty => "YouTube字幕またはPC音声の入力を待っています".into(),
-            };
-            ui.add(egui::Label::new(RichText::new(state).size(12.0).color(SECONDARY)).truncate());
-            let source = match mode {
-                LatestMode::Draft => draft.to_owned(),
-                LatestMode::Current if show_original => {
-                    let accepted = selected.map(|row| row.record.source.as_str()).unwrap_or("");
-                    if draft.trim().is_empty() {
-                        accepted.to_owned()
-                    } else {
-                        format!("{accepted}\n\n追加で認識中の原文（未確定）:\n{draft}")
+                        .truncate(),
+                    );
+                    if ui
+                        .add_enabled(!translation.is_empty(), standard("コピー"))
+                        .clicked()
+                        && let Ok(mut clipboard) = arboard::Clipboard::new()
+                    {
+                        let _ = clipboard.set_text(translation.to_owned());
                     }
-                }
-                LatestMode::Current => "原文は非表示です。".to_owned(),
-                LatestMode::Empty => "原文はここに表示されます。".to_owned(),
-            };
-            let error = selected.and_then(|row| row.error.as_deref());
-            let target = error.unwrap_or_else(|| {
-                if !translation.is_empty() {
-                    translation
-                } else if mode == LatestMode::Draft {
-                    "原文をつなぎながら訳文を更新します。"
-                } else if selected.is_some_and(|row| row.pending) {
-                    "翻訳しています…"
-                } else {
-                    "訳文はここに表示されます。"
-                }
-            });
-            let id = selected.map(|row| row.record.id).unwrap_or(0);
-            let show_source = show_original || mode == LatestMode::Draft;
-            ui.columns(if show_source { 2 } else { 1 }, |columns| {
-                if show_source {
+                    if ui
+                        .add_enabled(
+                            selected.is_some_and(Row::is_confirmed),
+                            standard("読み上げ"),
+                        )
+                        .clicked()
+                    {
+                        read_requested = Some(translation.to_owned());
+                    }
+                });
+                let state = match mode {
+                    LatestMode::Draft => "認識途中 · 原文をつないで翻訳します".into(),
+                    LatestMode::Current => selected
+                        .map(|row| {
+                            format!(
+                                "{} · {} · {}",
+                                clock(row.record.start_ms),
+                                row.record.kind,
+                                paragraph_label(row)
+                            )
+                        })
+                        .unwrap_or_default(),
+                    LatestMode::Empty => "YouTube字幕またはPC音声の入力を待っています".into(),
+                };
+                ui.add(
+                    egui::Label::new(RichText::new(state).size(12.0).color(SECONDARY)).truncate(),
+                );
+                let source = match mode {
+                    LatestMode::Draft => draft.to_owned(),
+                    LatestMode::Current if show_original => {
+                        let accepted = selected.map(|row| row.record.source.as_str()).unwrap_or("");
+                        if draft.trim().is_empty() {
+                            accepted.to_owned()
+                        } else {
+                            format!("{accepted}\n\n追加で認識中の原文（未確定）:\n{draft}")
+                        }
+                    }
+                    LatestMode::Current => "原文は非表示です。".to_owned(),
+                    LatestMode::Empty => "原文はここに表示されます。".to_owned(),
+                };
+                let error = selected.and_then(|row| row.error.as_deref());
+                let target = error.unwrap_or_else(|| {
+                    if !translation.is_empty() {
+                        translation
+                    } else if mode == LatestMode::Draft {
+                        "原文をつなぎながら訳文を更新します。"
+                    } else if selected.is_some_and(|row| row.pending) {
+                        "翻訳しています…"
+                    } else {
+                        "訳文はここに表示されます。"
+                    }
+                });
+                let id = selected.map(|row| row.record.id).unwrap_or(0);
+                let show_source = show_original || mode == LatestMode::Draft;
+                ui.columns(if show_source { 2 } else { 1 }, |columns| {
+                    if show_source {
+                        live_text_column(
+                            &mut columns[0],
+                            ("latest-source", id, mode == LatestMode::Draft),
+                            "原文",
+                            &source,
+                            (16.0, SECONDARY),
+                            auto_scroll
+                                && (mode == LatestMode::Draft
+                                    || selected
+                                        .is_some_and(|row| row.pending || row.is_provisional())),
+                            layout.column_height(),
+                        );
+                    }
                     live_text_column(
-                        &mut columns[0],
-                        ("latest-source", id, mode == LatestMode::Draft),
-                        "原文",
-                        &source,
-                        (16.0, SECONDARY),
+                        &mut columns[usize::from(show_source)],
+                        ("latest-target", id, false),
+                        if selected.is_some_and(Row::is_provisional) {
+                            "訳文（継続して更新）"
+                        } else {
+                            "訳文"
+                        },
+                        target,
+                        (
+                            font_size.clamp(18.0, 24.0),
+                            if error.is_some() { ERROR } else { TEXT },
+                        ),
                         auto_scroll
-                            && (mode == LatestMode::Draft
-                                || selected.is_some_and(|row| row.pending || row.is_provisional())),
+                            && selected.is_some_and(|row| row.pending || row.is_provisional()),
                         layout.column_height(),
                     );
-                }
-                live_text_column(
-                    &mut columns[usize::from(show_source)],
-                    ("latest-target", id, false),
-                    if selected.is_some_and(Row::is_provisional) {
-                        "訳文（継続して更新）"
-                    } else {
-                        "訳文"
-                    },
-                    target,
-                    (
-                        font_size.clamp(18.0, 24.0),
-                        if error.is_some() { ERROR } else { TEXT },
-                    ),
-                    auto_scroll && selected.is_some_and(|row| row.pending || row.is_provisional()),
-                    layout.column_height(),
-                );
+                });
             });
-        });
     });
     read_requested
 }
@@ -223,6 +237,13 @@ fn live_text_column(
 ) {
     let (size, color) = style;
     ui.label(RichText::new(label).size(12.0).color(MINT));
+    // Use the same explicit pitch for wrapping and viewport sizing. A sticky
+    // tail then lands on complete rows instead of clipping half the first row.
+    let row_height = ui
+        .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(size)))
+        .ceil();
+    let rows = ((height - 4.0) / row_height).floor().max(1.0);
+    let height = rows * row_height + 4.0;
     egui::ScrollArea::vertical()
         .id_salt(id)
         .max_height(height)
@@ -230,12 +251,25 @@ fn live_text_column(
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
         .auto_shrink([false, false])
         .stick_to_bottom(follow)
-        .show(ui, |ui| {
+        .show_viewport(ui, |ui, viewport| {
+            // ScrollArea deliberately expands its default clip by a few points.
+            // Prose aligned to a sticky tail must not reveal the previous row's
+            // glyph edge through that margin.
+            let visible = viewport.translate(ui.max_rect().min.to_vec2());
+            ui.set_clip_rect(ui.clip_rect().intersect(visible));
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add_space(2.0);
             ui.add(
-                egui::Label::new(RichText::new(text).size(size).color(color))
-                    .wrap()
-                    .selectable(true),
+                egui::Label::new(
+                    RichText::new(text)
+                        .size(size)
+                        .line_height(Some(row_height))
+                        .color(color),
+                )
+                .wrap()
+                .selectable(true),
             );
+            ui.add_space(2.0);
         });
 }
 
@@ -462,6 +496,13 @@ impl App {
                     .clicked()
                 {
                     self.enter_mini_view(ui.ctx());
+                }
+                if ui
+                    .add(standard("字幕ウィンドウ"))
+                    .on_hover_text("訳文を独立したウィンドウに表示します。ミニ表示と併用できます。")
+                    .clicked()
+                {
+                    self.subtitle_window.open = true;
                 }
             });
         });
@@ -760,8 +801,10 @@ impl App {
                 self.stop_readout();
             }
             ui.menu_button("表示", |ui| {
-                toggle(ui, &mut self.settings.show_original, "原文を表示");
-                toggle(ui, &mut self.settings.auto_scroll, "最新へ自動スクロール");
+                toggle(ui, &mut self.settings.live_show_original, "原文を表示");
+                toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール").on_hover_text(
+                    "上へスクロールしている間は位置を保ちます。OFFからONに戻すと末尾へ移動します。",
+                );
                 ui.add(
                     egui::Slider::new(&mut self.settings.font_size, 18.0..=24.0)
                         .integer()
@@ -789,6 +832,9 @@ impl App {
         });
         // Reserve status, notices and the stop control even while idle.
         live_region(ui, "live-status", layout.status_height, |ui| {
+            if layout.compact {
+                ui.spacing_mut().item_spacing.y = 4.0;
+            }
             let speaking = self.readout_busy();
             ui.horizontal(|ui| {
                 let status = if speaking {
@@ -873,7 +919,7 @@ impl App {
             layout,
             (
                 self.settings.font_size,
-                self.settings.show_original,
+                self.settings.live_show_original,
                 self.settings.auto_scroll,
             ),
         );
@@ -882,19 +928,14 @@ impl App {
         let history_ids: Vec<u64> = self
             .rows
             .iter()
-            .rev()
             .filter(|row| history_row_visible(row, self.current_live_id))
             .map(|row| row.record.id)
             .collect();
-        let follow_top = self
-            .live_view
-            .follow_top(&history_ids, self.settings.auto_scroll);
-        let mut area = egui::ScrollArea::vertical()
+        self.live_view.prepare_history(self.settings.auto_scroll);
+        let area = egui::ScrollArea::vertical()
             .id_salt("live-confirmed-history")
-            .auto_shrink([false, false]);
-        if follow_top {
-            area = area.vertical_scroll_offset(0.0);
-        }
+            .auto_shrink([false, false])
+            .stick_to_bottom(self.settings.auto_scroll);
         let output = area.show_viewport(ui, |ui, viewport| {
             let origin = ui.cursor().top();
             let mut geometry = Vec::with_capacity(history_ids.len());
@@ -908,7 +949,6 @@ impl App {
             for row in self
                 .rows
                 .iter()
-                .rev()
                 .filter(|row| history_row_visible(row, self.current_live_id))
             {
                 let rect = ui
@@ -917,7 +957,7 @@ impl App {
                             ui,
                             row,
                             self.settings.font_size,
-                            self.settings.show_original,
+                            self.settings.live_show_original,
                             &mut read_requested,
                         )
                     })
@@ -939,6 +979,10 @@ impl App {
                 .intersect(ui.clip_rect())
                 .height()
                 .max(0.0);
+            self.live_view.history_order = output.inner.0.iter().map(|row| row.id).collect();
+            self.live_view.history_geometry = output.inner.0.clone();
+            self.live_view.history_offset = output.state.offset.y;
+            self.live_view.history_rect = Some(output.inner_rect.intersect(ui.clip_rect()));
         }
         let hovering = pointer.is_some_and(|point| output.inner_rect.expand(18.0).contains(point));
         let user_scrolling = hovering
@@ -954,7 +998,7 @@ impl App {
             let mut state = output.state;
             state.offset.y = offset;
             state.store(ui.ctx(), output.id);
-            // Correct the sizing pass before presenting a newly prepended card.
+            // Correct the sizing pass before presenting resized history content.
             // If another widget used the extra pass, the stored offset still
             // applies on the following repaint rather than accumulating drift.
             ui.ctx().request_discard("keep live history row anchored");
@@ -1609,8 +1653,114 @@ mod live_layout_tests {
             );
             assert!((heights[0] - layout.latest_height).abs() < 16.0);
         }
-        assert_eq!(LiveLayout::for_height(800.0).latest_height, 224.0);
-        assert_eq!(LiveLayout::for_height(800.0).status_height, 88.0);
+        assert_eq!(LiveLayout::for_height(800.0).latest_height, 260.0);
+        assert_eq!(LiveLayout::for_height(800.0).status_height, 56.0);
+    }
+    #[test]
+    fn live_japanese_has_complete_rows_at_minimum_and_dpi_scaled_window_heights() {
+        use plamo_translate::journal::{ParagraphMeta, ParagraphState};
+        fn collect<'a>(
+            shape: &'a egui::epaint::Shape,
+            clip: egui::Rect,
+            out: &mut Vec<(egui::Rect, &'a egui::epaint::TextShape)>,
+        ) {
+            match shape {
+                egui::epaint::Shape::Text(text) => out.push((clip, text)),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, clip, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for height in [620.0, 727.0, 800.0, 880.0] {
+            for size in [18.0, 20.0, 24.0] {
+                let context = egui::Context::default();
+                configure_theme(&context);
+                let mut app = App::inert();
+                app.backend_ready = true;
+                app.asr_ready = true;
+                app.caption_enabled = true;
+                app.settings.font_size = size;
+                assert!(!app.settings.live_show_original);
+                let japanese:String = "文章全体の文脈を保ちながら原文の続きを受け取り、一つの段落として訳文を更新します。".chars().cycle().take(600).collect();
+                let mut active = row(2, false, false);
+                active.record.translation = japanese.clone();
+                active.record.paragraph = Some(ParagraphMeta {
+                    revision: 1,
+                    state: ParagraphState::Open,
+                    close_reason: None,
+                });
+                app.rows = vec![row(1, false, false), active];
+                app.current_live_id = Some(2);
+                let mut output = None;
+                for frame in 0..4 {
+                    let mut input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(if height == 620.0 { 860.0 } else { 1182.0 }, height),
+                        )),
+                        time: Some(frame as f64 / 60.0),
+                        ..Default::default()
+                    };
+                    input
+                        .viewports
+                        .entry(egui::ViewportId::ROOT)
+                        .or_default()
+                        .native_pixels_per_point = Some(1.25);
+                    output = Some(context.run(input, |ctx| app.render_ui(ctx)));
+                }
+                let output = output.unwrap();
+                let mut text_shapes = Vec::new();
+                for shape in &output.shapes {
+                    collect(&shape.shape, shape.clip_rect, &mut text_shapes);
+                }
+                let (clip, text) = text_shapes
+                    .iter()
+                    .find(|(_, text)| text.galley.job.text == japanese)
+                    .expect("progress Japanese was hidden");
+                let mut complete_rows = 0;
+                for row in &text.galley.rows {
+                    let bounds = row
+                        .visuals
+                        .mesh_bounds
+                        .translate(text.pos.to_vec2() + row.pos.to_vec2());
+                    if bounds.intersect(*clip).height() > 0.5 {
+                        assert!(
+                            bounds.top() >= clip.top() - 0.5
+                                && bounds.bottom() <= clip.bottom() + 0.5,
+                            "partial glyph row at height={height},font={size}: {bounds:?},clip={clip:?}"
+                        );
+                        complete_rows += 1;
+                    }
+                }
+                eprintln!(
+                    "live height={height} font={size}: {complete_rows} complete rows; history={}",
+                    app.live_view.history_viewport_height
+                );
+                if height >= 727.0 {
+                    assert!(
+                        complete_rows >= 4,
+                        "only {complete_rows} complete rows at {height}/{size}"
+                    );
+                }
+                assert!(
+                    app.live_view.history_viewport_height >= 100.0,
+                    "history at {height}/{size}"
+                );
+                for (clip, text) in text_shapes
+                    .iter()
+                    .filter(|(_, text)| text.galley.job.text == "進行中の文章／最新の対訳")
+                {
+                    let bounds = text.galley.mesh_bounds.translate(text.pos.to_vec2());
+                    assert!(
+                        bounds.top() >= clip.top() - 0.5 && bounds.bottom() <= clip.bottom() + 0.5,
+                        "progress toolbar clipped"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn minimum_live_window_keeps_more_than_one_hundred_pixels_of_history() {
@@ -1651,5 +1801,125 @@ mod live_layout_tests {
                 app.live_view.history_viewport_height
             );
         }
+    }
+    #[test]
+    fn chronological_history_stays_anchored_when_reading_and_returns_to_tail_on_enable() {
+        let context = egui::Context::default();
+        configure_theme(&context);
+        let mut app = App::inert();
+        app.backend_ready = true;
+        app.settings.live_show_original = false;
+        app.settings.auto_scroll = true;
+        app.rows = (1..=6)
+            .map(|id| {
+                let mut row = row(id, false, false);
+                row.record.translation = format!(
+                    "Paragraph {id}. {}",
+                    "A complete translated paragraph. ".repeat(16)
+                );
+                row
+            })
+            .collect();
+        let mut frame = 0;
+        let mut draw = |app: &mut App, events: Vec<egui::Event>| {
+            frame += 1;
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 880.0),
+                    )),
+                    time: Some(frame as f64 * 0.05),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.render_ui(ctx),
+            );
+        };
+        for _ in 0..5 {
+            draw(&mut app, vec![]);
+        }
+        assert_eq!(app.live_view.history_order, vec![1, 2, 3, 4, 5, 6]);
+        let tail = app.live_view.history_offset;
+        assert!(tail > 100.0);
+        let pointer = app.live_view.history_rect.unwrap().center();
+        draw(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 100.0),
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+        );
+        for _ in 0..25 {
+            draw(&mut app, vec![]);
+        }
+        let reading_offset = app.live_view.history_offset;
+        assert!(
+            reading_offset < tail - 1.0,
+            "wheel did not leave tail: {reading_offset} vs {tail}"
+        );
+        let mut appended = row(7, false, false);
+        appended.record.translation = "Newly finalized paragraph. ".repeat(16);
+        app.rows.push(appended);
+        for _ in 0..3 {
+            draw(&mut app, vec![]);
+        }
+        assert_eq!(app.live_view.history_order, vec![1, 2, 3, 4, 5, 6, 7]);
+        assert!(
+            (app.live_view.history_offset - reading_offset).abs() < 1.0,
+            "append moved reading position"
+        );
+        let offset = app.live_view.history_offset;
+        let anchor = *app
+            .live_view
+            .history_geometry
+            .iter()
+            .find(|row| row.bottom > offset)
+            .unwrap();
+        assert!(anchor.id > 1);
+        let anchor_screen_top = anchor.top - offset;
+        app.rows[0]
+            .record
+            .translation
+            .push_str(&"Earlier paragraph grew. ".repeat(20));
+        for _ in 0..3 {
+            draw(&mut app, vec![]);
+        }
+        let updated_anchor = app
+            .live_view
+            .history_geometry
+            .iter()
+            .find(|row| row.id == anchor.id)
+            .unwrap();
+        assert!(
+            (updated_anchor.top - app.live_view.history_offset - anchor_screen_top).abs() < 1.0,
+            "height change moved reading anchor"
+        );
+        app.settings.auto_scroll = false;
+        draw(&mut app, vec![]);
+        let old_offset = app.live_view.history_offset;
+        app.settings.auto_scroll = true;
+        for _ in 0..3 {
+            draw(&mut app, vec![]);
+        }
+        assert!(
+            app.live_view.history_offset > old_offset + 50.0,
+            "explicit enable failed to return to tail"
+        );
+        let tail = app.live_view.history_offset;
+        let mut appended = row(8, false, false);
+        appended.record.translation = "The following finalized paragraph. ".repeat(16);
+        app.rows.push(appended);
+        for _ in 0..3 {
+            draw(&mut app, vec![]);
+        }
+        assert!(
+            app.live_view.history_offset > tail + 50.0,
+            "tail did not follow the next append"
+        );
     }
 }

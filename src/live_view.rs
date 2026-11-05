@@ -37,19 +37,25 @@ struct Anchor {
 pub(super) struct LiveViewState {
     #[cfg(test)]
     pub(super) history_viewport_height: f32,
-    history_ids: std::collections::HashSet<u64>,
+    #[cfg(test)]
+    pub(super) history_order: Vec<u64>,
+    #[cfg(test)]
+    pub(super) history_geometry: Vec<RowGeometry>,
+    #[cfg(test)]
+    pub(super) history_offset: f32,
+    #[cfg(test)]
+    pub(super) history_rect: Option<eframe::egui::Rect>,
     anchors: Vec<Anchor>,
     auto_scroll: bool,
+    force_tail: bool,
     last_offset: Option<f32>,
 }
 impl LiveViewState {
-    /// Follow only an insertion or an explicit switch back to auto-follow.
-    /// Ordinary translation deltas and repeated renders do not force scrolling.
-    pub(super) fn follow_top(&mut self, ids: &[u64], auto_scroll: bool) -> bool {
-        let inserted = ids.iter().any(|id| !self.history_ids.contains(id));
-        let follow = auto_scroll && (inserted || !self.auto_scroll);
-        self.history_ids.clear();
-        self.history_ids.extend(ids.iter().copied());
+    /// Only an explicit enable (or first display) forces the tail. New rows
+    /// use ScrollArea's sticky tail and never interrupt a user reading above it.
+    pub(super) fn prepare_history(&mut self, auto_scroll: bool) -> bool {
+        let follow = auto_scroll && !self.auto_scroll;
+        self.force_tail = follow;
         self.auto_scroll = auto_scroll;
         if follow {
             self.anchors.clear();
@@ -69,7 +75,11 @@ impl LiveViewState {
         content_height: f32,
         user_scrolling: bool,
     ) -> Option<f32> {
-        let correction = if !self.auto_scroll {
+        let max = (content_height - viewport_height).max(0.0);
+        let force_tail = std::mem::take(&mut self.force_tail);
+        let correction = if force_tail {
+            ((offset - max).abs() > 0.5).then_some(max)
+        } else if !self.auto_scroll || offset < max - 0.5 {
             self.anchors
                 .iter()
                 .find_map(|anchor| {
@@ -84,17 +94,13 @@ impl LiveViewState {
                     } else {
                         0.0
                     };
-                    (row.top - anchor.screen_top + user_delta)
-                        .clamp(0.0, (content_height - viewport_height).max(0.0))
+                    (row.top - anchor.screen_top + user_delta).clamp(0.0, max)
                 })
                 .filter(|target| (*target - offset).abs() > 0.5)
         } else {
             None
         }
-        .or_else(|| {
-            let max = (content_height - viewport_height).max(0.0);
-            (offset > max + 0.5).then_some(max)
-        });
+        .or_else(|| (offset > max + 0.5).then_some(max));
         let effective = correction.unwrap_or(offset);
         self.anchors = rows
             .iter()
@@ -127,19 +133,46 @@ mod tests {
         assert!(history_visible(2, false, Some(4)));
     }
     #[test]
-    fn follow_moves_to_top_only_for_new_ids_or_explicit_enable() {
+    fn only_explicit_enable_forces_tail_and_appends_do_not_interrupt_reading() {
         let mut state = LiveViewState::default();
-        assert!(state.follow_top(&[3, 2, 1], true));
-        assert!(!state.follow_top(&[3, 2, 1], true));
-        assert!(!state.follow_top(&[2, 1], true));
-        assert!(state.follow_top(&[4, 2, 1], true));
-        assert!(!state.follow_top(&[5, 4, 2, 1], false));
-        assert!(state.follow_top(&[5, 4, 2, 1], true));
+        assert!(state.prepare_history(true));
+        assert_eq!(
+            state.finish(&[row(1, 0.0, 900.0)], 0.0, 300.0, 900.0, false),
+            Some(600.0)
+        );
+        assert!(!state.prepare_history(true));
+        assert_eq!(
+            state.finish(&[row(1, 0.0, 900.0)], 200.0, 300.0, 900.0, true),
+            None
+        );
+        assert!(!state.prepare_history(true));
+        assert_eq!(
+            state.finish(
+                &[row(1, 0.0, 900.0), row(2, 900.0, 1100.0)],
+                200.0,
+                300.0,
+                1100.0,
+                false
+            ),
+            None
+        );
+        assert!(!state.prepare_history(false));
+        assert!(state.prepare_history(true));
+        assert_eq!(
+            state.finish(
+                &[row(1, 0.0, 900.0), row(2, 900.0, 1100.0)],
+                200.0,
+                300.0,
+                1100.0,
+                false
+            ),
+            Some(800.0)
+        );
     }
     #[test]
     fn variable_height_prepend_and_removed_first_anchor_keep_reading_position() {
         let mut state = LiveViewState::default();
-        state.follow_top(&[3, 2, 1], false);
+        state.prepare_history(false);
         assert_eq!(
             state.finish(
                 &[
@@ -154,7 +187,7 @@ mod tests {
             ),
             None
         );
-        state.follow_top(&[4, 3, 2, 1], false);
+        state.prepare_history(false);
         assert_eq!(
             state.finish(
                 &[
@@ -171,7 +204,7 @@ mod tests {
             Some(320.0)
         );
         // Row 2 disappears; row 1 is the surviving second anchor.
-        state.follow_top(&[4, 3, 1], false);
+        state.prepare_history(false);
         assert_eq!(
             state.finish(
                 &[
@@ -190,7 +223,7 @@ mod tests {
     #[test]
     fn user_scroll_and_content_limits_override_anchor() {
         let mut state = LiveViewState::default();
-        state.follow_top(&[1], false);
+        state.prepare_history(false);
         state.finish(&[row(1, 0.0, 900.0)], 200.0, 300.0, 900.0, false);
         assert_eq!(
             state.finish(&[row(1, 0.0, 900.0)], 260.0, 300.0, 900.0, true),
@@ -203,6 +236,50 @@ mod tests {
         assert_eq!(
             state.finish(&[row(1, 0.0, 100.0)], 260.0, 300.0, 100.0, false),
             Some(0.0)
+        );
+    }
+    #[test]
+    fn reading_anchor_survives_older_paragraph_resize_while_auto_scroll_is_on() {
+        let mut state = LiveViewState::default();
+        state.prepare_history(true);
+        state.finish(
+            &[
+                row(1, 0.0, 200.0),
+                row(2, 200.0, 500.0),
+                row(3, 500.0, 900.0),
+            ],
+            600.0,
+            300.0,
+            900.0,
+            false,
+        );
+        state.prepare_history(true);
+        state.finish(
+            &[
+                row(1, 0.0, 200.0),
+                row(2, 200.0, 500.0),
+                row(3, 500.0, 900.0),
+            ],
+            250.0,
+            300.0,
+            900.0,
+            true,
+        );
+        state.prepare_history(true);
+        assert_eq!(
+            state.finish(
+                &[
+                    row(1, 0.0, 320.0),
+                    row(2, 320.0, 620.0),
+                    row(3, 620.0, 1020.0),
+                    row(4, 1020.0, 1200.0)
+                ],
+                250.0,
+                300.0,
+                1200.0,
+                false
+            ),
+            Some(370.0)
         );
     }
 }

@@ -76,7 +76,7 @@ impl App {
         self.pending_audio = None;
         self.pending_transcript = None;
         self.tab = Tab::Live;
-        self.status = "英語音声を連続して認識しています。確定した文を翻訳して保存します。".into();
+        self.status = "英語音声を連続して認識し、原文を文章につないで翻訳・保存しています。".into();
     }
 
     pub(super) fn process_streaming_audio(&mut self) {
@@ -153,6 +153,9 @@ impl App {
                 generation, text, ..
             } => {
                 if self.accept_streaming_result(generation) {
+                    if !text.trim().is_empty() {
+                        self.document_note_audio_activity();
+                    }
                     self.asr_partial = text;
                     self.archive_completed_audio_for_draft();
                 }

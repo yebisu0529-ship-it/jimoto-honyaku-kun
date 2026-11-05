@@ -167,6 +167,9 @@ impl App {
         }
         self.setup.installing = false;
         self.setup.completed = true;
+        if self.settings.english_punctuation {
+            self.prepare_paragraph_tools();
+        }
         self.setup.progress = None;
         self.asr_ready = false;
         self.asr_started_at = None;
@@ -282,6 +285,14 @@ impl App {
                     });
                 });
                 ui.add_space(16.0);
+                ui.add_enabled_ui(!self.setup.installing, |ui| {
+                    ui.checkbox(&mut self.settings.english_punctuation, "英語の文章区切り補助も準備する（追加で約86MB）");
+                });
+                ui.label(RichText::new("原文を段落につなぎ、意味の区切りで訳文をまとめます。補助モデルはApache 2.0です。").size(12.0));
+                if self.paragraph_tools.preparing || self.paragraph_tools.loading {
+                    ui.horizontal(|ui| { ui.spinner(); ui.label("英語の文章区切り補助を準備しています。翻訳は先に始められます。"); });
+                    if let Some(p) = &self.paragraph_tools.progress { ui.label(&p.message); }
+                }
                 if self.setup.installing {
                     if let Some(p)=&self.setup.progress {
                         ui.label(&p.message);

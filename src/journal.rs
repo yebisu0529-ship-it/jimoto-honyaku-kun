@@ -10,6 +10,24 @@ use std::{
 const PREFIX: &str = "plamo-timeline-";
 const LOAD_LIMIT: usize = 10_000;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParagraphState {
+    Open,
+    Closing,
+    Final,
+    Interrupted,
+    Failed,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ParagraphMeta {
+    pub revision: u64,
+    pub state: ParagraphState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_reason: Option<String>,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Record {
     pub id: u64,
@@ -20,6 +38,8 @@ pub struct Record {
     pub kind: String,
     pub video_id: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paragraph: Option<ParagraphMeta>,
 }
 
 pub struct Journal {
@@ -239,7 +259,48 @@ mod tests {
             kind: "youtube".into(),
             video_id: "example".into(),
             created_at: "2026-11-05T00:00:00Z".into(),
+            paragraph: None,
         }
+    }
+
+    #[test]
+    fn old_history_and_new_paragraph_revisions_round_trip_without_losing_source() {
+        let legacy = serde_json::to_value(record(1)).unwrap();
+        assert!(legacy.get("paragraph").is_none());
+        let recovered: Record = serde_json::from_value(legacy).unwrap();
+        assert!(recovered.paragraph.is_none());
+
+        let temp = Temp::new();
+        let journal = Journal::new(&temp.0).unwrap();
+        journal.append(&recovered).unwrap();
+        let mut draft = record(2);
+        draft.source = "The exhibition contains 150 words and a shared learning space".into();
+        draft.translation.clear();
+        draft.paragraph = Some(ParagraphMeta {
+            revision: 1,
+            state: ParagraphState::Open,
+            close_reason: None,
+        });
+        journal.append(&draft).unwrap();
+        let original = fs::read(&journal.path).unwrap();
+        draft.source.push_str(" that visitors can use together");
+        draft.translation = "展示には150語の説明があります。".into();
+        draft.paragraph = Some(ParagraphMeta {
+            revision: 2,
+            state: ParagraphState::Closing,
+            close_reason: None,
+        });
+        journal.append(&draft).unwrap();
+        assert!(fs::read(&journal.path).unwrap().starts_with(&original));
+        let (_, rows) = Journal::open_latest(&temp.0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].source, draft.source);
+        assert_eq!(rows[1].translation, draft.translation);
+        assert_eq!(
+            rows[1].paragraph.as_ref().unwrap().state,
+            ParagraphState::Closing
+        );
+        assert_eq!(rows[1].paragraph.as_ref().unwrap().revision, 2);
     }
 
     #[test]

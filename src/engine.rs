@@ -4,6 +4,7 @@ use reqwest::{Url, blocking::Client, redirect::Policy};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Read},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -297,8 +298,29 @@ impl Translator {
     }
 
     pub fn translate(&self, text: &str, on_partial: impl FnMut(&str)) -> Result<String> {
+        self.translate_inner(text, None, on_partial)
+    }
+
+    /// Live revisions can be superseded without publishing or completing old work.
+    pub fn translate_live(
+        &self,
+        text: &str,
+        cancelled: &AtomicBool,
+        on_partial: impl FnMut(&str),
+    ) -> Result<String> {
+        self.translate_inner(text, Some(cancelled), on_partial)
+    }
+
+    fn translate_inner(
+        &self,
+        text: &str,
+        cancelled: Option<&AtomicBool>,
+        on_partial: impl FnMut(&str),
+    ) -> Result<String> {
+        check_translation_cancelled(cancelled)?;
         let prompt = build_prompt(text, &self.options)?;
         let model = self.model()?;
+        check_translation_cancelled(cancelled)?;
         let max_tokens = (text.chars().count().saturating_mul(2) + 256).clamp(2048, 8192);
         let response = self
             .client
@@ -308,16 +330,38 @@ impl Translator {
                 "stop": ["<|plamo:tag|>", "<|plamo:bos|>"]}))
             .send()
             .context("翻訳サーバーへの接続が切れました。サーバーの状態を確認してください。")?;
-        parse_sse(BufReader::new(checked(response, "翻訳")?), on_partial)
+        parse_sse_interruptible(
+            BufReader::new(checked(response, "翻訳")?),
+            on_partial,
+            cancelled,
+        )
     }
 }
 
+#[cfg(test)]
 fn parse_sse(mut reader: impl BufRead, mut on_partial: impl FnMut(&str)) -> Result<String> {
+    parse_sse_interruptible(&mut reader, &mut on_partial, None)
+}
+
+fn check_translation_cancelled(cancelled: Option<&AtomicBool>) -> Result<()> {
+    ensure!(
+        !cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)),
+        "文章の翻訳を中止しました。"
+    );
+    Ok(())
+}
+
+fn parse_sse_interruptible(
+    mut reader: impl BufRead,
+    mut on_partial: impl FnMut(&str),
+    cancelled: Option<&AtomicBool>,
+) -> Result<String> {
     let mut output = String::new();
     let mut event = String::new();
     let mut terminal = false;
     let mut done = false;
     loop {
+        check_translation_cancelled(cancelled)?;
         let mut line = String::new();
         let count = reader
             .by_ref()
@@ -549,5 +593,29 @@ mod tests {
         ] {
             assert!(parse_sse(Cursor::new(s), |_| {}).is_err(), "{s}");
         }
+    }
+    #[test]
+    fn cancelled_live_revision_never_completes_or_emits_more_tokens() {
+        let cancelled = AtomicBool::new(true);
+        let stream = "data: {\"choices\":[{\"text\":\"old text\",\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        let mut partials = 0;
+        assert!(
+            parse_sse_interruptible(Cursor::new(stream), |_| partials += 1, Some(&cancelled))
+                .is_err()
+        );
+        assert_eq!(partials, 0);
+        cancelled.store(false, Ordering::Release);
+        assert!(
+            parse_sse_interruptible(
+                Cursor::new(stream),
+                |_| {
+                    partials += 1;
+                    cancelled.store(true, Ordering::Release);
+                },
+                Some(&cancelled)
+            )
+            .is_err()
+        );
+        assert_eq!(partials, 1);
     }
 }

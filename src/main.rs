@@ -25,12 +25,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod document;
+mod live_view;
+mod mini;
+mod paragraph_tools;
 mod preview;
 mod readout;
+mod screen_ocr;
 mod services;
 mod setup;
 mod streaming;
 mod ui;
+mod window_mode;
 
 const ACCENT: Color32 = Color32::from_rgb(60, 191, 164);
 
@@ -59,6 +65,10 @@ struct Settings {
     tts_speed: f32,
     tts_catch_up: bool,
     tts_max_speed: f32,
+    tts_voice_profile: String,
+    ocr_backend: String,
+    ocr_device: String,
+    english_punctuation: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -100,6 +110,10 @@ impl Default for Settings {
             tts_speed: 1.0,
             tts_catch_up: true,
             tts_max_speed: 1.8,
+            tts_voice_profile: "default-v1".into(),
+            ocr_backend: "windows".into(),
+            ocr_device: "auto".into(),
+            english_punctuation: true,
         }
     }
 }
@@ -160,6 +174,20 @@ enum Lane {
     Live,
 }
 enum Event {
+    ParagraphTools(paragraph_tools::ToolsEvent),
+    DocumentPunctuated {
+        row_id: u64,
+        request: plamo_translate::live_text::Request,
+        options: TranslationOptions,
+        result: std::result::Result<plamo_translate::punctuation::PunctuationResult, String>,
+    },
+    DocumentDone {
+        row_id: u64,
+        request: plamo_translate::live_text::Request,
+        options: TranslationOptions,
+        result: std::result::Result<String, String>,
+        elapsed: f32,
+    },
     Partial {
         id: u64,
         text: String,
@@ -171,7 +199,11 @@ enum Event {
         elapsed: f32,
         generation: u64,
     },
-    Ocr(std::result::Result<String, String>),
+    Ocr {
+        generation: u64,
+        result: std::result::Result<String, String>,
+    },
+    OcrSetup(screen_ocr::OcrSetupEvent),
     Screenshot(std::result::Result<(platform::Screen, image::RgbaImage), String>),
     Transcript {
         generation: u64,
@@ -198,11 +230,49 @@ enum Event {
     },
     Readout(readout::ReadoutEvent),
 }
+#[derive(Clone)]
 struct Row {
     record: Record,
     pending: bool,
     error: Option<String>,
     generation: u64,
+}
+impl Row {
+    fn recovered(mut record: Record) -> Self {
+        if let Some(paragraph) = &mut record.paragraph
+            && matches!(
+                paragraph.state,
+                plamo_translate::journal::ParagraphState::Open
+                    | plamo_translate::journal::ParagraphState::Closing
+            )
+        {
+            paragraph.state = plamo_translate::journal::ParagraphState::Interrupted;
+            paragraph.close_reason = Some("restarted".into());
+        }
+        Self {
+            record,
+            pending: false,
+            error: None,
+            generation: 0,
+        }
+    }
+    fn is_provisional(&self) -> bool {
+        self.record.paragraph.as_ref().is_some_and(|paragraph| {
+            matches!(
+                paragraph.state,
+                plamo_translate::journal::ParagraphState::Open
+                    | plamo_translate::journal::ParagraphState::Closing
+            )
+        })
+    }
+    fn is_confirmed(&self) -> bool {
+        !self.pending
+            && self.error.is_none()
+            && !self.record.translation.trim().is_empty()
+            && self.record.paragraph.as_ref().is_none_or(|paragraph| {
+                paragraph.state == plamo_translate::journal::ParagraphState::Final
+            })
+    }
 }
 struct Selection {
     screen: platform::Screen,
@@ -286,7 +356,14 @@ struct App {
     pending_caption: Option<bridge::Caption>,
     last_live_text: String,
     last_live_id: Option<u64>,
-    overlay: bool,
+    current_live_id: Option<u64>,
+    live_view: live_view::LiveViewState,
+    window_mode: window_mode::MiniWindowState,
+    mini: mini::MiniState,
+    close_after_restore: Option<Instant>,
+    close_sent: bool,
+    document: document::DocumentState,
+    paragraph_tools: paragraph_tools::ToolsState,
     overlay_text: String,
     overlay_source: String,
     overlay_time: Option<Instant>,
@@ -316,6 +393,7 @@ struct App {
     audio_progress: Option<plamo_translate::installer::Progress>,
     audio_cancel: Arc<AtomicBool>,
     readout: readout::ReadoutState,
+    ocr: screen_ocr::OcrState,
     native_window: Option<isize>,
 }
 
@@ -369,7 +447,14 @@ impl App {
             pending_caption: None,
             last_live_text: String::new(),
             last_live_id: None,
-            overlay: false,
+            current_live_id: None,
+            live_view: live_view::LiveViewState::default(),
+            window_mode: window_mode::MiniWindowState::default(),
+            mini: mini::MiniState::default(),
+            close_after_restore: None,
+            close_sent: false,
+            document: document::DocumentState::default(),
+            paragraph_tools: paragraph_tools::ToolsState::default(),
             overlay_text: String::new(),
             overlay_source: String::new(),
             overlay_time: None,
@@ -399,6 +484,7 @@ impl App {
             audio_progress: None,
             audio_cancel: Arc::new(AtomicBool::new(false)),
             readout: readout::ReadoutState::default(),
+            ocr: screen_ocr::OcrState::default(),
             native_window: None,
         }
     }
@@ -438,15 +524,7 @@ impl App {
             };
         let next_id = records.iter().map(|r| r.id).max().unwrap_or(0) + 1;
         let audio_offset_ms = max_audio_end(&records);
-        let rows = records
-            .into_iter()
-            .map(|record| Row {
-                record,
-                pending: false,
-                error: None,
-                generation: 0,
-            })
-            .collect();
+        let rows = records.into_iter().map(Row::recovered).collect();
         let mut hotkeys = None;
         if let Ok(manager) = global_hotkey::GlobalHotKeyManager::new() {
             use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -517,7 +595,14 @@ impl App {
             pending_caption: None,
             last_live_text: String::new(),
             last_live_id: None,
-            overlay: false,
+            current_live_id: None,
+            live_view: live_view::LiveViewState::default(),
+            window_mode: window_mode::MiniWindowState::default(),
+            mini: mini::MiniState::default(),
+            close_after_restore: None,
+            close_sent: false,
+            document: document::DocumentState::default(),
+            paragraph_tools: paragraph_tools::ToolsState::default(),
             overlay_text: String::new(),
             overlay_source: String::new(),
             overlay_time: None,
@@ -547,10 +632,13 @@ impl App {
             audio_progress: None,
             audio_cancel: Arc::new(AtomicBool::new(false)),
             readout: readout::ReadoutState::default(),
+            ocr: screen_ocr::OcrState::default(),
             native_window: None,
         };
         app.initialize_services();
         app.initialize_readout();
+        app.initialize_screen_ocr();
+        app.initialize_paragraph_tools();
         app
     }
     fn translate(
@@ -593,6 +681,7 @@ impl App {
                         String::new()
                     },
                     created_at: chrono::Local::now().to_rfc3339(),
+                    paragraph: None,
                 },
                 pending: true,
                 error: None,
@@ -602,8 +691,10 @@ impl App {
         if lane == Lane::Manual {
             self.manual_busy = Some(id);
             self.output.clear();
+            self.mini.clear_manual_failure();
         } else {
             self.live_busy = Some(id);
+            self.current_live_id = Some(id);
             if kind == "YouTube" {
                 self.last_live_id = Some(id);
                 self.last_live_text = text.clone();
@@ -639,12 +730,93 @@ impl App {
         }
         self.translate(self.input.clone(), Lane::Manual, 0, 0, "文章", None);
     }
+    fn enter_mini_view(&mut self, ctx: &egui::Context) {
+        if self.window_mode.is_mini() || self.close_after_restore.is_some() {
+            return;
+        }
+        if !self.backend_ready || self.tab == Tab::Setup {
+            self.status = "モデルの準備ができると、ミニ表示を使えます。".into();
+            return;
+        }
+        match self.tab {
+            Tab::Text => self.mini.activate_manual(&self.rows),
+            _ => self.mini.show_live(),
+        }
+        let info = ctx.input(|input| input.viewport().clone());
+        self.window_mode.observe_with_zoom(&info, ctx.zoom_factor());
+        for command in self.window_mode.enter(&info) {
+            ctx.send_viewport_cmd(command);
+        }
+        ctx.request_repaint();
+    }
+    fn restore_normal_view(&mut self, ctx: &egui::Context) {
+        let was_mini = self.window_mode.is_mini();
+        let info = ctx.input(|input| input.viewport().clone());
+        self.window_mode.observe_with_zoom(&info, ctx.zoom_factor());
+        for command in self.window_mode.leave(&info) {
+            ctx.send_viewport_cmd(command);
+        }
+        if was_mini && self.mini.is_manual() {
+            self.tab = Tab::Text;
+        }
+        ctx.request_repaint();
+    }
+    fn request_app_close(&mut self, ctx: &egui::Context) {
+        if self.close_after_restore.is_some() {
+            if !self.close_sent {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+            return;
+        }
+        if self.window_mode.is_mini() {
+            // Restore normal geometry before eframe persists window placement.
+            // No extra window or hidden application survives a native close.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.restore_normal_view(ctx);
+            self.set_caption_enabled(false);
+            self.audio_start_requested = false;
+            self.stop_audio();
+            self.stop_readout();
+            self.document_shutdown();
+            self.close_after_restore = Some(Instant::now());
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+    fn update_window_mode(&mut self, ctx: &egui::Context) {
+        let info = ctx.input(|input| input.viewport().clone());
+        self.window_mode.observe_with_zoom(&info, ctx.zoom_factor());
+        self.mini.observe_sources(
+            self.caption_enabled,
+            self.audio_enabled || self.audio_start_requested,
+        );
+        if info.close_requested() {
+            if self.close_after_restore.is_some() && !self.close_sent {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            } else if self.window_mode.is_mini() {
+                self.request_app_close(ctx);
+            }
+        }
+        if let Some(started) = self.close_after_restore {
+            if !self.close_sent
+                && (self.window_mode.normal_geometry_restored()
+                    || started.elapsed() >= Duration::from_secs(1))
+            {
+                self.close_sent = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(16));
+            }
+        }
+    }
     fn capture(&mut self, ctx: &egui::Context) {
         if self.capture_busy || self.selection.is_some() {
             return;
         }
+        self.mini.clear_manual_failure();
         let Some(screen) = self.screens.get(self.screen_index).cloned() else {
             self.status = "取得できる画面がありません。".into();
+            self.mini.manual_failed();
             return;
         };
         self.capture_busy = true;
@@ -667,15 +839,6 @@ impl App {
             .map_err(|e| e.to_string());
             let _ = tx.send(Event::Screenshot(result));
             ctx.request_repaint();
-        });
-    }
-    fn do_ocr(&mut self, image: image::RgbaImage) {
-        self.status = "画像から文字を読み取っています…".into();
-        let language = self.settings.translation.source_lang.clone();
-        let tx = self.tx.clone();
-        thread::spawn(move || {
-            let result = platform::ocr(&image, &language).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Event::Ocr(result));
         });
     }
     fn source_generation(&self, kind: &str) -> u64 {
@@ -713,6 +876,29 @@ impl App {
             self.overlay_kind = None;
         }
     }
+    fn archive_current_live(&mut self, kind: Option<LiveKind>) {
+        if kind.is_none()
+            || self.current_live_id.is_some_and(|id| {
+                self.rows
+                    .iter()
+                    .find(|r| r.record.id == id)
+                    .is_some_and(|r| LiveKind::from_record(&r.record.kind) == kind)
+            })
+        {
+            self.current_live_id = None;
+        }
+    }
+    fn archive_completed_audio_for_draft(&mut self) {
+        if !self.asr_partial.is_empty()
+            && self.current_live_id.is_some_and(|id| {
+                self.rows
+                    .iter()
+                    .any(|r| r.record.id == id && r.record.kind == "音声" && r.is_confirmed())
+            })
+        {
+            self.current_live_id = None;
+        }
+    }
     fn audio_clock_ms(&self) -> u64 {
         self.audio_offset_ms.saturating_add(
             self.audio
@@ -722,6 +908,7 @@ impl App {
         )
     }
     fn stop_audio(&mut self) {
+        self.document_close(plamo_translate::live_text::SourceKind::Audio);
         self.audio_offset_ms = self
             .audio_clock_ms()
             .max(max_audio_end(self.rows.iter().map(|r| &r.record)));
@@ -734,10 +921,14 @@ impl App {
         self.pending_transcript = None;
         self.clear_streaming_audio();
         self.clear_overlay(Some(LiveKind::Audio));
+        self.archive_current_live(Some(LiveKind::Audio));
     }
     fn set_caption_enabled(&mut self, enabled: bool) {
         if self.caption_enabled == enabled {
             return;
+        }
+        if !enabled {
+            self.document_close(plamo_translate::live_text::SourceKind::Caption);
         }
         self.caption_enabled = enabled;
         self.caption_generation += 1;
@@ -747,6 +938,7 @@ impl App {
         self.last_live_text.clear();
         self.last_live_id = None;
         self.clear_overlay(Some(LiveKind::Caption));
+        self.archive_current_live(Some(LiveKind::Caption));
     }
     fn accept_caption(&mut self, caption: bridge::Caption) {
         if !self.caption_enabled {
@@ -755,18 +947,24 @@ impl App {
         if caption.video_id != self.video_id || caption.epoch != self.caption_epoch {
             self.caption_generation += 1;
             self.clear_overlay(Some(LiveKind::Caption));
+            self.archive_current_live(Some(LiveKind::Caption));
             self.pending_caption = None;
             self.last_live_id = None;
             self.last_live_text.clear();
             self.last_caption = None;
             self.video_id = caption.video_id.clone();
             self.caption_epoch = caption.epoch;
+            self.document_source_changed(plamo_translate::live_text::SourceKind::Caption);
         }
         self.caption_paused = caption.paused || caption.text.trim().is_empty();
         if self.caption_paused {
+            if caption.paused {
+                self.document_close(plamo_translate::live_text::SourceKind::Caption);
+            }
             self.pending_caption = None;
             self.clear_overlay(Some(LiveKind::Caption));
         } else {
+            self.document_close(plamo_translate::live_text::SourceKind::Audio);
             self.last_caption = Some(Instant::now());
             self.pending_caption = Some(caption);
             self.pending_transcript = None;
@@ -796,25 +994,28 @@ impl App {
             self.streaming_transcripts.clear();
             return None;
         }
-        if self.pending_transcript.as_ref().is_some_and(|p| {
-            p.generation != self.audio_generation
-                || self.audio_clock_ms().saturating_sub(p.end_ms) > MAX_AUDIO_AGE_MS
-        }) {
+        if !self.audio_enabled {
+            return None;
+        }
+        while self
+            .streaming_transcripts
+            .front()
+            .is_some_and(|p| p.generation != self.audio_generation)
+        {
+            self.streaming_transcripts.pop_front();
+        }
+        if self
+            .pending_transcript
+            .as_ref()
+            .is_some_and(|p| p.generation != self.audio_generation)
+        {
             self.pending_transcript = None;
         }
-        if self.audio_enabled && self.live_busy.is_none() {
-            while self.streaming_transcripts.front().is_some_and(|p| {
-                p.generation != self.audio_generation
-                    || self.audio_clock_ms().saturating_sub(p.end_ms) > MAX_AUDIO_AGE_MS
-            }) {
-                self.streaming_transcripts.pop_front();
-            }
-            self.streaming_transcripts
-                .pop_front()
-                .or_else(|| self.pending_transcript.take())
-        } else {
-            None
-        }
+        // Accepted words are retained while translation runs. Only interim
+        // translations coalesce; recognized speech is not aged out of the prose.
+        self.streaming_transcripts
+            .pop_front()
+            .or_else(|| self.pending_transcript.take())
     }
     fn take_ready_audio(&mut self) -> Option<platform::AudioChunk> {
         if self.readout.suppress.load(Ordering::Acquire) {
@@ -835,6 +1036,7 @@ impl App {
         }
     }
     fn invalidate_timeline(&mut self) {
+        self.document_reset();
         self.audio_generation += 1;
         self.caption_generation += 1;
         self.pending_audio = None;
@@ -846,6 +1048,8 @@ impl App {
         self.last_caption = None;
         self.caption_paused = true;
         self.clear_overlay(None);
+        self.archive_current_live(None);
+        self.live_view = live_view::LiveViewState::default();
     }
     fn toggle_audio(&mut self) {
         if !self.audio_enabled && !self.asr_ready {
@@ -895,6 +1099,24 @@ impl App {
     fn process(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
+                Event::ParagraphTools(event) => self.accept_paragraph_tools(event),
+                Event::DocumentPunctuated {
+                    row_id,
+                    request,
+                    options,
+                    result,
+                } => {
+                    self.document_punctuated(row_id, request, options, result);
+                }
+                Event::DocumentDone {
+                    row_id,
+                    request,
+                    options,
+                    result,
+                    elapsed,
+                } => {
+                    self.document_done(row_id, request, options, result, elapsed);
+                }
                 Event::Partial { id, text } => {
                     if self.manual_busy == Some(id) {
                         self.output = text.clone();
@@ -923,6 +1145,8 @@ impl App {
                             .find(|r| r.record.id == id)
                             .is_some_and(|r| self.overlay_allowed(&r.record.kind, generation));
                     let mut read_text = None;
+                    let mut manual_completed = false;
+                    let mut manual_failed = false;
                     if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
                         row.pending = false;
                         match result {
@@ -934,6 +1158,7 @@ impl App {
                                 row.record.translation = text.clone();
                                 if lane == Lane::Manual {
                                     self.output = text.clone();
+                                    manual_completed = true;
                                 }
                                 if show_overlay {
                                     self.overlay_text = text;
@@ -951,8 +1176,17 @@ impl App {
                             Err(error) => {
                                 row.error = Some(error.clone());
                                 self.status = error;
+                                manual_failed = lane == Lane::Manual;
                             }
                         }
+                    }
+                    if manual_completed {
+                        self.mini.clear_manual_failure();
+                        if self.window_mode.is_mini() {
+                            self.mini.activate_manual(&self.rows);
+                        }
+                    } else if manual_failed {
+                        self.mini.manual_failed();
                     }
                     if let Some(text) = read_text {
                         match lane {
@@ -962,17 +1196,35 @@ impl App {
                             Lane::Live => self.read_live_translation(text),
                         }
                     }
+                    self.archive_completed_audio_for_draft();
                 }
-                Event::Ocr(result) => match result {
-                    Ok(text) if !text.trim().is_empty() => {
-                        self.accept_ocr(text);
+                Event::Ocr { generation, result } => {
+                    if self.ocr.busy == Some(generation) {
+                        self.ocr.busy = None;
+                        if result.is_err() {
+                            self.discard_screen_ocr_runtime();
+                        }
                     }
-                    Ok(_) => {
-                        self.status =
-                            "文字が見つかりませんでした。範囲や原文言語を確認してください。".into()
+                    if generation != self.ocr.generation {
+                        continue;
                     }
-                    Err(e) => self.status = e,
-                },
+                    match result {
+                        Ok(text) if !text.trim().is_empty() => {
+                            self.accept_ocr(text);
+                        }
+                        Ok(_) => {
+                            self.status =
+                                "文字が見つかりませんでした。範囲や原文言語を確認してください。"
+                                    .into();
+                            self.mini.manual_failed();
+                        }
+                        Err(e) => {
+                            self.status = e;
+                            self.mini.manual_failed();
+                        }
+                    }
+                }
+                Event::OcrSetup(event) => self.accept_ocr_setup(event),
                 Event::Screenshot(result) => {
                     self.capture_busy = false;
                     match result {
@@ -993,7 +1245,10 @@ impl App {
                                 start: None,
                             });
                         }
-                        Err(e) => self.status = e,
+                        Err(e) => {
+                            self.status = e;
+                            self.mini.manual_failed();
+                        }
                     }
                 }
                 Event::Transcript {
@@ -1091,62 +1346,18 @@ impl App {
             self.input = text;
             self.translate(self.input.clone(), Lane::Manual, 0, 0, "画面OCR", None);
         }
-        let mut latest = None;
+        self.kick_screen_ocr();
         while let Ok(caption) = self.bridge_rx.try_recv() {
-            latest = Some(caption);
-        }
-        if let Some(caption) = latest {
             self.accept_caption(caption);
+            self.document_take_caption();
         }
+        self.document_take_caption();
         let captions_fresh = self.captions_fresh();
         self.poll_nemotron();
         if captions_fresh {
             // A transcript completed before this frame's caption message must
             // also yield priority to the newly active captions.
             self.pending_transcript = None;
-        }
-        if self.backend_ready
-            && self.caption_enabled
-            && !self.caption_paused
-            && self.live_busy.is_none()
-            && let Some(caption) = self.pending_caption.take()
-        {
-            if caption.text != self.last_live_text {
-                let reuse = self.last_live_id.filter(|id| {
-                    self.rows
-                        .iter()
-                        .find(|r| r.record.id == *id)
-                        .is_some_and(|r| {
-                            r.record.kind == "YouTube"
-                                && r.generation == self.caption_generation
-                                && caption.text.starts_with(&r.record.source)
-                        })
-                });
-                let start = (caption.position * 1000.0) as u64;
-                self.translate(
-                    caption.text,
-                    Lane::Live,
-                    start,
-                    start + 3000,
-                    "YouTube",
-                    reuse,
-                );
-            } else if let Some(row) = self
-                .last_live_id
-                .and_then(|id| self.rows.iter().find(|r| r.record.id == id))
-                .filter(|r| {
-                    !r.pending
-                        && r.error.is_none()
-                        && r.generation == self.caption_generation
-                        && !r.record.translation.is_empty()
-                })
-            {
-                // Resuming the same caption reuses its completed translation.
-                self.overlay_text = row.record.translation.clone();
-                self.overlay_source = row.record.source.clone();
-                self.overlay_time = Some(Instant::now());
-                self.overlay_kind = Some(LiveKind::Caption);
-            }
         }
         if self.audio_enabled {
             let suppressed = self.readout.suppress.load(Ordering::Acquire);
@@ -1171,17 +1382,10 @@ impl App {
             }
             self.process_streaming_audio();
         }
+        while let Some(transcript) = self.take_ready_transcript() {
+            self.document_ingest_audio(transcript);
+        }
         if self.audio_enabled && self.backend_ready {
-            if let Some(pending) = self.take_ready_transcript() {
-                self.translate(
-                    pending.text,
-                    Lane::Live,
-                    pending.start_ms,
-                    pending.end_ms,
-                    "音声",
-                    None,
-                );
-            }
             // ASR and the live translator are independent pipeline stages.
             if let Some(chunk) = self.take_ready_audio() {
                 self.asr_busy = true;
@@ -1226,6 +1430,7 @@ impl App {
                 }
             }
         }
+        self.document_tick();
     }
     fn open_image(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
@@ -1262,7 +1467,10 @@ impl App {
         let records: Vec<_> = self
             .rows
             .iter()
-            .filter(|r| !r.pending && r.error.is_none() && !r.record.translation.is_empty())
+            .filter(|r| {
+                r.record.paragraph.is_some()
+                    || (!r.pending && r.error.is_none() && !r.record.translation.trim().is_empty())
+            })
             .map(|r| r.record.clone())
             .collect();
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("txt");
@@ -1275,20 +1483,7 @@ impl App {
                     return;
                 }
             },
-            _ => records
-                .iter()
-                .map(|r| {
-                    format!(
-                        "[{} · {}] {}\n{}\n{}\n",
-                        clock(r.start_ms),
-                        r.kind,
-                        r.created_at,
-                        r.source,
-                        r.translation
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
+            _ => timeline_txt(&records),
         };
         match fs::write(path, content) {
             Ok(()) => self.status = "タイムラインを書き出しました。".into(),
@@ -1390,23 +1585,20 @@ impl App {
         let result = Arc::new(Mutex::new(None::<Option<egui::Rect>>));
         let response = result.clone();
         let screen = &selection.screen;
+        let scale = screen.scale * ctx.zoom_factor();
         let builder = egui::ViewportBuilder::default()
             .with_title("翻訳範囲を選択 · Escでキャンセル")
             .with_decorations(false)
-            .with_position([
-                screen.x as f32 / screen.scale,
-                screen.y as f32 / screen.scale,
-            ])
-            .with_inner_size([
-                screen.width as f32 / screen.scale,
-                screen.height as f32 / screen.scale,
-            ])
+            .with_position([screen.x as f32 / scale, screen.y as f32 / scale])
+            .with_inner_size([screen.width as f32 / scale, screen.height as f32 / scale])
             .with_always_on_top()
             .with_resizable(false);
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("screen-selection"),
             builder,
             |ctx, _| {
+                ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
@@ -1417,8 +1609,9 @@ impl App {
                             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                             Color32::WHITE,
                         );
-                        let interaction =
-                            ui.interact(rect, ui.id().with("drag-select"), egui::Sense::drag());
+                        let interaction = ui
+                            .interact(rect, ui.id().with("drag-select"), egui::Sense::drag())
+                            .on_hover_and_drag_cursor(egui::CursorIcon::Crosshair);
                         if interaction.drag_started() {
                             selection.start = interaction.interact_pointer_pos();
                         }
@@ -1482,44 +1675,6 @@ impl App {
             }
         }
     }
-    fn overlay_ui(&mut self, ctx: &egui::Context) {
-        if !self.overlay {
-            return;
-        }
-        let text = self.overlay_text.clone();
-        let source = self.overlay_source.clone();
-        let show_original = self.settings.show_original;
-        let mut close = false;
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("subtitle-overlay"),
-            egui::ViewportBuilder::default()
-                .with_title("地元翻訳くん · ライブ字幕")
-                .with_inner_size([760.0, 170.0])
-                .with_always_on_top()
-                .with_resizable(true),
-            |ctx, _| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    if show_original && !source.is_empty() {
-                        ui.label(RichText::new(&source).size(15.0).color(Color32::GRAY));
-                    }
-                    ui.label(
-                        RichText::new(if text.is_empty() {
-                            "字幕を待っています…"
-                        } else {
-                            &text
-                        })
-                        .size(26.0),
-                    );
-                    if ctx.input(|i| i.viewport().close_requested()) {
-                        close = true;
-                    }
-                });
-            },
-        );
-        if close {
-            self.overlay = false;
-        }
-    }
 }
 
 impl eframe::App for App {
@@ -1530,16 +1685,27 @@ impl eframe::App for App {
         {
             self.native_window = Some(handle.hwnd.get());
         }
+        self.update_window_mode(ctx);
         self.process(ctx);
         self.poll_services();
         self.poll_readout();
+        if self.window_mode.is_mini()
+            && (self.tab == Tab::Setup
+                || self.audio_confirmation
+                || self.audio_installing
+                || self.readout.confirm
+                || self.readout.preparing
+                || self.screen_ocr_needs_normal_view())
+        {
+            self.restore_normal_view(ctx);
+        }
         self.render_ui(ctx);
         self.audio_setup_ui(ctx);
         self.readout_setup_ui(ctx);
+        self.screen_ocr_setup_ui(ctx);
         self.selection_ui(ctx);
-        self.overlay_ui(ctx);
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q)) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.request_app_close(ctx);
         }
         if ctx.input(|i| !i.raw.dropped_files.is_empty()) {
             let files = ctx.input(|i| i.raw.dropped_files.clone());
@@ -1550,6 +1716,7 @@ impl eframe::App for App {
                         Ok(text) => {
                             self.input = text;
                             self.tab = Tab::Text;
+                            self.restore_normal_view(ctx);
                         }
                         Err(e) => self.status = e.to_string(),
                     },
@@ -1594,10 +1761,26 @@ impl eframe::App for App {
 }
 impl Drop for App {
     fn drop(&mut self) {
+        self.document_shutdown();
+        self.paragraph_tools.cancel.store(true, Ordering::Release);
+        if let Some(worker) = self.paragraph_tools.worker.take() {
+            let _ = worker.join();
+        }
         self.stop.store(true, Ordering::Relaxed);
         self.setup.cancel.store(true, Ordering::Relaxed);
         self.audio_cancel.store(true, Ordering::Relaxed);
         self.readout.cancel.store(true, Ordering::Relaxed);
+        self.readout.voice_cancel.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.readout.voice_worker.take() {
+            let _ = worker.join();
+        }
+        self.ocr.cancel.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.ocr.setup_worker.take() {
+            let _ = worker.join();
+        }
+        if let Some(control) = &self.ocr.control {
+            control.stop();
+        }
         self.file_cancel.store(true, Ordering::Relaxed);
         if let Some(audio) = &self.audio {
             audio.stop.store(true, Ordering::Relaxed);
@@ -1639,8 +1822,42 @@ fn max_audio_end<'a>(records: impl IntoIterator<Item = &'a Record>) -> u64 {
         .max()
         .unwrap_or(0)
 }
+fn timeline_txt(records: &[Record]) -> String {
+    use plamo_translate::journal::ParagraphState;
+    records
+        .iter()
+        .map(|r| {
+            let state = match r.paragraph.as_ref().map(|p| p.state) {
+                Some(ParagraphState::Open) => "継続中 · 訳文は未確定",
+                Some(ParagraphState::Closing) => "文章を確定中 · 訳文は未確定",
+                Some(ParagraphState::Interrupted) => "中断 · 訳文は未確定",
+                Some(ParagraphState::Failed) => "翻訳できなかった文章 · 訳文は未確定",
+                Some(ParagraphState::Final) | None => "確定訳",
+            };
+            format!(
+                "[{} · {} · {}] {}\n{}\n{}\n",
+                clock(r.start_ms),
+                r.kind,
+                state,
+                r.created_at,
+                r.source,
+                r.translation
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 fn timeline_srt(records: &[Record]) -> Result<String> {
-    let timed: Vec<_> = records.iter().filter(|r| r.end_ms > r.start_ms).collect();
+    let timed: Vec<_> = records
+        .iter()
+        .filter(|r| {
+            r.end_ms > r.start_ms
+                && !r.translation.trim().is_empty()
+                && r.paragraph
+                    .as_ref()
+                    .is_none_or(|p| p.state == plamo_translate::journal::ParagraphState::Final)
+        })
+        .collect();
     anyhow::ensure!(
         !timed.is_empty(),
         "SRTに書き出せる時刻付きの字幕がありません。TXTかJSONを選んでください。"
@@ -1788,12 +2005,14 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                             kind: "YouTube".into(),
                             video_id: "preview".into(),
                             created_at: "2026-11-05T12:00:00+09:00".into(),
+                            paragraph: None,
                         },
                         pending: false,
                         error: None,
                         generation: 0,
                     });
                 }
+                app.current_live_id = Some(3);
             }
             preview::render(
                 &ctx,
@@ -1807,6 +2026,166 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 |ctx| app.render_ui(ctx),
             )?;
         }
+    }
+    let mini_default = window_mode::MiniWindowState::default().mini_size();
+    for (name, size, draft, manual, ready) in [
+        ("06-mini-live", mini_default, false, false, true),
+        ("07-mini-draft", mini_default, true, false, true),
+        ("08-mini-screen", mini_default, false, true, true),
+        (
+            "09-mini-minimum",
+            Vec2::new(400.0, 260.0),
+            true,
+            false,
+            true,
+        ),
+        ("10-mini-service-error", mini_default, false, false, false),
+        ("11-mini-translating", mini_default, false, false, true),
+    ] {
+        let ctx = egui::Context::default();
+        ui::configure_theme(&ctx);
+        let mut app = App::inert();
+        app.backend_ready = ready;
+        app.caption_enabled = true;
+        app.audio_enabled = true;
+        app.tab = Tab::Live;
+        app.startup_decided = true;
+        app.window_mode.enter(&egui::ViewportInfo::default());
+        app.rows.push(Row {
+            record: Record {
+                id: 1,
+                start_ms: 12500,
+                end_ms: 16000,
+                source: "The translations stay on your computer, so you can read them again later.".into(),
+                translation: "翻訳はこのPCに保存されるので、あとから読み返せます。画面を小さくしても、翻訳と保存は続きます。".into(),
+                kind: "YouTube".into(),
+                video_id: "preview".into(),
+                created_at: "2026-11-05T12:00:00+09:00".into(),
+                paragraph: None,
+            },
+            pending: false,
+            error: None,
+            generation: 0,
+        });
+        app.current_live_id = Some(1);
+        if name == "11-mini-translating" {
+            app.rows.push(Row {
+                record: Record {
+                    id: 2,
+                    start_ms: 16500,
+                    end_ms: 20000,
+                    source: "The next sentence is still being translated.".into(),
+                    translation: "次の文は、まだ翻訳の".into(),
+                    kind: "音声".into(),
+                    video_id: String::new(),
+                    created_at: String::new(),
+                    paragraph: None,
+                },
+                pending: true,
+                error: None,
+                generation: 0,
+            });
+            app.current_live_id = Some(2);
+            app.live_busy = Some(2);
+        }
+        if draft {
+            app.asr_partial =
+                "The next sentence is being recognized while you read the previous translation."
+                    .into();
+        }
+        if manual {
+            app.mini.activate_manual(&app.rows);
+            app.input =
+                "The dashboard shows the schedule. Pause the video, then play it again.".into();
+            app.output = "管理画面にスケジュールが表示されます。動画を一時停止してから、再度再生してください。".into();
+        }
+        if !ready {
+            app.service_error = "翻訳モデルへの接続が切れました。".into();
+        }
+        preview::render(
+            &ctx,
+            &folder.join(format!("{name}.png")),
+            size.x as u32,
+            size.y as u32,
+            |ctx| app.render_ui(ctx),
+        )?;
+    }
+    for (name, size, interrupted) in [
+        ("12-continuous-live", Vec2::new(1280.0, 880.0), false),
+        ("13-continuous-mini", mini_default, false),
+        ("14-continuous-mini-minimum", Vec2::new(400.0, 260.0), false),
+        ("15-continuous-interrupted", Vec2::new(1280.0, 880.0), true),
+    ] {
+        use plamo_translate::journal::{ParagraphMeta, ParagraphState};
+        let ctx = egui::Context::default();
+        ui::configure_theme(&ctx);
+        let mut app = App::inert();
+        app.backend_ready = true;
+        app.audio_enabled = !interrupted;
+        app.asr_ready = true;
+        app.tab = Tab::Live;
+        app.startup_decided = true;
+        app.settings.show_original = false;
+        app.status = "プレビュー · 公開用の架空例文です".into();
+        for (id, source, target, state, start, end) in [
+            (
+                1,
+                "Each description has about 150 words in English and a Japanese translation A shared glossary keeps the names of local places consistent When a direct translation is unclear staff will explain the meaning in ordinary language The trial will last six weeks",
+                "各説明文は英語で約150語で構成され、日本語訳が添えられています。共通の用語集で地域の地名を統一します。直訳では分かりにくい場合は、スタッフが平易な言葉で意味を説明します。試行期間は6週間です。",
+                ParagraphState::Final,
+                12_500,
+                28_000,
+            ),
+            (
+                2,
+                "Visitors can return to the exhibit list whenever they wish We will observe whether they can find an item again rather than simply count screen taps Feedback cards ask three questions about memorable details confusing passages and possible next steps",
+                "来館者はいつでも展示リストに戻れます。画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。フィードバックカードでは、印象に残った内容、分かりにくい箇所、今後の改善について3つの質問をします。",
+                if interrupted {
+                    ParagraphState::Interrupted
+                } else {
+                    ParagraphState::Open
+                },
+                28_000,
+                40_000,
+            ),
+        ] {
+            app.rows.push(Row {
+                record: Record {
+                    id,
+                    start_ms: start,
+                    end_ms: end,
+                    source: source.into(),
+                    translation: target.into(),
+                    kind: "音声".into(),
+                    video_id: String::new(),
+                    created_at: String::new(),
+                    paragraph: Some(ParagraphMeta {
+                        revision: 7,
+                        state,
+                        close_reason: None,
+                    }),
+                },
+                pending: false,
+                error: None,
+                generation: 0,
+            });
+        }
+        app.current_live_id = if interrupted { None } else { Some(2) };
+        if !interrupted {
+            app.asr_partial =
+                "No name or contact address is required Each Friday staff will review the comments"
+                    .into();
+        }
+        if size.x < 860.0 {
+            app.window_mode.enter(&egui::ViewportInfo::default());
+        }
+        preview::render(
+            &ctx,
+            &folder.join(format!("{name}.png")),
+            size.x as u32,
+            size.y as u32,
+            |ctx| app.render_ui(ctx),
+        )?;
     }
     Ok(())
 }
@@ -1825,6 +2204,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let options = eframe::NativeOptions {
+        persistence_path: Some(data_root().join("window-state.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_icon(
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/icon-256.png"))
@@ -1868,6 +2248,7 @@ mod tests {
             source: "source".into(),
             translation: "translation".into(),
             created_at: String::new(),
+            paragraph: None,
         }
     }
     fn chunk(start_ms: u64, end_ms: u64) -> platform::AudioChunk {
@@ -1900,11 +2281,243 @@ mod tests {
         assert!(!a.overlay_allowed("音声", 8));
     }
     #[test]
+    fn active_live_result_is_archived_only_for_its_source_or_a_new_audio_draft() {
+        let mut a = app();
+        a.rows.push(Row {
+            record: record(42, "YouTube", "video-a", 0, 1000),
+            pending: false,
+            error: None,
+            generation: a.caption_generation,
+        });
+        a.current_live_id = Some(42);
+        a.asr_partial = "new audio draft".into();
+        a.archive_completed_audio_for_draft();
+        assert_eq!(a.current_live_id, Some(42));
+        a.stop_audio();
+        assert_eq!(a.current_live_id, Some(42));
+        a.caption_enabled = true;
+        a.set_caption_enabled(false);
+        assert_eq!(a.current_live_id, None);
+        assert_eq!(a.rows.len(), 1);
+        assert_eq!(a.rows[0].record.translation, "translation");
+
+        a.rows[0].record.kind = "音声".into();
+        a.rows[0].pending = true;
+        a.current_live_id = Some(42);
+        a.asr_partial = "next draft".into();
+        a.archive_completed_audio_for_draft();
+        assert_eq!(a.current_live_id, Some(42));
+        a.rows[0].pending = false;
+        a.archive_completed_audio_for_draft();
+        assert_eq!(a.current_live_id, None);
+        assert_eq!(a.rows.len(), 1);
+    }
+    #[test]
+    fn mini_mode_preserves_work_and_cannot_hide_initial_setup() {
+        let mut a = app();
+        let ctx = egui::Context::default();
+        a.tab = Tab::Setup;
+        a.enter_mini_view(&ctx);
+        assert!(!a.window_mode.is_mini());
+        a.backend_ready = true;
+        a.tab = Tab::Text;
+        a.input = "source".into();
+        a.output = "translation".into();
+        a.caption_enabled = true;
+        a.audio_enabled = true;
+        let settings = serde_json::to_value(&a.settings).unwrap();
+        let generations = (a.caption_generation, a.audio_generation);
+        a.enter_mini_view(&ctx);
+        assert!(a.window_mode.is_mini());
+        a.restore_normal_view(&ctx);
+        assert!(!a.window_mode.is_mini());
+        assert!(a.tab == Tab::Text);
+        assert!(a.caption_enabled && a.audio_enabled);
+        assert_eq!((a.caption_generation, a.audio_generation), generations);
+        assert_eq!(a.input, "source");
+        assert_eq!(a.output, "translation");
+        assert_eq!(serde_json::to_value(&a.settings).unwrap(), settings);
+    }
+    #[test]
+    fn closing_mini_stops_runtime_without_changing_saved_preferences_and_has_a_bound() {
+        let mut a = app();
+        let ctx = egui::Context::default();
+        a.backend_ready = true;
+        a.caption_enabled = true;
+        a.audio_enabled = true;
+        a.settings.auto_read = true;
+        let settings = serde_json::to_value(&a.settings).unwrap();
+        a.enter_mini_view(&ctx);
+        a.request_app_close(&ctx);
+        assert!(!a.window_mode.is_mini());
+        assert!(!a.caption_enabled && !a.audio_enabled);
+        assert!(a.readout.voice_cancel.load(Ordering::Acquire));
+        assert_eq!(serde_json::to_value(&a.settings).unwrap(), settings);
+        a.close_after_restore = Some(Instant::now() - Duration::from_secs(2));
+        let output = ctx.run(egui::RawInput::default(), |ctx| a.update_window_mode(ctx));
+        assert!(output.viewport_output.values().any(|viewport| {
+            viewport
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Close))
+        }));
+        // Closing remains a terminal UI state; another shortcut cannot reopen mini.
+        a.enter_mini_view(&ctx);
+        assert!(!a.window_mode.is_mini());
+    }
+    #[test]
+    fn repeated_close_requests_wait_and_dispatch_only_once() {
+        let mut a = app();
+        let ctx = egui::Context::default();
+        a.backend_ready = true;
+        a.enter_mini_view(&ctx);
+        a.request_app_close(&ctx);
+        let close_input = || {
+            let mut input = egui::RawInput::default();
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .events
+                .push(egui::ViewportEvent::Close);
+            input
+        };
+        let waiting = ctx.run(close_input(), |ctx| {
+            a.request_app_close(ctx);
+            a.request_app_close(ctx);
+            a.update_window_mode(ctx);
+        });
+        let commands = &waiting.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        a.close_after_restore = Some(Instant::now() - Duration::from_secs(2));
+        let ready = ctx.run(close_input(), |ctx| a.update_window_mode(ctx));
+        assert_eq!(
+            ready.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .filter(|c| **c == egui::ViewportCommand::Close)
+                .count(),
+            1
+        );
+        // egui-winit turns our Close command into a Close event on the next pass.
+        let sent = ctx.run(close_input(), |ctx| {
+            a.update_window_mode(ctx);
+            a.request_app_close(ctx);
+        });
+        let commands = &sent.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+    }
+    #[test]
+    fn ocr_dispatch_keeps_live_view_until_the_manual_worker_succeeds() {
+        for succeeds in [true, false] {
+            let mut a = app();
+            let ctx = egui::Context::default();
+            a.backend_ready = true;
+            a.tab = Tab::Live;
+            a.enter_mini_view(&ctx);
+            a.manual_busy = Some(42);
+            a.rows.push(Row {
+                record: record(42, "画面OCR", "", 0, 0),
+                pending: true,
+                error: None,
+                generation: 0,
+            });
+            a.accept_ocr("screen text".into());
+            assert!(!a.mini.is_manual());
+            // Inject the response of an already-started worker, without HTTP/OCR.
+            a.pending_ocr = None;
+            a.tx.send(Event::Partial {
+                id: 42,
+                text: "途中の訳".into(),
+            })
+            .unwrap();
+            a.process(&ctx);
+            assert!(!a.mini.is_manual());
+            a.tx.send(Event::Done {
+                id: 42,
+                lane: Lane::Manual,
+                result: if succeeds {
+                    Ok("完成した訳".into())
+                } else {
+                    Err("test failure".into())
+                },
+                elapsed: 0.1,
+                generation: 0,
+            })
+            .unwrap();
+            a.process(&ctx);
+            assert_eq!(a.mini.is_manual(), succeeds);
+            assert!(a.manual_busy.is_none());
+        }
+    }
+    #[test]
+    fn selection_cursor_stays_visible_and_crosshair_before_and_during_drag() {
+        let mut a = app();
+        let ctx = egui::Context::default();
+        a.selection = Some(Selection {
+            screen: platform::Screen {
+                id: 1,
+                name: "fixture".into(),
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+                scale: 1.0,
+            },
+            image: image::RgbaImage::new(640, 480),
+            texture: ctx.load_texture(
+                "fixture",
+                egui::ColorImage::filled([2, 2], Color32::WHITE),
+                egui::TextureOptions::LINEAR,
+            ),
+            start: None,
+        });
+        for events in [
+            vec![egui::Event::PointerMoved(egui::pos2(120.0, 120.0))],
+            vec![egui::Event::PointerButton {
+                pos: egui::pos2(120.0, 120.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerMoved(egui::pos2(240.0, 240.0))],
+        ] {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(640.0, 480.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| a.selection_ui(ctx),
+            );
+            assert_eq!(
+                output.platform_output.cursor_icon,
+                egui::CursorIcon::Crosshair
+            );
+            assert!(output.viewport_output.values().any(|v| {
+                v.commands
+                    .contains(&egui::ViewportCommand::CursorVisible(true))
+            }));
+        }
+        a.selection = None;
+        let output = ctx.run(egui::RawInput::default(), |ctx| a.render_ui(ctx));
+        assert_ne!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::Crosshair
+        );
+    }
+    #[test]
     fn paused_and_empty_captions_preserve_identity_and_dedup_without_blocking_audio() {
         let mut a = app();
         a.caption_enabled = true;
         a.audio_enabled = true;
         a.last_live_id = Some(42);
+        a.current_live_id = Some(42);
         a.last_live_text = "same caption".into();
         a.last_caption = Some(Instant::now());
         a.caption_paused = false;
@@ -1914,6 +2527,7 @@ mod tests {
         a.accept_caption(caption("same caption", true));
         assert_eq!(a.caption_generation, 11);
         assert_eq!(a.last_live_id, Some(42));
+        assert_eq!(a.current_live_id, Some(42));
         assert_eq!(a.last_live_text, "same caption");
         assert_eq!(a.last_caption, last);
         assert!(!a.captions_fresh());
@@ -1955,7 +2569,7 @@ mod tests {
         assert_eq!(a.live_busy, Some(99));
     }
     #[test]
-    fn transcript_waits_for_live_lane_and_active_captions_discard_it() {
+    fn transcript_accumulates_during_translation_and_active_captions_suppress_late_audio() {
         let mut a = app();
         a.audio_enabled = true;
         a.asr_busy = true;
@@ -1968,10 +2582,14 @@ mod tests {
         })
         .unwrap();
         a.process(&egui::Context::default());
-        assert_eq!(a.pending_transcript.as_ref().unwrap().text, "first");
+        assert!(a.pending_transcript.is_none());
+        assert_eq!(a.rows.len(), 1);
+        assert_eq!(a.rows[0].record.source, "first");
+        assert!(a.rows[0].is_provisional());
+        assert!(!a.rows[0].is_confirmed());
+        assert_eq!(a.live_busy, Some(99));
         assert!(a.take_ready_transcript().is_none());
         a.live_busy = None;
-        assert_eq!(a.take_ready_transcript().unwrap().text, "first");
         a.pending_transcript = Some(PendingTranscript {
             text: "obsolete".into(),
             start_ms: 0,
@@ -1994,10 +2612,11 @@ mod tests {
         .unwrap();
         a.process(&egui::Context::default());
         assert!(a.pending_transcript.is_none());
-        assert!(a.rows.is_empty());
+        assert_eq!(a.rows.len(), 1);
+        assert_eq!(a.rows[0].record.source, "first");
     }
     #[test]
-    fn pending_transcript_expires_and_new_timeline_invalidates_both_sources() {
+    fn accepted_transcript_is_not_aged_out_and_new_timeline_invalidates_both_sources() {
         let mut a = app();
         a.audio_enabled = true;
         a.audio_offset_ms = 10000;
@@ -2007,7 +2626,7 @@ mod tests {
             end_ms: 1,
             generation: 7,
         });
-        assert!(a.take_ready_transcript().is_none());
+        assert_eq!(a.take_ready_transcript().unwrap().text, "old");
         a.pending_audio = Some(chunk(0, 1));
         a.pending_caption = Some(caption("caption", false));
         a.invalidate_timeline();
@@ -2027,6 +2646,56 @@ mod tests {
         a.manual_busy = None;
         assert_eq!(a.take_ready_ocr().as_deref(), Some("latest"));
     }
+    #[test]
+    fn unfinished_paragraphs_recover_and_export_as_unfinished_until_final_commit() {
+        use plamo_translate::journal::{ParagraphMeta, ParagraphState};
+        let mut records = Vec::new();
+        for (index, state) in [
+            ParagraphState::Open,
+            ParagraphState::Closing,
+            ParagraphState::Interrupted,
+            ParagraphState::Failed,
+            ParagraphState::Final,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut item = record(
+                index as u64 + 1,
+                "音声",
+                "",
+                index as u64 * 1_000,
+                (index as u64 + 1) * 1_000,
+            );
+            item.source = format!("original paragraph {index}");
+            item.translation = format!("訳文 {index}");
+            item.paragraph = Some(ParagraphMeta {
+                revision: 3,
+                state,
+                close_reason: None,
+            });
+            let recovered = Row::recovered(item.clone());
+            if matches!(state, ParagraphState::Open | ParagraphState::Closing) {
+                assert!(!recovered.is_confirmed() && !recovered.is_provisional());
+                let meta = recovered.record.paragraph.as_ref().unwrap();
+                assert_eq!(meta.state, ParagraphState::Interrupted);
+                assert_eq!(meta.close_reason.as_deref(), Some("restarted"));
+                assert_eq!(recovered.record.source, item.source);
+                assert_eq!(recovered.record.translation, item.translation);
+            }
+            records.push(item);
+        }
+        let text = timeline_txt(&records);
+        assert_eq!(text.matches("訳文は未確定").count(), 4);
+        for item in &records {
+            assert!(text.contains(&item.source));
+        }
+        let srt = subtitles::parse_srt(&timeline_srt(&records).unwrap()).unwrap();
+        assert_eq!(srt.len(), 1);
+        assert_eq!(srt[0].text, "訳文 4");
+        assert_eq!((srt[0].start_ms, srt[0].end_ms), (4_000, 5_000));
+    }
+
     #[test]
     fn srt_rejects_mixed_source_clocks_and_videos() {
         let audio = record(1, "音声", "", 0, 1000);

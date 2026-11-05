@@ -1,6 +1,7 @@
 //! Native speech.cpp synthesis, latest-only pending text, and owned Windows audio.
 //! Text/audio stays in memory and is sent only to our own loopback child.
 use crate::speech_setup::SpeechInstallation;
+use crate::voice_profile::{self, VoiceProfile};
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
@@ -153,6 +154,24 @@ pub struct TtsEngine {
 impl TtsEngine {
     /// Start a lightweight worker. Native model loading is deferred until speak().
     pub fn start(config: SpeechInstallation, suppress_audio: Arc<AtomicBool>) -> Result<Self> {
+        Self::start_inner(config, suppress_audio, None)
+    }
+
+    /// Reuse a prepared codec-latent voice; no reference encoding on this path.
+    pub fn start_with_voice(
+        config: SpeechInstallation,
+        suppress_audio: Arc<AtomicBool>,
+        profile: VoiceProfile,
+    ) -> Result<Self> {
+        voice_profile::validate_profile(&profile, &config)?;
+        Self::start_inner(config, suppress_audio, Some(profile))
+    }
+
+    fn start_inner(
+        config: SpeechInstallation,
+        suppress_audio: Arc<AtomicBool>,
+        profile: Option<VoiceProfile>,
+    ) -> Result<Self> {
         anyhow::ensure!(cfg!(windows), "この読み上げ再生機能はWindows専用です。");
         anyhow::ensure!(
             config.executable.is_absolute()
@@ -187,7 +206,7 @@ impl TtsEngine {
         let state = shared.clone();
         let worker = thread::Builder::new()
             .name("native-irodori-tts".into())
-            .spawn(move || worker(config, state))
+            .spawn(move || worker(config, profile, state))
             .context("読み上げ処理を開始できませんでした。")?;
         Ok(Self {
             shared,
@@ -282,7 +301,7 @@ fn cancelled(shared: &Shared, epoch: u64) -> bool {
     shared.quit.load(Ordering::Acquire) || shared.epoch.load(Ordering::Acquire) != epoch
 }
 
-fn worker(config: SpeechInstallation, shared: Arc<Shared>) {
+fn worker(config: SpeechInstallation, profile: Option<VoiceProfile>, shared: Arc<Shared>) {
     let client = match Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -322,14 +341,28 @@ fn worker(config: SpeechInstallation, shared: Arc<Shared>) {
             control_epoch = Some(job.epoch);
         }
         let mut played = false;
-        // Reuse a seed across chunks so "none" does not choose anew every request.
-        let seed = (uuid::Uuid::new_v4().as_u128() as u64) & ((1u64 << 53) - 1);
+        // A voicefile conditions every chunk on one persisted speaker. A seed
+        // alone is not a speaker identity; random `none` remains legacy-only.
+        let seed = profile
+            .as_ref()
+            .map(|p| p.seed)
+            .unwrap_or_else(|| (uuid::Uuid::new_v4().as_u128() as u64) & ((1u64 << 53) - 1));
+        let voice = profile
+            .as_ref()
+            .map(|p| p.name.as_str())
+            .unwrap_or(&config.voice);
         let result = (|| -> Result<()> {
             if !owned_child_alive(&shared) {
                 model_id = None;
             }
             if model_id.is_none() {
-                model_id = Some(start_server(&config, &shared, &client, job.epoch)?);
+                model_id = Some(start_server(
+                    &config,
+                    profile.as_ref(),
+                    &shared,
+                    &client,
+                    job.epoch,
+                )?);
             }
             // Initial waiting/model load is real latency. Playback at a faster
             // rate pays this debt down; normal speaking time is not new lag.
@@ -369,7 +402,7 @@ fn worker(config: SpeechInstallation, shared: Arc<Shared>) {
                 let bytes = synthesize(
                     &client,
                     model_id.as_ref().unwrap(),
-                    &config.voice,
+                    voice,
                     &chunk,
                     seed,
                     rate,
@@ -434,6 +467,7 @@ fn reap_child(shared: &Shared) {
 
 fn start_server(
     config: &SpeechInstallation,
+    profile: Option<&VoiceProfile>,
     shared: &Shared,
     client: &Client,
     epoch: u64,
@@ -478,6 +512,14 @@ fn start_server(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(profile) = profile {
+        // Small GGUF latents are loaded by speech.cpp once per server start.
+        // Import/default preparation already checked the codec and file hash.
+        voice_profile::validate_profile(profile, config)?;
+        command
+            .arg("--add-voice")
+            .arg(format!("{}={}", profile.name, profile.path.display()));
+    }
     if let Some(parent) = config.executable.parent() {
         command.current_dir(parent);
     }

@@ -4,6 +4,7 @@ use plamo_translate::{
     installer::Progress,
     speech_setup::{self, SpeechInstallation},
     tts::{ReadoutOptions, TtsEngine, TtsEvent},
+    voice_profile::{self, VoiceProfile},
 };
 
 pub(super) struct ReadoutState {
@@ -18,6 +19,12 @@ pub(super) struct ReadoutState {
     rate_active: bool,
     pub suppress: Arc<AtomicBool>,
     pub cancel: Arc<AtomicBool>,
+    pub voices: Vec<(String, VoiceProfile)>,
+    pub voice_preparing: bool,
+    pub voice_cancel: Arc<AtomicBool>,
+    pub voice_worker: Option<thread::JoinHandle<()>>,
+    engine_voice: String,
+    pending_voice_read: Option<(String, bool, Instant)>,
 }
 impl Default for ReadoutState {
     fn default() -> Self {
@@ -33,12 +40,22 @@ impl Default for ReadoutState {
             rate_active: false,
             suppress: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
+            voices: Vec::new(),
+            voice_preparing: false,
+            voice_cancel: Arc::new(AtomicBool::new(false)),
+            voice_worker: None,
+            engine_voice: String::new(),
+            pending_voice_read: None,
         }
     }
 }
 pub(super) enum ReadoutEvent {
     Progress(Progress),
     Installed(std::result::Result<SpeechInstallation, String>),
+    VoicePrepared {
+        key: String,
+        result: std::result::Result<VoiceProfile, String>,
+    },
 }
 
 /// Manual actions always use the configured base rate. Only fresh automatic
@@ -72,9 +89,10 @@ impl App {
                 self.readout.error = format!("読み上げの保存情報を確認できません: {error}")
             }
         }
+        self.refresh_readout_voices();
     }
     pub(super) fn readout_busy(&self) -> bool {
-        self.readout.engine.as_ref().is_some_and(TtsEngine::is_busy)
+        self.readout.voice_preparing || self.readout.engine.as_ref().is_some_and(TtsEngine::is_busy)
     }
     pub(super) fn read_translation(&mut self, text: String) {
         self.read_translation_mode(text, false);
@@ -98,9 +116,31 @@ impl App {
             return;
         };
         self.readout.error.clear();
+        let Some(profile) = self
+            .readout
+            .voices
+            .iter()
+            .find(|(key, _)| *key == self.settings.tts_voice_profile)
+            .map(|(_, profile)| profile.clone())
+        else {
+            if self.settings.tts_voice_profile != "default-v1" {
+                self.readout.error =
+                    "選択した固定声がありません。設定で声を選び直してください。".into();
+                return;
+            }
+            self.readout.pending_voice_read = Some((text, live, Instant::now()));
+            self.prepare_readout_voice(None);
+            return;
+        };
+        if self.readout.engine_voice != self.settings.tts_voice_profile {
+            self.readout.engine.take();
+        }
         if self.readout.engine.is_none() {
-            match TtsEngine::start(config, self.readout.suppress.clone()) {
-                Ok(engine) => self.readout.engine = Some(engine),
+            match TtsEngine::start_with_voice(config, self.readout.suppress.clone(), profile) {
+                Ok(engine) => {
+                    self.readout.engine = Some(engine);
+                    self.readout.engine_voice = self.settings.tts_voice_profile.clone();
+                }
                 Err(error) => {
                     self.readout.error = error.to_string();
                     return;
@@ -115,6 +155,8 @@ impl App {
         }
     }
     pub(super) fn stop_readout(&mut self) {
+        self.readout.voice_cancel.store(true, Ordering::Release);
+        self.readout.pending_voice_read = None;
         if let Some(engine) = &self.readout.engine {
             engine.stop();
         }
@@ -148,7 +190,9 @@ impl App {
                 }
             }
         }
-        if self.readout_busy() && self.readout.rate_active {
+        if self.readout.voice_preparing {
+            self.readout.status = "読み上げる声を固定しています。初回だけ準備が必要です。".into();
+        } else if self.readout_busy() && self.readout.rate_active {
             self.readout.status = format!("読み上げ ×{:.1}", self.readout.current_rate);
         } else if !self.readout_busy() {
             self.readout.rate_active = false;
@@ -156,6 +200,72 @@ impl App {
                 self.readout.status = "読み上げが終わりました。".into();
             }
         }
+    }
+    fn refresh_readout_voices(&mut self) {
+        self.readout.voices.clear();
+        let Some(config) = &self.readout.ready else {
+            return;
+        };
+        let root = data_root().join("speech/voices");
+        let Ok(entries) = fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let key = entry.file_name().to_string_lossy().into_owned();
+            if key.is_empty()
+                || key.len() > 64
+                || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            {
+                continue;
+            }
+            match voice_profile::load_profile(&entry.path(), config) {
+                Ok(Some(profile)) => self.readout.voices.push((key, profile)),
+                Err(error) => self.readout.error = format!("固定声を読み込めません: {error}"),
+                _ => {}
+            }
+        }
+        self.readout
+            .voices
+            .sort_by_key(|(key, _)| (key != "default-v1", key.clone()));
+    }
+    fn prepare_readout_voice(&mut self, reference: Option<PathBuf>) {
+        if self.readout.voice_preparing {
+            return;
+        }
+        let Some(config) = self.readout.ready.clone() else {
+            self.readout.confirm = true;
+            return;
+        };
+        self.readout.voice_preparing = true;
+        self.readout.voice_cancel = Arc::new(AtomicBool::new(false));
+        self.readout.error.clear();
+        let key = if reference.is_some() {
+            format!("custom-{}", uuid::Uuid::new_v4())
+        } else {
+            "default-v1".into()
+        };
+        let dir = data_root().join("speech/voices").join(&key);
+        let cancel = self.readout.voice_cancel.clone();
+        let tx = self.tx.clone();
+        let shutdown = self.stop.clone();
+        self.readout.voice_worker = Some(thread::spawn(move || {
+            let result = match reference {
+                Some(path) => voice_profile::import_reference_profile(&config, &dir, &path, cancel),
+                None => voice_profile::prepare_default_profile(&config, &dir, cancel),
+            }
+            .map_err(|e| format!("{e:#}"));
+            let mut event = Event::Readout(ReadoutEvent::VoicePrepared { key, result });
+            loop {
+                match tx.try_send(event) {
+                    Ok(()) => break,
+                    Err(mpsc::TrySendError::Full(value)) if !shutdown.load(Ordering::Acquire) => {
+                        event = value;
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        }));
     }
     fn begin_readout_install(&mut self) {
         if self.readout.preparing {
@@ -198,11 +308,37 @@ impl App {
                         self.readout.confirm = false;
                         self.readout.error.clear();
                         self.readout.status = "読み上げの準備ができました。".into();
+                        self.refresh_readout_voices();
                     }
                     Err(_) if self.readout.cancel.load(Ordering::Relaxed) => {
                         self.readout.error.clear();
                         self.readout.status =
                             "準備を中止しました。取得済みデータから再開できます。".into();
+                    }
+                    Err(error) => self.readout.error = error,
+                }
+            }
+            ReadoutEvent::VoicePrepared { key, result } => {
+                if let Some(worker) = self.readout.voice_worker.take() {
+                    let _ = worker.join();
+                }
+                self.readout.voice_preparing = false;
+                match result {
+                    Ok(_) => {
+                        self.readout.engine.take();
+                        self.settings.tts_voice_profile = key;
+                        self.refresh_readout_voices();
+                        self.readout.status = "読み上げる声を固定しました。".into();
+                        if !self.readout.voice_cancel.load(Ordering::Acquire)
+                            && let Some((text, live, received)) =
+                                self.readout.pending_voice_read.take()
+                            && (!live || received.elapsed() < Duration::from_secs(8))
+                        {
+                            self.read_japanese_text(text, live);
+                        }
+                    }
+                    Err(_) if self.readout.voice_cancel.load(Ordering::Acquire) => {
+                        self.readout.status = "固定声の準備を中止しました。".into()
                     }
                     Err(error) => self.readout.error = error,
                 }
@@ -213,6 +349,52 @@ impl App {
         ui.label(RichText::new("訳文の読み上げ").strong());
         ui.label("Irodori-TTS v4.1 Small-MF / speech.cpp");
         ui.label("日本語の訳文を、このPC内で音声にします。");
+        let old_voice = self.settings.tts_voice_profile.clone();
+        ui.add_enabled_ui(!self.readout.voice_preparing, |ui| {
+            egui::ComboBox::from_id_salt("fixed-readout-voice")
+                .selected_text(if self.settings.tts_voice_profile == "default-v1" {
+                    "標準の固定声"
+                } else {
+                    "追加した固定声"
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.settings.tts_voice_profile,
+                        "default-v1".into(),
+                        "標準の固定声",
+                    );
+                    for (index, (key, _)) in self
+                        .readout
+                        .voices
+                        .iter()
+                        .filter(|(key, _)| key != "default-v1")
+                        .enumerate()
+                    {
+                        ui.selectable_value(
+                            &mut self.settings.tts_voice_profile,
+                            key.clone(),
+                            format!("追加した固定声 {}", index + 1),
+                        );
+                    }
+                });
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("固定声を準備").clicked() {
+                    self.prepare_readout_voice(None);
+                }
+                if ui.button("参照音声から登録").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("WAV", &["wav"])
+                        .pick_file()
+                {
+                    self.prepare_readout_voice(Some(path));
+                }
+            });
+        });
+        if old_voice != self.settings.tts_voice_profile {
+            self.readout.pending_voice_read = None;
+            self.readout.engine.take();
+        }
+        ui.label(RichText::new("声の特徴を一度だけ保存し、字幕が変わっても同じ声で読み上げます。生成音声ファイルは残しません。").size(12.0));
         let options = readout_options(&self.settings, false);
         self.settings.tts_speed = options.speed;
         self.settings.tts_max_speed = options.max_speed;

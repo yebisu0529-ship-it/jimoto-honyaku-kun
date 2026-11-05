@@ -1,0 +1,279 @@
+{
+  "version": 1,
+  "sdk_version": "1.1.2",
+  "sdk_commit": "0e96b93c6810f17cf8352acbb4487cc9e45b66d5",
+  "model_repo": "datalab-to/indra-ocr",
+  "model_revision": "bd02167fdf2005a19962cc15188f8496a2c87d3b",
+  "uv": {
+    "name": "uv-x86_64-pc-windows-msvc.zip",
+    "version": "0.11.30",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.11.30/uv-x86_64-pc-windows-msvc.zip",
+    "bytes": 25710044,
+    "sha256": "be8d78c992312212e5cc05e9f9de3fa996db73b7c86a186dfb9231eb9f91d33e"
+  },
+  "python": {
+    "version": "3.13.14",
+    "build": "20260718",
+    "name": "cpython-3.13.14+20260718-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260718/cpython-3.13.14%2B20260718-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+    "bytes": 21875929,
+    "sha256": "91ea0cd883295458fa766eae36241df3ecc21f7029814189707d54b450e55c69"
+  },
+  "models": [
+    {
+      "name": "det.onnx",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/det.onnx",
+      "bytes": 389948,
+      "sha256": "f2bd4cba23e9c328cf7ec824634e423e191a2c6aacbbf35c62bd79dd70f62f59"
+    },
+    {
+      "name": "rec.onnx",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/rec.onnx",
+      "bytes": 5042161,
+      "sha256": "475972a2710be4a3cbfeb2bc7f3624ffd563de07de42476fc7a290d4e1ece484"
+    },
+    {
+      "name": "rec_cjk.onnx",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/rec_cjk.onnx",
+      "bytes": 10176018,
+      "sha256": "4a035516a17e62cdf33a4fe2d88077654cb8841cff024685cdef4e351694ef50"
+    },
+    {
+      "name": "script.onnx",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/script.onnx",
+      "bytes": 191630,
+      "sha256": "b6ce4e926e19c243faaf37bd46880398bf2cb4ae56a29e1177a3b017c1280e36"
+    },
+    {
+      "name": "meta.json",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/meta.json",
+      "bytes": 211869,
+      "sha256": "4ce4c94b46f5d644033c02e718322014ff4081270f385038c571912b56696339"
+    },
+    {
+      "name": "order.onnx",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/order.onnx",
+      "bytes": 2973138,
+      "sha256": "a42db2e8b536ad3d84045a4b7f9b0a72667cf8be4aa02d63f7b38004719fb180"
+    },
+    {
+      "name": "orient.onnx",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/orient.onnx",
+      "bytes": 371802,
+      "sha256": "20eaf670f55a7cf9facfe1bdd6c7b8e40be75bbf4d48a3df43f66aa3bbd874fd"
+    },
+    {
+      "name": "lm.npz",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/lm.npz",
+      "bytes": 15695957,
+      "sha256": "6c0fb618a363a0acdd05d4f5b0edd9e8146d2d990541b87f6130bbfe17cea58d"
+    },
+    {
+      "name": "lm_cjk.npz",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/lm_cjk.npz",
+      "bytes": 18955160,
+      "sha256": "6d64f13f4f90f4e529bd63340c6df76238d007feaef2abb903d8cd28d92bc2f3"
+    }
+  ],
+  "wheels": [
+    {
+      "package": "anyio",
+      "version": "4.16.0",
+      "name": "anyio-4.16.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/a9/16/7757fb84c819accc7d7e9af5291b261e4abb8627ee040f99e7d35ef2457a/anyio-4.16.0-py3-none-any.whl",
+      "bytes": 134521,
+      "sha256": "c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026"
+    },
+    {
+      "package": "certifi",
+      "version": "2026.10.23",
+      "name": "certifi-2026.10.23-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/32/d1/a3652fe2c19134d0d15922177821d863cbd7e842d53a21bbe7e8e3a1b5ac/certifi-2026.10.23-py3-none-any.whl",
+      "bytes": 135082,
+      "sha256": "e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
+    },
+    {
+      "package": "click",
+      "version": "8.5.0",
+      "name": "click-8.5.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl",
+      "bytes": 125251,
+      "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360"
+    },
+    {
+      "package": "colorama",
+      "version": "0.4.6",
+      "name": "colorama-0.4.6-py2.py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl",
+      "bytes": 25335,
+      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"
+    },
+    {
+      "package": "filelock",
+      "version": "4.2.9",
+      "name": "filelock-4.2.9-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/00/05/76184fe08339723d643ab47887a8e4de8f2921ca4e008617ab7490af7857/filelock-4.2.9-py3-none-any.whl",
+      "bytes": 164734,
+      "sha256": "a379c50a729e5b68c8519a4d26489f755d9769960a236ecd838190e2a78db2e9"
+    },
+    {
+      "package": "flatbuffers",
+      "version": "25.12.19",
+      "name": "flatbuffers-25.12.19-py2.py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl",
+      "bytes": 26661,
+      "sha256": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4"
+    },
+    {
+      "package": "fsspec",
+      "version": "2026.9.0",
+      "name": "fsspec-2026.9.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
+      "bytes": 221738,
+      "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f"
+    },
+    {
+      "package": "h11",
+      "version": "0.16.0",
+      "name": "h11-0.16.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl",
+      "bytes": 37515,
+      "sha256": "63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"
+    },
+    {
+      "package": "hf-xet",
+      "version": "1.8.0",
+      "name": "hf_xet-1.8.0-cp38-abi3-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/97/4d/2c76a992b370ff77d0b5219275779f8c9a7dabb8ee649deb265dfed84d0f/hf_xet-1.8.0-cp38-abi3-win_amd64.whl",
+      "bytes": 3911559,
+      "sha256": "92188598dedc1e1f5609bd718d4db8687a6c89915553912571e2f587892eecec"
+    },
+    {
+      "package": "httpcore",
+      "version": "1.0.9",
+      "name": "httpcore-1.0.9-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl",
+      "bytes": 78784,
+      "sha256": "2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55"
+    },
+    {
+      "package": "httpx",
+      "version": "0.28.1",
+      "name": "httpx-0.28.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl",
+      "bytes": 73517,
+      "sha256": "d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad"
+    },
+    {
+      "package": "huggingface-hub",
+      "version": "1.33.0",
+      "name": "huggingface_hub-1.33.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/fc/16/963096d224b80909432dc16561a615fd33d2d13beef3ce4c63fa25e40867/huggingface_hub-1.33.0-py3-none-any.whl",
+      "bytes": 846435,
+      "sha256": "04e434b06e100eddbce9a6e817d72693a7884b10a79bd67ab48080d5c07eb899"
+    },
+    {
+      "package": "idna",
+      "version": "3.20",
+      "name": "idna-3.20-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl",
+      "bytes": 69583,
+      "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c"
+    },
+    {
+      "package": "indra-ocr",
+      "version": "1.1.2",
+      "name": "indra_ocr-1.1.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/3f/9a/ad0b5a2d72acc47bf321fc9c73c559b4c7743228c59f55949d2c050e4328/indra_ocr-1.1.2-py3-none-any.whl",
+      "bytes": 96141,
+      "sha256": "22c82720968dd91b11ae137865fa01edaed29d7c1c11dd5d9c4a084bc3654da2"
+    },
+    {
+      "package": "numpy",
+      "version": "2.5.4",
+      "name": "numpy-2.5.4-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/90/8c/140a40398a66b4471211be1affdb6ed24c486d581bd28d07b7f2fcb69540/numpy-2.5.4-cp313-cp313-win_amd64.whl",
+      "bytes": 12566113,
+      "sha256": "8b4d2fd2d34e5f8c9235ee787de5631a37a28402b15cb80814df973d2be54129"
+    },
+    {
+      "package": "onnxruntime",
+      "version": "1.31.1",
+      "name": "onnxruntime-1.31.1-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/59/bf/a1d282b4c753ba3e9b31f4c11abd2bc2390513dc5e3792ca3b78e42401c3/onnxruntime-1.31.1-cp313-cp313-win_amd64.whl",
+      "bytes": 14888304,
+      "sha256": "0558f29d5f6ac09957390c9c5495931485ee8ae7f0ce781ccee86a0ae5c2348b"
+    },
+    {
+      "package": "opencv-python-headless",
+      "version": "5.0.0.93",
+      "name": "opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/b8/88/763b967f7efd7226b82c9fae16d560cba049b1f0c036647e65c610fd636e/opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl",
+      "bytes": 43825962,
+      "sha256": "829717b6a95554f273e49e357cee3b3a2a26b6f4842fbc1bed2b45bdd8f87e0e"
+    },
+    {
+      "package": "packaging",
+      "version": "26.3",
+      "name": "packaging-26.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+      "bytes": 129956,
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
+    },
+    {
+      "package": "protobuf",
+      "version": "7.36.2",
+      "name": "protobuf-7.36.2-cp310-abi3-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/8a/55/b77bda4e5e5f5971fb51b07663694690e9afdb9402136c16a522bd621cad/protobuf-7.36.2-cp310-abi3-win_amd64.whl",
+      "bytes": 456514,
+      "sha256": "a300819d441e078a5608c0d3c709796bb548136058fda017ae51d425b44fd353"
+    },
+    {
+      "package": "pypdfium2",
+      "version": "5.14.0",
+      "name": "pypdfium2-5.14.0-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/00/dc/ca7874924c9cfd701ad53f89529968523790e70473e0b71e834668316148/pypdfium2-5.14.0-py3-none-win_amd64.whl",
+      "bytes": 3947280,
+      "sha256": "149fd5c6397b8df8bf7911a93506eff0be874f877afe7ac936cf5d37d21a6a06"
+    },
+    {
+      "package": "pyyaml",
+      "version": "6.0.3",
+      "name": "pyyaml-6.0.3-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/97/c9/39d5b874e8b28845e4ec2202b5da735d0199dbe5b8fb85f91398814a9a46/pyyaml-6.0.3-cp313-cp313-win_amd64.whl",
+      "bytes": 154090,
+      "sha256": "79005a0d97d5ddabfeeea4cf676af11e647e41d81c9a7722a193022accdb6b7c"
+    },
+    {
+      "package": "tqdm",
+      "version": "4.70.1",
+      "name": "tqdm-4.70.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/a7/03/921a3d3c75785aca9ebfbfcabfbc3a1be12e2ab5265deb026d55a5a3f83e/tqdm-4.70.1-py3-none-any.whl",
+      "bytes": 80199,
+      "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73"
+    },
+    {
+      "package": "typing-extensions",
+      "version": "4.16.0",
+      "name": "typing_extensions-4.16.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "bytes": 45571,
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+    }
+  ],
+  "notices": [
+    {
+      "name": "WEIGHTS-LICENSE.txt",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/LICENSE",
+      "bytes": 14750,
+      "sha256": "50c88a018a7ee322e89f6b09401b237beb0cd331685879405b3db48993950a5f"
+    },
+    {
+      "name": "MODEL-README.md",
+      "url": "https://huggingface.co/datalab-to/indra-ocr/resolve/bd02167fdf2005a19962cc15188f8496a2c87d3b/README.md",
+      "bytes": 22905,
+      "sha256": "3c4940ddedbd61b948bfa2a91fa4ae95f014554cd82fda89cc7f37234ce515d0"
+    }
+  ],
+  "requirements_sha256": "33b69969a0d6ff65afead99d2f1ffeca8d4f6cd5d550f687be6c147d77f2f37b"
+}

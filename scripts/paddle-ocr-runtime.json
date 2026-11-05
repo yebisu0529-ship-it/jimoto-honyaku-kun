@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "repo": "PaddlePaddle/PaddleOCR-VL-1.6-GGUF",
+  "revision": "511b09642bb324401f15f97cc23bc67e8f0a291d",
+  "license": "Apache-2.0",
+  "runtime_release": "b12119",
+  "embedded_chat_template_sha256": "1369e43952c7a84e834be95732d65111e96cbefe30aa32a4826eca344f5ef939",
+  "model": {
+    "name": "PaddleOCR-VL-1.6-GGUF.gguf",
+    "url": "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/511b09642bb324401f15f97cc23bc67e8f0a291d/PaddleOCR-VL-1.6-GGUF.gguf",
+    "bytes": 935769056,
+    "sha256": "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8"
+  },
+  "mmproj": {
+    "name": "PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
+    "url": "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/511b09642bb324401f15f97cc23bc67e8f0a291d/PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
+    "bytes": 881770560,
+    "sha256": "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a"
+  },
+  "notices": [
+    {
+      "name": "MODEL_CARD.md",
+      "url": "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/511b09642bb324401f15f97cc23bc67e8f0a291d/README.md",
+      "bytes": 14958,
+      "sha256": "5e792c58507ad4b939eedacdd28f909f78b2dec848dafbaa1ea4d5659e287f8d"
+    },
+    {
+      "name": "LICENSE-APACHE-2.0",
+      "url": "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6/resolve/c5630abae1d940eafe0697512a0325494b02ab42/LICENSE",
+      "bytes": 11376,
+      "sha256": "b8c4d7deccd236af023af1c88c4d4e8f0fc2f41914e0fb23a3ec9678fb5a8456"
+    },
+    {
+      "name": "UPSTREAM_MODEL_CARD.md",
+      "url": "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6/resolve/c5630abae1d940eafe0697512a0325494b02ab42/README.md",
+      "bytes": 21424,
+      "sha256": "d6c5b77a660577f6e18021defccd835bdc93a8c6538f5a479d597f3e94288abf"
+    }
+  ]
+}

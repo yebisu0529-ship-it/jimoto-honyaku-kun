@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "runtime_version": "2.0.1",
+  "runtime_commit": "af2d8d81dbfa61c4cea4c568da78f3982edca005",
+  "onnxruntime_version": "1.28.2",
+  "runtime": {"name":"sherpa-onnx-v2.0.1-win-x64-shared-MD-Release-no-tts.tar.bz2","url":"https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-v2.0.1-win-x64-shared-MD-Release-no-tts.tar.bz2","bytes":20962760,"sha256":"11fd6a50b97eed38b54fb16d8219f49b16aa7f6a8e43a042316469ef47652e82"},
+  "model": {"name":"sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2","url":"https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2","bytes":64717756,"sha256":"c0d5aa5f8eeb686032345e180bedf39319dc2e0556781c6264bcadba8328a6e1"},
+  "notices": [
+    {"name":"sherpa-LICENSE.txt","url":"https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/af2d8d81dbfa61c4cea4c568da78f3982edca005/LICENSE","bytes":11358,"sha256":"cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"},
+    {"name":"onnxruntime-LICENSE.txt","url":"https://raw.githubusercontent.com/microsoft/onnxruntime/33ca9628233dc8f002435e868d4c2e9f82766ca1/LICENSE","bytes":1073,"sha256":"2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"},
+    {"name":"onnxruntime-ThirdPartyNotices.txt","url":"https://raw.githubusercontent.com/microsoft/onnxruntime/33ca9628233dc8f002435e868d4c2e9f82766ca1/ThirdPartyNotices.txt","bytes":325054,"sha256":"0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2"}
+  ],
+  "model_license": "Apache-2.0",
+  "model_upstream": "https://modelscope.cn/models/iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch/summary",
+  "model_license_notice": "CT-Transformer checkpoint iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch: upstream README declares Apache License 2.0. Converted INT8 ONNX supplied by k2-fsa/sherpa-onnx punctuation-models release. Original archive README/config/conversion scripts are retained. See sherpa-LICENSE.txt for the Apache License 2.0 terms. Model source: https://modelscope.cn/models/iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch/summary"
+}

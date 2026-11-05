@@ -546,21 +546,29 @@ struct StreamingFrames {
 #[cfg(any(windows, test))]
 #[derive(Default)]
 struct StreamingPacketClock {
-    anchor: Option<(u64, i64)>,
+    next_sample: Option<i64>,
 }
 
 #[cfg(any(windows, test))]
 impl StreamingPacketClock {
-    fn position(&mut self, device: u64, clock_sample: i64, reset: bool) -> (i64, bool) {
-        if let Some((anchor_device, anchor_sample)) = self.anchor {
-            let position = anchor_sample as i128 + device as i128 - anchor_device as i128;
-            if !reset && device >= anchor_device && (position - clock_sample as i128).abs() <= 320 {
-                return (position as i64, false);
+    fn position(
+        &mut self,
+        _device: u64,
+        clock_sample: i64,
+        count: u32,
+        reset: bool,
+    ) -> (i64, bool) {
+        // The shared engine can convert device-rate frames to the requested
+        // 16kHz format. Advance by the returned packet's frame count, never by
+        // the device-position delta (which need not have the same rate).
+        let (start, discontinuity) = match self.next_sample {
+            Some(next) if !reset && (next as i128 - clock_sample as i128).abs() <= 320 => {
+                (next, false)
             }
-        }
-        let reanchored = self.anchor.is_some();
-        self.anchor = Some((device, clock_sample));
-        (clock_sample, reset || reanchored)
+            previous => (clock_sample, reset || previous.is_some()),
+        };
+        self.next_sample = Some(start.saturating_add(count as i64));
+        (start, discontinuity)
     }
 }
 
@@ -792,6 +800,7 @@ pub fn capture_loopback_streaming(
             let (start, reset) = packet_clock.position(
                 device,
                 clock_sample,
+                count,
                 invalid_time || flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0,
             );
             anyhow::ensure!(
@@ -898,12 +907,12 @@ mod tests {
     #[test]
     fn streaming_clock_has_no_packet_rounding_loss_and_recovers_a_pause() {
         let mut clock = StreamingPacketClock::default();
-        assert_eq!(clock.position(0, 17, false), (17, false));
+        assert_eq!(clock.position(0, 17, 441, false), (17, false));
         // Timestamp rounding/jitter must not change consecutive sample positions.
-        assert_eq!(clock.position(441, 457, false), (458, false));
-        assert_eq!(clock.position(882, 900, false), (899, false));
-        assert_eq!(clock.position(1323, 4800, false), (4800, true));
-        assert_eq!(clock.position(1764, 5240, false), (5241, false));
+        assert_eq!(clock.position(1323, 457, 441, false), (458, false));
+        assert_eq!(clock.position(2646, 900, 441, false), (899, false));
+        assert_eq!(clock.position(3969, 4800, 441, false), (4800, true));
+        assert_eq!(clock.position(5292, 5240, 441, false), (5241, false));
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         let mut stream = StreamingFrames::new(80).unwrap();
         stream.packet(160_000, &[42; 1280], true);

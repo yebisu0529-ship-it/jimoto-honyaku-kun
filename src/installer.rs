@@ -353,6 +353,8 @@ impl NetworkPolicy {
                             || matches!(
                                 host,
                                 "github.com"
+                                    | "raw.githubusercontent.com"
+                                    | "files.pythonhosted.org"
                                     | "release-assets.githubusercontent.com"
                                     | "objects.githubusercontent.com"
                                     | "github-releases.githubusercontent.com"
@@ -1875,12 +1877,17 @@ mod tests {
             "http://huggingface.co/model",
             "https://huggingface.co.evil.com/",
             "https://github.com@evil.com/",
+            "https://files.pythonhosted.org.evil.com/package.whl",
+            "https://raw.githubusercontent.com.evil.com/LICENSE",
             "http://127.0.0.1/",
         ] {
             assert!(!NetworkPolicy::Official.permits(&Url::parse(url).unwrap()));
         }
         assert!(NetworkPolicy::Official.permits(
             &Url::parse("https://release-assets.githubusercontent.com/asset?sig=1").unwrap()
+        ));
+        assert!(NetworkPolicy::Official.permits(
+            &Url::parse("https://files.pythonhosted.org/packages/pinned/package.whl").unwrap()
         ));
     }
     #[test]

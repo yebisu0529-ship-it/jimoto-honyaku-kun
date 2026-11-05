@@ -522,9 +522,398 @@ pub fn capture_loopback_suppressing(
     capture_loopback(stop, tx, chunk_seconds)
 }
 
+/// Continuous 16 kHz, mono PCM16. Times are relative to this capture session.
+/// A discontinuity requires the streaming recognizer to reset before this frame.
+#[derive(Clone, Debug)]
+pub struct StreamingAudioFrame {
+    pub samples: Vec<i16>,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub discontinuity: bool,
+}
+
+#[cfg(any(windows, test))]
+struct StreamingFrames {
+    frame_samples: usize,
+    cursor: u64,
+    pending: std::collections::VecDeque<i16>,
+    discontinuity: bool,
+    suppressed: bool,
+}
+
+/// Preserve exact sample positions across packet boundaries. QPC is used only
+/// to anchor/re-anchor the stream, not to round each packet's sample position.
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct StreamingPacketClock {
+    anchor: Option<(u64, i64)>,
+}
+
+#[cfg(any(windows, test))]
+impl StreamingPacketClock {
+    fn position(&mut self, device: u64, clock_sample: i64, reset: bool) -> (i64, bool) {
+        if let Some((anchor_device, anchor_sample)) = self.anchor {
+            let position = anchor_sample as i128 + device as i128 - anchor_device as i128;
+            if !reset && device >= anchor_device && (position - clock_sample as i128).abs() <= 320 {
+                return (position as i64, false);
+            }
+        }
+        let reanchored = self.anchor.is_some();
+        self.anchor = Some((device, clock_sample));
+        (clock_sample, reset || reanchored)
+    }
+}
+
+#[cfg(any(windows, test))]
+impl StreamingFrames {
+    fn new(frame_ms: u32) -> Result<Self> {
+        anyhow::ensure!(
+            matches!(frame_ms, 80 | 160),
+            "Streaming audio frames must be 80 or 160 ms"
+        );
+        Ok(Self {
+            frame_samples: frame_ms as usize * 16,
+            cursor: 0,
+            pending: std::collections::VecDeque::new(),
+            discontinuity: true,
+            suppressed: false,
+        })
+    }
+
+    fn suppress(&mut self, suppressed: bool) {
+        if suppressed != self.suppressed {
+            self.suppressed = suppressed;
+            // Do not leak a buffered partial TTS packet across either boundary.
+            self.pending.make_contiguous().fill(0);
+            self.discontinuity = true;
+        }
+    }
+
+    fn packet(&mut self, start: i64, samples: &[i16], discontinuity: bool) {
+        self.discontinuity |= discontinuity;
+        let skipped = if start < 0 {
+            start.unsigned_abs().min(samples.len() as u64) as usize
+        } else {
+            0
+        };
+        let samples = &samples[skipped..];
+        let start = start.max(0) as u64;
+        if start.saturating_add(samples.len() as u64) <= self.cursor {
+            // Wall-clock silence was already emitted. Never append late samples
+            // after it: that would accumulate latency indefinitely.
+            if samples.iter().any(|&value| value != 0) {
+                self.discontinuity = true;
+            }
+            return;
+        }
+        // A stalled worker must not allocate minutes of missing PCM. Advance to
+        // a frame boundary and explicitly reset instead of joining unrelated audio.
+        if start > self.cursor.saturating_add(32_000) {
+            self.cursor = start / self.frame_samples as u64 * self.frame_samples as u64;
+            self.pending.clear();
+            self.discontinuity = true;
+        }
+        let skip = self.cursor.saturating_sub(start).min(samples.len() as u64) as usize;
+        let start = start.max(self.cursor);
+        let offset = (start - self.cursor) as usize;
+        let samples = &samples[skip..];
+        let keep = samples.len().min(32_000_usize.saturating_sub(offset));
+        if keep < samples.len() {
+            self.discontinuity = true;
+        }
+        self.pending
+            .resize(self.pending.len().max(offset + keep), 0);
+        for (index, &sample) in samples[..keep].iter().enumerate() {
+            self.pending[offset + index] = if self.suppressed { 0 } else { sample };
+        }
+    }
+
+    fn emit_until(&mut self, due_samples: u64, tx: &SyncSender<StreamingAudioFrame>) -> bool {
+        use std::sync::mpsc::TrySendError;
+        // Bound recovery work after a long OS scheduling pause as well as memory.
+        if due_samples > self.cursor.saturating_add(32_000) {
+            let next = due_samples.saturating_sub(self.frame_samples as u64);
+            self.cursor = next / self.frame_samples as u64 * self.frame_samples as u64;
+            self.pending.clear();
+            self.discontinuity = true;
+        }
+        while self.cursor + self.frame_samples as u64 <= due_samples {
+            let start = self.cursor;
+            let samples = (0..self.frame_samples)
+                .map(|_| self.pending.pop_front().unwrap_or(0))
+                .collect();
+            self.cursor += self.frame_samples as u64;
+            let frame = StreamingAudioFrame {
+                samples,
+                start_ms: start / 16,
+                end_ms: self.cursor / 16,
+                discontinuity: self.discontinuity,
+            };
+            match tx.try_send(frame) {
+                Ok(()) => self.discontinuity = false,
+                Err(TrySendError::Full(_)) => self.discontinuity = true,
+                Err(TrySendError::Disconnected(_)) => return false,
+            }
+        }
+        true
+    }
+}
+
+/// Default-render WASAPI loopback only; no microphone or network is opened.
+/// Call on a worker with a bounded sync_channel. Silence is emitted too, and TTS
+/// suppression becomes silence plus reset markers. Full queues drop frames and
+/// mark the next accepted frame for reset. Stop discards an incomplete frame.
+#[cfg(windows)]
+pub fn capture_loopback_streaming(
+    stop: Arc<AtomicBool>,
+    tx: SyncSender<StreamingAudioFrame>,
+    frame_ms: u32,
+    suppress: Arc<AtomicBool>,
+) -> Result<()> {
+    use std::{
+        sync::atomic::Ordering,
+        time::{Duration, Instant},
+    };
+    use windows::{
+        Win32::{
+            Media::Audio::{
+                AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
+                AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_LOOPBACK,
+                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, IAudioClient,
+                IMMDeviceEnumerator, MMDeviceEnumerator,
+            },
+            System::Com::{CLSCTX_ALL, CoCreateInstance},
+        },
+        core::{HSTRING, PCWSTR},
+    };
+    let mut frames = StreamingFrames::new(frame_ms)?;
+    if stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    wasapi::initialize_mta()
+        .ok()
+        .context("Could not initialize streaming system audio on this worker")?;
+    struct Apartment;
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            wasapi::deinitialize();
+        }
+    }
+    let _apartment = Apartment;
+    let enumerator = wasapi::DeviceEnumerator::new()?;
+    let endpoint_id = enumerator
+        .get_default_device(&wasapi::Direction::Render)
+        .context("No default playback device is available")?
+        .get_id()?;
+    let native: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }?;
+    let endpoint_id = HSTRING::from(endpoint_id);
+    let endpoint = unsafe { native.GetDevice(PCWSTR(endpoint_id.as_ptr())) }?;
+    let client: IAudioClient = unsafe { endpoint.Activate(CLSCTX_ALL, None) }?;
+    // One continuously running Windows SRC instance converts the device mix to
+    // 16 kHz mono. Framing never resets SRC or rounds individual packet lengths.
+    let format = wasapi::WaveFormat::new(32, 32, &wasapi::SampleType::Float, 16_000, 1, None);
+    unsafe {
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK
+                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            1_000_000,
+            0,
+            format.as_waveformatex_ref(),
+            None,
+        )
+    }
+    .context("Could not initialize continuous playback capture")?;
+    let capture: IAudioCaptureClient = unsafe { client.GetService() }?;
+    // WASAPI QPC timestamps use 100 ns units. Obtain the same monotonic clock
+    // rather than mapping packets by read time, which jitters with scheduling.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn QueryPerformanceCounter(value: *mut i64) -> i32;
+        fn QueryPerformanceFrequency(value: *mut i64) -> i32;
+    }
+    let (mut frequency, mut counter) = (0_i64, 0_i64);
+    anyhow::ensure!(
+        unsafe { QueryPerformanceFrequency(&mut frequency) } != 0 && frequency > 0,
+        "Could not read the streaming audio clock"
+    );
+    anyhow::ensure!(
+        unsafe { QueryPerformanceCounter(&mut counter) } != 0,
+        "Could not read the streaming audio clock"
+    );
+    let origin_100ns = counter as i128 * 10_000_000 / frequency as i128;
+    let started = Instant::now();
+    unsafe { client.Start() }?;
+    struct Running<'a>(&'a IAudioClient);
+    impl Drop for Running<'_> {
+        fn drop(&mut self) {
+            let _ = unsafe { self.0.Stop() };
+        }
+    }
+    let _running = Running(&client);
+    let mut packet_clock = StreamingPacketClock::default();
+    struct Packet<'a> {
+        capture: &'a IAudioCaptureClient,
+        count: u32,
+    }
+    impl Drop for Packet<'_> {
+        fn drop(&mut self) {
+            let _ = unsafe { self.capture.ReleaseBuffer(self.count) };
+        }
+    }
+    while !stop.load(Ordering::Acquire) {
+        frames.suppress(suppress.load(Ordering::Acquire));
+        while !stop.load(Ordering::Acquire) && unsafe { capture.GetNextPacketSize() }? > 0 {
+            let mut pointer = std::ptr::null_mut();
+            let (mut count, mut flags, mut qpc, mut device) = (0, 0, 0, 0);
+            unsafe {
+                capture.GetBuffer(
+                    &mut pointer,
+                    &mut count,
+                    &mut flags,
+                    Some(&mut device),
+                    Some(&mut qpc),
+                )
+            }?;
+            let packet = Packet {
+                capture: &capture,
+                count,
+            };
+            frames.suppress(suppress.load(Ordering::Acquire));
+            let invalid_time = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
+            let clock_sample = if invalid_time {
+                (started.elapsed().as_nanos() * 16_000 / 1_000_000_000) as i64 - count as i64
+            } else {
+                ((qpc as i128 - origin_100ns) * 16_000 / 10_000_000) as i64
+            };
+            let (start, reset) = packet_clock.position(
+                device,
+                clock_sample,
+                invalid_time || flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0,
+            );
+            anyhow::ensure!(
+                count <= 32_000,
+                "System audio returned an oversized streaming packet"
+            );
+            let mut pcm = vec![0; count as usize];
+            if !frames.suppressed && flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 == 0 && count > 0 {
+                anyhow::ensure!(
+                    !pointer.is_null(),
+                    "System audio returned an invalid streaming packet"
+                );
+                let bytes = unsafe { std::slice::from_raw_parts(pointer, count as usize * 4) };
+                for (sample, bytes) in pcm.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                    let value = f32::from_le_bytes(*bytes);
+                    *sample = if value.is_finite() {
+                        (value.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16
+                    } else {
+                        0
+                    };
+                }
+            }
+            frames.packet(start, &pcm, reset);
+            // Explicit normal release reports errors; Drop covers every error/panic above.
+            let release = unsafe { capture.ReleaseBuffer(count) };
+            std::mem::forget(packet);
+            release?;
+        }
+        frames.suppress(suppress.load(Ordering::Acquire));
+        // Windows may stop delivering loopback packets in complete silence.
+        // A short guard tolerates engine packet delivery jitter without adding
+        // accumulating delay; stale packets can never be appended afterwards.
+        let due = started.elapsed().saturating_sub(Duration::from_millis(20));
+        if !frames.emit_until((due.as_nanos() * 16_000 / 1_000_000_000) as u64, &tx) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn capture_loopback_streaming(
+    _stop: Arc<AtomicBool>,
+    _tx: SyncSender<StreamingAudioFrame>,
+    _frame_ms: u32,
+    _suppress: Arc<AtomicBool>,
+) -> Result<()> {
+    bail!("Continuous system audio capture requires Windows")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_frames_preserve_packet_samples_and_silence_timing() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let mut stream = StreamingFrames::new(80).unwrap();
+        let input: Vec<i16> = (0..2560).map(|value| value as i16).collect();
+        stream.packet(0, &input[..731], false);
+        stream.packet(731, &input[731..1703], false);
+        stream.packet(1703, &input[1703..], false);
+        assert!(stream.emit_until(3840, &tx));
+        let first = rx.try_recv().unwrap();
+        let second = rx.try_recv().unwrap();
+        let third = rx.try_recv().unwrap();
+        assert!(first.discontinuity);
+        assert!(!second.discontinuity);
+        assert_eq!([first.samples, second.samples].concat(), input);
+        assert_eq!((second.start_ms, second.end_ms), (80, 160));
+        assert_eq!((third.start_ms, third.end_ms), (160, 240));
+        assert_eq!(third.samples, vec![0; 1280]);
+        assert!(StreamingFrames::new(100).is_err());
+        assert_eq!(StreamingFrames::new(160).unwrap().frame_samples, 2560);
+    }
+
+    #[test]
+    fn streaming_queue_drop_and_suppression_reset_without_blocking() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let mut stream = StreamingFrames::new(80).unwrap();
+        stream.packet(0, &vec![123; 5120], false);
+        assert!(stream.emit_until(2560, &tx)); // second frame is dropped
+        assert_eq!(rx.try_recv().unwrap().start_ms, 0);
+        assert!(stream.emit_until(3840, &tx));
+        let after_gap = rx.try_recv().unwrap();
+        assert_eq!(after_gap.start_ms, 160);
+        assert!(after_gap.discontinuity);
+        stream.suppress(true);
+        assert!(stream.emit_until(5120, &tx));
+        let muted = rx.try_recv().unwrap();
+        assert!(muted.discontinuity);
+        assert!(muted.samples.iter().all(|&sample| sample == 0));
+        stream.suppress(false);
+        stream.packet(5120, &vec![456; 1280], false);
+        assert!(stream.emit_until(6400, &tx));
+        let resumed = rx.try_recv().unwrap();
+        assert!(resumed.discontinuity);
+        assert!(resumed.samples.iter().all(|&sample| sample == 456));
+        drop(rx);
+        assert!(!stream.emit_until(7680, &tx));
+    }
+
+    #[test]
+    fn streaming_clock_has_no_packet_rounding_loss_and_recovers_a_pause() {
+        let mut clock = StreamingPacketClock::default();
+        assert_eq!(clock.position(0, 17, false), (17, false));
+        // Timestamp rounding/jitter must not change consecutive sample positions.
+        assert_eq!(clock.position(441, 457, false), (458, false));
+        assert_eq!(clock.position(882, 900, false), (899, false));
+        assert_eq!(clock.position(1323, 4800, false), (4800, true));
+        assert_eq!(clock.position(1764, 5240, false), (5241, false));
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let mut stream = StreamingFrames::new(80).unwrap();
+        stream.packet(160_000, &[42; 1280], true);
+        assert!(stream.pending.len() <= 32_000);
+        assert!(stream.emit_until(161_280, &tx));
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(frame.start_ms, 10_000);
+        assert!(frame.discontinuity);
+        assert_eq!(frame.samples, vec![42; 1280]);
+    }
 
     #[cfg(windows)]
     #[test]

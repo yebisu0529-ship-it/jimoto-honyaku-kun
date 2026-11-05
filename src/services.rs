@@ -135,11 +135,16 @@ impl App {
         let tx = self.tx.clone();
         let options = self.settings.translation.clone();
         let asr_endpoint = self.settings.asr_endpoint.clone();
+        let native_asr = self.settings.asr_backend == "nemotron";
         thread::spawn(move || {
             let translation = Translator::new(options)
                 .and_then(|t| t.health())
                 .map_err(|e| format!("{e:#}"));
-            let asr = local_health(&asr_endpoint).unwrap_or(None);
+            let asr = if native_asr {
+                None
+            } else {
+                local_health(&asr_endpoint).unwrap_or(None)
+            };
             let _ = tx.send(Event::ServiceStatus { translation, asr });
         });
     }
@@ -149,9 +154,14 @@ impl App {
         asr: Option<AsrStatus>,
     ) {
         self.health_check_running = false;
-        self.asr_ready = asr
-            .as_ref()
-            .is_some_and(|status| status.matches(&self.settings));
+        self.asr_ready = if self.settings.asr_backend == "nemotron" {
+            self.nemotron
+                .as_ref()
+                .is_some_and(plamo_translate::nemotron::NemotronEngine::is_ready)
+        } else {
+            asr.as_ref()
+                .is_some_and(|status| status.matches(&self.settings))
+        };
         if self.asr_ready {
             self.asr_started_at = None;
         } else if self
@@ -162,7 +172,11 @@ impl App {
             self.audio_start_requested = false;
             self.service_error = "音声認識を読み込めませんでした。設定で音声認識の方式を確認し、準備し直してください。".into();
         }
-        if asr.is_some() && !self.asr_ready && self.asr_pid.is_none() && self.audio_start_requested
+        if self.settings.asr_backend != "nemotron"
+            && asr.is_some()
+            && !self.asr_ready
+            && self.asr_pid.is_none()
+            && self.audio_start_requested
         {
             self.audio_start_requested = false;
             self.service_error = "別の音声認識環境が動いています。設定を切り替える場合は、その環境を終了してください。".into();
@@ -282,6 +296,21 @@ impl App {
             self.service_error = error.to_string();
         }
     }
+    pub(super) fn stop_asr(&mut self) {
+        if self.audio_installing {
+            self.audio_cancel.store(true, Ordering::Release);
+        }
+        self.stop_nemotron();
+        if let Some(pid) = self.asr_pid.take()
+            && let Some(index) = self.children.iter().position(|c| c.id() == pid)
+        {
+            let mut child = self.children.swap_remove(index);
+            kill_owned_child(&mut child);
+        }
+        self.asr_ready = false;
+        self.asr_started_at = None;
+        self.audio_start_requested = false;
+    }
     pub(super) fn start_asr(&mut self) {
         if self.asr_ready {
             return;
@@ -290,14 +319,23 @@ impl App {
             self.audio_confirmation = true;
             return;
         }
-        if let Some(pid) = self.asr_pid
-            && let Some(child) = self.children.iter_mut().find(|c| c.id() == pid)
-            && matches!(child.try_wait(), Ok(None))
+        if self.settings.asr_backend == "nemotron" {
+            if let Err(error) = self.start_nemotron() {
+                self.service_error = format!("Nemotronを起動できません: {error:#}");
+                self.audio_start_requested = false;
+            }
+            return;
+        }
+        if let Some(pid) = self.asr_pid.take()
+            && let Some(index) = self.children.iter().position(|c| c.id() == pid)
         {
-            if self.asr_started_at.is_some() {
+            if matches!(self.children[index].try_wait(), Ok(None)) && self.asr_started_at.is_some()
+            {
+                self.asr_pid = Some(pid);
                 return;
             }
-            kill_owned_child(child);
+            let mut child = self.children.swap_remove(index);
+            kill_owned_child(&mut child);
         }
         let mut cmd = Command::new(&self.settings.python);
         cmd.current_dir(app_root())
@@ -338,6 +376,15 @@ impl App {
         Ok(())
     }
     pub(super) fn audio_environment_ready(&self) -> bool {
+        if self.settings.asr_backend == "nemotron" {
+            return plamo_translate::nemotron_setup::load(&data_root().join("nemotron"))
+                .ok()
+                .flatten()
+                .is_some_and(|installation| {
+                    self.settings.asr_device == "auto"
+                        || self.settings.asr_device == installation.backend
+                });
+        }
         if !Path::new(&self.settings.python).is_file()
             || !app_root().join("scripts/asr_server.py").is_file()
         {
@@ -364,12 +411,27 @@ impl App {
         })
     }
     pub(super) fn load_audio_installation(&mut self) -> Result<()> {
+        if self.settings.asr_backend == "nemotron" {
+            self.settings.asr_endpoint = "http://127.0.0.1:17864".into();
+            if let Some(installation) =
+                plamo_translate::nemotron_setup::load(&data_root().join("nemotron"))?
+            {
+                self.settings.asr_model = installation.model.to_string_lossy().into();
+                if self.settings.asr_device == "auto" {
+                    self.settings.asr_device = installation.backend;
+                }
+            }
+            return Ok(());
+        }
         let path = data_root().join("audio-installation.json");
         if !path.exists() {
             return Ok(());
         }
         let data: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
         anyhow::ensure!(data["version"] == 1, "音声認識の保存情報が対応外です");
+        if data["backend"].as_str() != Some(self.settings.asr_backend.as_str()) {
+            return Ok(());
+        }
         let python = data["python_path"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Pythonの保存情報がありません"))?;
@@ -402,6 +464,45 @@ impl App {
         if self.audio_installing {
             return;
         }
+        if self.settings.asr_backend == "nemotron" {
+            self.audio_installing = true;
+            self.audio_progress = None;
+            self.audio_cancel = Arc::new(AtomicBool::new(false));
+            self.service_error.clear();
+            let root = data_root().join("nemotron");
+            let backend = match self.settings.asr_device.as_str() {
+                "cpu" => "cpu",
+                "vulkan" => "vulkan",
+                _ if self
+                    .setup
+                    .hardware
+                    .as_ref()
+                    .is_some_and(|h| h.gpus.iter().any(|g| g.vulkan_eligible)) =>
+                {
+                    "vulkan"
+                }
+                _ => "cpu",
+            };
+            self.settings.asr_device = backend.into();
+            let cancel = self.audio_cancel.clone();
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let result =
+                    plamo_translate::nemotron_setup::install(&root, backend, cancel, |progress| {
+                        let _ = tx.try_send(Event::AudioProgress {
+                            backend: "nemotron".into(),
+                            progress,
+                        });
+                    })
+                    .map(|_| ())
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Event::AudioPrepared {
+                    backend: "nemotron".into(),
+                    result,
+                });
+            });
+            return;
+        }
         let script = app_root().join("scripts/setup-audio.ps1");
         if !script.is_file() {
             self.service_error =
@@ -421,6 +522,7 @@ impl App {
         };
         let cancel = self.audio_cancel.clone();
         thread::spawn(move || {
+            let selected_backend = backend.clone();
             let result=(||->Result<()>{fs::create_dir_all(root.join("logs"))?;let log=fs::OpenOptions::new().create(true).append(true).open(root.join("logs/audio-setup.log"))?;
                 let mut cmd=Command::new("powershell.exe");cmd.args(["-NoProfile","-ExecutionPolicy","Bypass","-File"]).arg(script).arg("-InstallRoot").arg(root).arg("-Backend").arg(backend).arg("-Device").arg(device).stdout(log.try_clone()?).stderr(log);command_hidden(&mut cmd);let mut child=cmd.spawn()?;
                 loop {
@@ -435,7 +537,10 @@ impl App {
                     thread::sleep(Duration::from_millis(200));
                 }
             })().map_err(|e|format!("{e:#}"));
-            let _ = tx.send(Event::AudioPrepared(result));
+            let _ = tx.send(Event::AudioPrepared {
+                backend: selected_backend,
+                result,
+            });
         });
     }
     pub(super) fn audio_setup_ui(&mut self, ctx: &egui::Context) {
@@ -445,12 +550,19 @@ impl App {
         let width = (ctx.content_rect().width() - 48.0).clamp(260.0, 510.0);
         egui::Window::new("音声認識の追加準備").collapsible(false).resizable(false).default_width(width).anchor(egui::Align2::CENTER_CENTER,[0.0,0.0]).show(ctx,|ui|{
             ui.label("再生中の音声を、このPCで文字起こしする機能です。YouTube字幕だけを使う場合は不要です。");
-            ui.add_space(12.0);ui.label(if self.settings.asr_backend=="qwen"{"Qwen3-ASR · 多言語 / GPU対応"}else{"Whisper · 多言語 / CPU"});
-            ui.label(if self.settings.asr_backend=="qwen"{"初回は数GBを取得します。GPU用の音声認識環境は、保存先に最大14GB程度の空きが必要です。"}else{"小型の音声モデルと実行環境を追加します。保存先には約4GBの空きが必要です。"});
+            ui.add_space(12.0);ui.label(match self.settings.asr_backend.as_str(){"nemotron"=>"Nemotron Speech · 英語 / 連続認識","qwen"=>"Qwen3-ASR · 多言語 / GPU対応",_=>"Whisper · 多言語 / CPU"});
+            ui.label(match self.settings.asr_backend.as_str(){"nemotron"=>"英語専用モデル約700MBと実行環境を取得します。作業用を含め、保存先に約2GBの空きが必要です。モデルにはNVIDIA Open Model Licenseが適用されます。","qwen"=>"初回は数GBを取得します。GPU用の音声認識環境は、保存先に最大14GB程度の空きが必要です。",_=>"小型の音声モデルと実行環境を追加します。保存先には約4GBの空きが必要です。"});
+            if self.settings.asr_backend=="nemotron" {ui.hyperlink_to("モデルの利用条件", "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/");}
             ui.label("準備中も音声の取得は始まりません。インストールはアプリ専用フォルダーだけで行います。");
             ui.add_space(12.0);
             if self.audio_installing {
                 ui.horizontal(|ui| { ui.spinner(); ui.label("音声認識を準備しています…"); });
+                if let Some(progress) = &self.audio_progress {
+                    ui.label(&progress.message);
+                    if let Some(total) = progress.total_bytes.filter(|n| *n > 0) {
+                        ui.add(egui::ProgressBar::new((progress.downloaded_bytes as f64 / total as f64).clamp(0.0,1.0) as f32).show_percentage());
+                    }
+                }
                 if ui.button("中止").clicked() { self.audio_cancel.store(true,Ordering::Relaxed); }
             } else {
                 ui.horizontal_wrapped(|ui| {

@@ -4,6 +4,8 @@ pub mod hardware;
 pub mod installer;
 pub mod journal;
 pub mod model_catalog;
+pub mod nemotron;
+pub mod nemotron_setup;
 pub mod platform;
 pub mod speech_setup;
 pub mod storage;

@@ -6,9 +6,9 @@ translated by PLaMo
 
 Windows用のローカル翻訳アプリです。文章、画面の範囲、YouTubeの表示字幕、PCで再生中の音声を翻訳できます。範囲翻訳とライブ翻訳は同時に使えます。
 
-**[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/jimoto-honyaku-kun/releases)** · **プレビュー版 0.3.0**
+**[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/jimoto-honyaku-kun/releases)** · **プレビュー版 0.4.0**
 
-ZIPを新しいフォルダーへ展開し、空の保存領域から翻訳モデル・音声認識・読み上げを導入して、実際の推論と再生を確認しました。範囲選択のマウス操作とYouTube拡張の実ブラウザー接続は、追加検証が残るプレビュー版です。詳しくは[検証範囲](docs/VALIDATION.md)をご覧ください。
+0.3.0ではZIPを新しいフォルダーへ展開し、空の保存領域から翻訳モデル・音声認識・読み上げを導入して、実際の推論と再生を確認しました。YouTube拡張による字幕受信と日本語の訳文表示も確認しています。範囲選択のマウス操作と、追加したNemotronのGUI操作は未検証のプレビュー版です。詳しくは[検証範囲](docs/VALIDATION.md)をご覧ください。
 
 ![初回のモデル準備画面（実コードから描画したデモ）](assets/screenshots/first-run.png)
 
@@ -53,14 +53,18 @@ YouTube字幕と音声認識は独立にオン・オフできます。両方を�
 
 ## 再生音声の翻訳は追加機能
 
-必要なときに、アプリの音声環境の準備から導入します。初回の空き容量の目安はQwen CUDAで14GiB、Qwen CPUで8GiB、Whisper CPUで4GiBです。翻訳モデル用の容量とは別に必要です。アプリ専用の保存領域へ固定版uv・管理Python 3.13・独立した環境・音声モデルを用意し、システムPythonやグローバルPATHを変更しません。
+必要なときに、設定の「音声認識を準備」から導入します。英語には**Nemotron Speech Streaming English 0.6B**を標準候補にし、多言語用のQwenとWhisperも選べます。既存の設定は、利用者が切り替えるまで保持します。
+
+- **Nemotron Speech Streaming English 0.6B / CPU・Vulkan**：英語専用です。約700MBの公式Q8_0 GGUFとNVIDIA NeMo-Speech.cpp 0.3.0を取得し、Pythonを使わず動作します。160ms単位で音声を連続送信し、認識途中の英文を表示します。確定した文だけを翻訳し、時刻付きで保存します。設定で560msまたは160msのモデル動作単位を選べます。実際の表示までには文の区切りや翻訳の待ち時間も含まれます。
 
 - **多言語Whisper base / CPU**：対応GPUを確認できないPCの候補です。
 - **Qwen3-ASR-0.6B-hf / CUDA**：対応GPUと空き容量を確認できるPCの候補です。音声用PyTorch CUDA12.8はドライバー570.65以上を別に確認します。翻訳用CUDAが動くことだけでは、この条件を満たした扱いにしません。
 
-モデルと依存の確認が完了してから音声環境を登録します。失敗時は既存の設定を確定し直さず、取得済みキャッシュを残します。開発用に準備済みの `.venv` やモデルがある構成では、その既存環境を利用できます。
+Nemotronの追加準備には約2GBの空き容量を見込みます。Qwen CUDAは14GiB、Qwen CPUは8GiB、Whisper CPUは4GiBが初回の目安です。翻訳モデル用とは別に必要です。QwenとWhisper用の固定版uv・管理Python 3.13・独立した環境はアプリ専用領域に用意し、システムPythonやグローバルPATHは変更しません。
 
-準備後に「音声翻訳を開始」または `Ctrl+Alt+L` を押すと、Windowsの既定出力で再生中の音を取得します。マイク入力ではありません。音声は短い区間ごとに認識し、待ち行列を無制限に増やさず、古い区間より最新を優先します。逐語の同時通訳ではなく、区間ごとの字幕翻訳です。音声翻訳中も範囲OCRを使えます。
+モデルと依存関係の確認が完了してから音声認識環境を登録します。失敗時は既存のモデル登録を保持し、取得済みキャッシュを残します。NemotronとQwen・Whisperは別の保存領域を使います。
+
+準備後に「PC音声」または `Ctrl+Alt+L` を押すと、Windowsの既定出力で再生中の音を取得します。マイク入力ではありません。Nemotronは無音も含む連続音声、QwenとWhisperは2〜4秒の区間を認識します。待ち行列に上限を設け、音声が欠落した場合はNemotronの認識状態をリセットします。逐語の同時通訳ではなく、確定した区間ごとの字幕翻訳です。音声翻訳中も範囲OCRを使えます。
 
 ## 日本語の読み上げ
 
@@ -68,7 +72,9 @@ YouTube字幕と音声認識は独立にオン・オフできます。両方を�
 
 訳文やタイムラインの読み上げボタンで再生できます。「日本語の訳文を自動で読み上げる」は初期状態ではオフです。停止や停止後の再生ができ、読み上げ中はアプリ自身の音声を音声翻訳へ取り込まないようにします。GPUの空きを起動直前にも確認し、4GiB未満または確認できない場合は、その起動だけCPUを使います。
 
-音声の生成はPC内で行います。初回のモデル読み込みや長文の生成には待ち時間があり、ライブ字幕と同じ速度で読み上げ続けられることは保証していません。
+読み上げの基準速度は0.8〜1.6倍で選べます。ライブ翻訳では、待ち時間に応じて生成速度を段階的に上げ、遅れが減ると基準速度へ戻します。自動調整の上限は2.0倍です。手動の読み上げは基準速度で全文を読みます。ライブで新しい訳文が届いた場合は、古い訳文の残りを区切り位置で切り上げます。
+
+音声の生成・再生はPC内のメモリーで行い、生成した音声ファイルを保存しません。初回のモデル読み込みや長文の生成には待ち時間があり、ライブ字幕と同じ速度で読み上げ続けられることは保証していません。
 
 ## 保存・通信
 
@@ -76,7 +82,7 @@ YouTube字幕と音声認識は独立にオン・オフできます。両方を�
 
 タイムラインはTXT / JSON / SRTへ書き出せます。音声とYouTube、または複数動画が混在する履歴はSRTへの書き出しを拒否し、TXT / JSONを案内します。画面画像・生の音声を翻訳履歴へ保存する構成ではありません。
 
-翻訳・音声認識・読み上げはPC内で実行し、原文・字幕・音声をクラウド推論へ送りません。初回のソフトウェアとモデルの取得にはネット接続を使います。ローカル接続は翻訳17860、音声認識17861、字幕ブリッジ17862、読み上げ17863です。アプリは自分で起動したモデルプロセスだけを管理します。
+翻訳・音声認識・読み上げはPC内で実行し、原文・字幕・音声をクラウド推論へ送りません。初回のソフトウェアとモデルの取得にはネット接続を使います。ローカル接続は翻訳17860、Qwen・Whisper音声認識17861、字幕ブリッジ17862、読み上げ17863、Nemotron17864です。アプリは自分で起動したモデルプロセスだけを管理します。
 
 ## CLI・開発・配布
 
@@ -102,5 +108,8 @@ YouTube字幕と音声認識は独立にオン・オフできます。両方を�
 - PFN公式GGUF：[0.8B](https://huggingface.co/pfnet/plamo-3-translate-0.8b-GGUF) / [2B](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF) / [8B](https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF) / [31B](https://huggingface.co/pfnet/plamo-3-translate-31b-GGUF)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) / [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B-hf) / [Whisper base](https://huggingface.co/Systran/faster-whisper-base)
 - [speech.cpp](https://github.com/nyosegawa/speech.cpp) / [Irodori-TTS v4.1 Small-MF GGUF](https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF)
+- [Nemotron Speech Streaming English 0.6B](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) / [NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) / [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/)
 
 読み上げの準備では固定したモデルカードとMIT・音声コーデックのApache-2.0通知も取得します。
+
+NemotronのモデルにはNVIDIA Open Model License、NeMo-Speech.cppにはApache-2.0が適用されます。彩りTTS用speech.cppとは別の実行環境です。取得したランタイムのライセンス・第三者通知は保持します。

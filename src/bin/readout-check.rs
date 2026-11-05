@@ -29,6 +29,8 @@ fn wait(
                 TtsEvent::Status(message) => {
                     trace.push(json!({"status":message,"ms":started.elapsed().as_millis()}))
                 }
+                TtsEvent::Rate(rate) => trace
+                    .push(json!({"event":"rate","speed":rate,"ms":started.elapsed().as_millis()})),
                 TtsEvent::Started => {
                     trace.push(json!({"event":"started","ms":started.elapsed().as_millis()}))
                 }

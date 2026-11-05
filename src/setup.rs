@@ -154,7 +154,9 @@ impl App {
         self.settings.template = result.template_path.to_string_lossy().into();
         self.settings.backend = result.backend.clone();
         self.settings.gpu_layers = if result.backend == "cpu" { 0 } else { 99 };
-        if let Some(rec) = &self.setup.recommendation {
+        if let Some(rec) = &self.setup.recommendation
+            && self.settings.asr_backend != "nemotron"
+        {
             self.settings.asr_backend = rec.asr_backend.clone();
             self.settings.asr_device = rec.asr_device.clone();
             self.settings.asr_model = if rec.asr_backend == "whisper" {

@@ -472,6 +472,12 @@ impl App {
         if !self.journal_error.is_empty() {
             ui.colored_label(ERROR, &self.journal_error);
         }
+        if self.audio_enabled && !self.asr_partial.is_empty() {
+            card().show(ui, |ui| {
+                secondary(ui, "認識途中 · 確定後に翻訳します");
+                ui.label(&self.asr_partial);
+            });
+        }
         ui.add_space(4.0);
         let mut read_requested = None;
         egui::ScrollArea::vertical()
@@ -644,6 +650,8 @@ impl App {
             self.settings.asr_backend.clone(),
             self.settings.asr_model.clone(),
             self.settings.asr_endpoint.clone(),
+            self.settings.asr_device.clone(),
+            self.settings.nemotron_context,
         );
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("設定");
@@ -662,12 +670,17 @@ impl App {
                 ui.set_min_width(ui.available_width());
                 ui.label(RichText::new("音声認識").strong());
                 egui::ComboBox::from_id_salt("asr-backend")
-                    .selected_text(if self.settings.asr_backend == "qwen" {
-                        "Qwen3-ASR · 多言語"
-                    } else {
-                        "Whisper · 多言語 / CPU"
+                    .selected_text(match self.settings.asr_backend.as_str() {
+                        "nemotron" => "Nemotron Speech · 英語 / 連続認識",
+                        "qwen" => "Qwen3-ASR · 多言語",
+                        _ => "Whisper · 多言語 / CPU",
                     })
                     .show_ui(ui, |ui| {
+                        if ui.selectable_value(&mut self.settings.asr_backend, "nemotron".into(), "Nemotron Speech · 英語 / 連続認識").changed() {
+                            self.settings.asr_model = "nvidia/nemotron-speech-streaming-en-0.6b".into();
+                            self.settings.asr_endpoint = "http://127.0.0.1:17864".into();
+                            self.settings.asr_device = "auto".into();
+                        }
                         if ui
                             .selectable_value(
                                 &mut self.settings.asr_backend,
@@ -677,6 +690,7 @@ impl App {
                             .changed()
                         {
                             self.settings.asr_model = "Qwen/Qwen3-ASR-0.6B-hf".into();
+                            self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
                             self.settings.asr_device = self
                                 .setup
                                 .recommendation
@@ -694,15 +708,32 @@ impl App {
                             .changed()
                         {
                             self.settings.asr_model = "base".into();
+                            self.settings.asr_endpoint = "http://127.0.0.1:17861".into();
                             self.settings.asr_device = "cpu".into();
                         }
                     });
-                ui.horizontal_wrapped(|ui| {
-                    secondary(ui, "音声の区切り");
-                    for (value, label) in [(2.0, "短め"), (3.0, "標準"), (4.0, "長め")] {
-                        ui.selectable_value(&mut self.settings.audio_seconds, value, label);
-                    }
-                });
+                if self.settings.asr_backend == "nemotron" {
+                    secondary(ui, "英語専用です。認識途中の英文を表示し、確定した文を翻訳・保存します。");
+                    ui.horizontal_wrapped(|ui| {
+                        secondary(ui, "認識モード");
+                        ui.selectable_value(&mut self.settings.nemotron_context, 6, "精度優先 · 560ms");
+                        ui.selectable_value(&mut self.settings.nemotron_context, 1, "速さ優先 · 160ms");
+                    });
+                    secondary(ui, "上の時間はモデルの音声処理単位です。表示までの時間には、文の区切りと翻訳の待ち時間も含まれます。");
+                    ui.horizontal_wrapped(|ui| {
+                        secondary(ui, "実行方式");
+                        for (value, label) in [("auto", "自動"), ("vulkan", "GPU · Vulkan"), ("cpu", "CPU")] {
+                            ui.selectable_value(&mut self.settings.asr_device, value.into(), label);
+                        }
+                    });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        secondary(ui, "音声の区切り");
+                        for (value, label) in [(2.0, "短め"), (3.0, "標準"), (4.0, "長め")] {
+                            ui.selectable_value(&mut self.settings.audio_seconds, value, label);
+                        }
+                    });
+                }
                 secondary(
                     ui,
                     if self.asr_ready {
@@ -828,14 +859,19 @@ impl App {
                 self.settings.asr_backend.clone(),
                 self.settings.asr_model.clone(),
                 self.settings.asr_endpoint.clone(),
+                self.settings.asr_device.clone(),
+                self.settings.nemotron_context,
             )
         {
             if self.audio_enabled {
                 self.stop_audio();
             }
-            self.asr_ready = false;
-            self.asr_started_at = None;
-            self.audio_start_requested = false;
+            self.stop_asr();
+            if previous_asr.0 != self.settings.asr_backend
+                && let Err(error) = self.load_audio_installation()
+            {
+                self.service_error = error.to_string();
+            }
             self.request_service_status();
         }
     }

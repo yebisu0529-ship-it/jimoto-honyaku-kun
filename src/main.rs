@@ -12,6 +12,7 @@ use plamo_translate::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     fs,
     path::{Path, PathBuf},
     process::{Child, Command},
@@ -28,6 +29,7 @@ mod preview;
 mod readout;
 mod services;
 mod setup;
+mod streaming;
 mod ui;
 
 const ACCENT: Color32 = Color32::from_rgb(60, 191, 164);
@@ -44,6 +46,7 @@ struct Settings {
     model: String,
     bridge_token: String,
     audio_seconds: f32,
+    nemotron_context: u32,
     show_original: bool,
     auto_scroll: bool,
     font_size: f32,
@@ -53,6 +56,9 @@ struct Settings {
     asr_device: String,
     model_store: String,
     auto_read: bool,
+    tts_speed: f32,
+    tts_catch_up: bool,
+    tts_max_speed: f32,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -60,9 +66,9 @@ impl Default for Settings {
         let venv = root.join(".venv/Scripts/python.exe");
         Self {
             translation: TranslationOptions::default(),
-            asr_endpoint: "http://127.0.0.1:17861".into(),
-            asr_backend: "qwen".into(),
-            asr_model: "Qwen/Qwen3-ASR-0.6B-hf".into(),
+            asr_endpoint: "http://127.0.0.1:17864".into(),
+            asr_backend: "nemotron".into(),
+            asr_model: "nvidia/nemotron-speech-streaming-en-0.6b".into(),
             python: if venv.exists() {
                 venv.to_string_lossy().into()
             } else {
@@ -78,6 +84,7 @@ impl Default for Settings {
                 .into(),
             bridge_token: uuid::Uuid::new_v4().to_string(),
             audio_seconds: 3.0,
+            nemotron_context: 6,
             show_original: true,
             auto_scroll: true,
             font_size: 20.0,
@@ -90,6 +97,9 @@ impl Default for Settings {
             asr_device: "auto".into(),
             model_store: String::new(),
             auto_read: false,
+            tts_speed: 1.0,
+            tts_catch_up: true,
+            tts_max_speed: 1.8,
         }
     }
 }
@@ -178,7 +188,14 @@ enum Event {
         translation: std::result::Result<String, String>,
         asr: Option<services::AsrStatus>,
     },
-    AudioPrepared(std::result::Result<(), String>),
+    AudioPrepared {
+        backend: String,
+        result: std::result::Result<(), String>,
+    },
+    AudioProgress {
+        backend: String,
+        progress: plamo_translate::installer::Progress,
+    },
     Readout(readout::ReadoutEvent),
 }
 struct Row {
@@ -195,8 +212,12 @@ struct Selection {
 }
 struct AudioSession {
     stop: Arc<AtomicBool>,
-    rx: Receiver<platform::AudioChunk>,
+    rx: AudioReceiver,
     started: Instant,
+}
+enum AudioReceiver {
+    Batch(Receiver<platform::AudioChunk>),
+    Streaming(Receiver<platform::StreamingAudioFrame>),
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum LiveKind {
@@ -244,6 +265,13 @@ struct App {
     asr_busy: bool,
     asr_caption_suppressed: bool,
     audio: Option<AudioSession>,
+    nemotron: Option<plamo_translate::nemotron::NemotronEngine>,
+    nemotron_epoch: u64,
+    nemotron_origin_ms: u64,
+    nemotron_needs_origin: bool,
+    nemotron_suspended: bool,
+    asr_partial: String,
+    streaming_transcripts: VecDeque<PendingTranscript>,
     caption_enabled: bool,
     audio_enabled: bool,
     audio_generation: u64,
@@ -285,6 +313,7 @@ struct App {
     asr_pid: Option<u32>,
     audio_confirmation: bool,
     audio_installing: bool,
+    audio_progress: Option<plamo_translate::installer::Progress>,
     audio_cancel: Arc<AtomicBool>,
     readout: readout::ReadoutState,
     native_window: Option<isize>,
@@ -319,6 +348,13 @@ impl App {
             asr_busy: false,
             asr_caption_suppressed: false,
             audio: None,
+            nemotron: None,
+            nemotron_epoch: 0,
+            nemotron_origin_ms: 0,
+            nemotron_needs_origin: true,
+            nemotron_suspended: false,
+            asr_partial: String::new(),
+            streaming_transcripts: VecDeque::new(),
             caption_enabled: false,
             audio_enabled: false,
             audio_generation: 7,
@@ -360,6 +396,7 @@ impl App {
             asr_pid: None,
             audio_confirmation: false,
             audio_installing: false,
+            audio_progress: None,
             audio_cancel: Arc::new(AtomicBool::new(false)),
             readout: readout::ReadoutState::default(),
             native_window: None,
@@ -459,6 +496,13 @@ impl App {
             asr_busy: false,
             asr_caption_suppressed: false,
             audio: None,
+            nemotron: None,
+            nemotron_epoch: 0,
+            nemotron_origin_ms: 0,
+            nemotron_needs_origin: true,
+            nemotron_suspended: false,
+            asr_partial: String::new(),
+            streaming_transcripts: VecDeque::new(),
             caption_enabled: false,
             audio_enabled: false,
             audio_generation: 1,
@@ -500,6 +544,7 @@ impl App {
             asr_pid: None,
             audio_confirmation: false,
             audio_installing: false,
+            audio_progress: None,
             audio_cancel: Arc::new(AtomicBool::new(false)),
             readout: readout::ReadoutState::default(),
             native_window: None,
@@ -687,6 +732,7 @@ impl App {
         self.audio_generation += 1;
         self.pending_audio = None;
         self.pending_transcript = None;
+        self.clear_streaming_audio();
         self.clear_overlay(Some(LiveKind::Audio));
     }
     fn set_caption_enabled(&mut self, enabled: bool) {
@@ -747,6 +793,7 @@ impl App {
     fn take_ready_transcript(&mut self) -> Option<PendingTranscript> {
         if self.captions_fresh() {
             self.pending_transcript = None;
+            self.streaming_transcripts.clear();
             return None;
         }
         if self.pending_transcript.as_ref().is_some_and(|p| {
@@ -756,7 +803,15 @@ impl App {
             self.pending_transcript = None;
         }
         if self.audio_enabled && self.live_busy.is_none() {
-            self.pending_transcript.take()
+            while self.streaming_transcripts.front().is_some_and(|p| {
+                p.generation != self.audio_generation
+                    || self.audio_clock_ms().saturating_sub(p.end_ms) > MAX_AUDIO_AGE_MS
+            }) {
+                self.streaming_transcripts.pop_front();
+            }
+            self.streaming_transcripts
+                .pop_front()
+                .or_else(|| self.pending_transcript.take())
         } else {
             None
         }
@@ -784,6 +839,7 @@ impl App {
         self.caption_generation += 1;
         self.pending_audio = None;
         self.pending_transcript = None;
+        self.clear_streaming_audio();
         self.pending_caption = None;
         self.last_live_id = None;
         self.last_live_text.clear();
@@ -802,6 +858,10 @@ impl App {
             self.status = "音声認識を停止しました。保存済みの訳文は残っています。".into();
             return;
         }
+        if self.settings.asr_backend == "nemotron" {
+            self.start_streaming_audio();
+            return;
+        }
         let (tx, rx) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let capture_stop = stop.clone();
@@ -818,7 +878,7 @@ impl App {
         });
         self.audio = Some(AudioSession {
             stop,
-            rx,
+            rx: AudioReceiver::Batch(rx),
             started: Instant::now(),
         });
         self.audio_offset_ms = self
@@ -895,7 +955,12 @@ impl App {
                         }
                     }
                     if let Some(text) = read_text {
-                        self.read_translation(text);
+                        match lane {
+                            Lane::Manual => self.read_translation(text),
+                            // read_text is populated for Live only after the
+                            // existing generation/freshness gate show_overlay.
+                            Lane::Live => self.read_live_translation(text),
+                        }
                     }
                 }
                 Event::Ocr(result) => match result {
@@ -993,8 +1058,17 @@ impl App {
                 Event::ServiceStatus { translation, asr } => {
                     self.accept_service_status(translation, asr)
                 }
-                Event::AudioPrepared(result) => {
+                Event::AudioProgress { backend, progress } => {
+                    if backend == self.settings.asr_backend {
+                        self.audio_progress = Some(progress);
+                    }
+                }
+                Event::AudioPrepared { backend, result } => {
                     self.audio_installing = false;
+                    self.audio_progress = None;
+                    if backend != self.settings.asr_backend {
+                        continue;
+                    }
                     match result {
                         Ok(()) => {
                             self.audio_confirmation = false;
@@ -1025,6 +1099,7 @@ impl App {
             self.accept_caption(caption);
         }
         let captions_fresh = self.captions_fresh();
+        self.poll_nemotron();
         if captions_fresh {
             // A transcript completed before this frame's caption message must
             // also yield priority to the newly active captions.
@@ -1082,9 +1157,11 @@ impl App {
             if let Some(audio) = &self.audio {
                 // Always drain capture into one persistent latest slot. Translation
                 // latency must not discard the only waiting audio chunk.
-                while let Ok(value) = audio.rx.try_recv() {
-                    if !suppressed {
-                        self.pending_audio = Some(value);
+                if let AudioReceiver::Batch(rx) = &audio.rx {
+                    while let Ok(value) = rx.try_recv() {
+                        if !suppressed {
+                            self.pending_audio = Some(value);
+                        }
                     }
                 }
                 capture_stopped = audio.stop.load(Ordering::Relaxed);
@@ -1092,6 +1169,7 @@ impl App {
             if capture_stopped {
                 self.stop_audio();
             }
+            self.process_streaming_audio();
         }
         if self.audio_enabled && self.backend_ready {
             if let Some(pending) = self.take_ready_transcript() {
@@ -1524,6 +1602,7 @@ impl Drop for App {
         if let Some(audio) = &self.audio {
             audio.stop.store(true, Ordering::Relaxed);
         }
+        self.stop_nemotron();
         for child in &mut self.children {
             services::kill_owned_child(child);
         }
@@ -1861,7 +1940,7 @@ mod tests {
         a.live_busy = Some(99);
         a.audio = Some(AudioSession {
             stop: Arc::new(AtomicBool::new(false)),
-            rx,
+            rx: AudioReceiver::Batch(rx),
             started: Instant::now(),
         });
         tx.send(chunk(0, 1000)).unwrap();
@@ -1980,7 +2059,7 @@ mod tests {
         let (_, rx) = mpsc::sync_channel(1);
         a.audio = Some(AudioSession {
             stop: Arc::new(AtomicBool::new(false)),
-            rx,
+            rx: AudioReceiver::Batch(rx),
             started: Instant::now() - Duration::from_secs(2),
         });
         a.stop_audio();

@@ -26,14 +26,109 @@ const TAIL: Duration = Duration::from_millis(180);
 #[derive(Clone, Debug)]
 pub enum TtsEvent {
     Status(String),
+    Rate(f32),
     Started,
     Finished,
     Error(String),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ReadoutOptions {
+    pub speed: f32,
+    pub catch_up: bool,
+    pub max_speed: f32,
+}
+
+impl Default for ReadoutOptions {
+    fn default() -> Self {
+        Self {
+            speed: 1.0,
+            catch_up: false,
+            max_speed: 1.8,
+        }
+    }
+}
+
+impl ReadoutOptions {
+    fn normalized(self) -> Self {
+        let speed = if self.speed.is_finite() {
+            self.speed.clamp(0.8, 1.6)
+        } else {
+            1.0
+        };
+        let maximum = if self.max_speed.is_finite() {
+            self.max_speed
+        } else {
+            1.8
+        };
+        Self {
+            speed,
+            catch_up: self.catch_up,
+            max_speed: maximum.clamp(speed, 2.0),
+        }
+    }
+}
+
 struct Job {
     text: String,
     epoch: u64,
+    options: ReadoutOptions,
+    pending_since: Instant,
+}
+
+fn replace_pending(
+    pending: &mut Option<Job>,
+    text: String,
+    epoch: u64,
+    options: ReadoutOptions,
+    now: Instant,
+) {
+    let pending_since = pending
+        .as_ref()
+        .filter(|job| job.epoch == epoch)
+        .map(|job| job.pending_since)
+        .unwrap_or(now);
+    *pending = Some(Job {
+        text,
+        epoch,
+        options: options.normalized(),
+        pending_since,
+    });
+}
+
+#[derive(Default)]
+struct CatchUpRate {
+    rate: Option<f32>,
+}
+impl CatchUpRate {
+    fn next(&mut self, options: ReadoutOptions, lag_seconds: f32, generation_seconds: f32) -> f32 {
+        let options = options.normalized();
+        if !options.catch_up {
+            // Do not resume a pre-manual boost when live reading returns.
+            self.rate = Some(options.speed);
+            return options.speed;
+        }
+        let previous = self
+            .rate
+            .unwrap_or(options.speed)
+            .clamp(options.speed, options.max_speed);
+        // Hysteresis avoids oscillation on small timing differences. Change at
+        // most0.1 per chunk, even after a long initial model load.
+        let next = if lag_seconds >= 1.0 || (lag_seconds >= 0.4 && generation_seconds >= 1.25) {
+            previous + 0.1
+        } else if lag_seconds <= 0.35 {
+            previous - 0.1
+        } else {
+            previous
+        }
+        .clamp(options.speed, options.max_speed);
+        self.rate = Some(next);
+        next
+    }
+}
+
+fn yield_to_latest(active: ReadoutOptions, has_pending_live: bool) -> bool {
+    active.catch_up && has_pending_live
 }
 
 struct Shared {
@@ -101,9 +196,14 @@ impl TtsEngine {
         })
     }
 
-    /// Keep only the newest waiting utterance. An active utterance finishes
-    /// normally; stop() cancels both the active and waiting utterances.
+    /// Compatible manual/default speech: fixed rate and a complete active text.
     pub fn speak(&self, text: String) {
+        self.speak_with_options(text, ReadoutOptions::default());
+    }
+
+    /// Keep one latest pending utterance without resetting its original age.
+    /// Only catch-up live texts may yield at a completed chunk boundary.
+    pub fn speak_with_options(&self, text: String, options: ReadoutOptions) {
         let text = text.trim().to_owned();
         if text.is_empty() {
             return;
@@ -119,10 +219,13 @@ impl TtsEngine {
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        *pending = Some(Job {
+        replace_pending(
+            &mut pending,
             text,
-            epoch: self.shared.epoch.load(Ordering::Acquire),
-        });
+            self.shared.epoch.load(Ordering::Acquire),
+            options,
+            Instant::now(),
+        );
         self.shared.busy.store(true, Ordering::Release);
         self.shared.wake.notify_one();
     }
@@ -196,6 +299,9 @@ fn worker(config: SpeechInstallation, shared: Arc<Shared>) {
         }
     };
     let mut model_id = None;
+    let mut adaptive = CatchUpRate::default();
+    let mut control_epoch = None;
+    let mut generation_seconds = 0.0;
     loop {
         let job = {
             let mut pending = shared.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -210,6 +316,11 @@ fn worker(config: SpeechInstallation, shared: Arc<Shared>) {
         if cancelled(&shared, job.epoch) {
             continue;
         }
+        if control_epoch != Some(job.epoch) {
+            adaptive = CatchUpRate::default();
+            generation_seconds = 0.0;
+            control_epoch = Some(job.epoch);
+        }
         let mut played = false;
         // Reuse a seed across chunks so "none" does not choose anew every request.
         let seed = (uuid::Uuid::new_v4().as_u128() as u64) & ((1u64 << 53) - 1);
@@ -220,10 +331,25 @@ fn worker(config: SpeechInstallation, shared: Arc<Shared>) {
             if model_id.is_none() {
                 model_id = Some(start_server(&config, &shared, &client, job.epoch)?);
             }
+            // Initial waiting/model load is real latency. Playback at a faster
+            // rate pays this debt down; normal speaking time is not new lag.
+            let mut lag_seconds = job.pending_since.elapsed().as_secs_f32();
             for chunk in chunks(&job.text) {
                 if cancelled(&shared, job.epoch) {
                     return Ok(());
                 }
+                let newer_live_waiting = shared
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .is_some_and(|pending| pending.epoch == job.epoch && pending.options.catch_up);
+                if yield_to_latest(job.options, newer_live_waiting) {
+                    // We are between chunks: never cut an already playing word,
+                    // and never skip the remainder of an explicit manual text.
+                    return Ok(());
+                }
+                let rate = adaptive.next(job.options, lag_seconds, generation_seconds);
                 let owned_pid = shared
                     .child
                     .lock()
@@ -239,18 +365,25 @@ fn worker(config: SpeechInstallation, shared: Arc<Shared>) {
                 let _ = shared
                     .events
                     .send(TtsEvent::Status("読み上げ音声を作っています。".into()));
+                let generating = Instant::now();
                 let bytes = synthesize(
                     &client,
                     model_id.as_ref().unwrap(),
                     &config.voice,
                     &chunk,
                     seed,
+                    rate,
                 )?;
+                generation_seconds = generating.elapsed().as_secs_f32();
                 if cancelled(&shared, job.epoch) {
                     return Ok(());
                 }
-                play_wav(&bytes, &shared, job.epoch, !played)?;
+                let audio_seconds = wav_seconds(&bytes)?;
+                play_wav(&bytes, &shared, job.epoch, !played, rate)?;
                 played = true;
+                let saved = audio_seconds * (rate / job.options.speed - 1.0).max(0.0);
+                lag_seconds =
+                    (lag_seconds + generation_seconds + TAIL.as_secs_f32() - saved).max(0.0);
             }
             Ok(())
         })();
@@ -483,10 +616,25 @@ fn irodori_model_id(models: &Value) -> Option<String> {
         .then(|| id.to_owned())
 }
 
-fn synthesize(client: &Client, model: &str, voice: &str, text: &str, seed: u64) -> Result<Vec<u8>> {
+fn speech_request(model: &str, voice: &str, text: &str, seed: u64, rate: f32) -> Value {
+    // v0.10.1 Irodori's engine copies SPEED into LengthOptions.speed;
+    // families/irodori-tts/duration.cpp computes predicted_frames / speed.
+    // This shortens the latent generation itself; it is not a sample-rate trick.
+    // https://github.com/nyosegawa/speech.cpp/blob/v0.10.1/src/families/irodori-tts/duration.cpp
+    json!({"model": model, "input": text, "voice": voice, "response_format": "wav", "seed": seed, "speed": rate})
+}
+
+fn synthesize(
+    client: &Client,
+    model: &str,
+    voice: &str,
+    text: &str,
+    seed: u64,
+    rate: f32,
+) -> Result<Vec<u8>> {
     let response = client
         .post(format!("{ENDPOINT}/v1/audio/speech"))
-        .json(&json!({"model": model, "input": text, "voice": voice, "response_format": "wav", "seed": seed}))
+        .json(&speech_request(model, voice, text, seed, rate))
         .send()
         .context("彩りTTSへのローカル接続が切れました。")?;
     anyhow::ensure!(
@@ -508,6 +656,16 @@ fn synthesize(client: &Client, model: &str, voice: &str, text: &str, seed: u64) 
         "生成音声のサイズが上限を超えました。"
     );
     Ok(bytes)
+}
+
+fn wav_seconds(bytes: &[u8]) -> Result<f32> {
+    let reader = hound::WavReader::new(std::io::Cursor::new(bytes))
+        .context("生成音声がWAV形式ではありません。")?;
+    anyhow::ensure!(
+        reader.spec().sample_rate != 0,
+        "生成音声の形式または長さを確認できませんでした。"
+    );
+    Ok(reader.duration() as f32 / reader.spec().sample_rate as f32)
 }
 
 fn chunks(text: &str) -> Vec<String> {
@@ -544,7 +702,7 @@ fn reset_playback(shared: &Shared) {
 fn reset_playback(_shared: &Shared) {}
 
 #[cfg(windows)]
-fn play_wav(bytes: &[u8], shared: &Shared, epoch: u64, announce: bool) -> Result<()> {
+fn play_wav(bytes: &[u8], shared: &Shared, epoch: u64, announce: bool, rate: f32) -> Result<()> {
     use windows::{
         Win32::Media::Audio::{
             CALLBACK_NULL, HWAVEOUT, WAVE_MAPPER, WAVEFORMATEX, WAVEHDR, WHDR_DONE, waveOutClose,
@@ -612,6 +770,7 @@ fn play_wav(bytes: &[u8], shared: &Shared, epoch: u64, announce: bool) -> Result
             shared.suppress.store(true, Ordering::Release);
             let result = unsafe { waveOutWrite(handle, &mut *header, size) };
             anyhow::ensure!(result == 0, "音声を再生できませんでした（{}）。", result);
+            let _ = shared.events.send(TtsEvent::Rate(rate));
             if announce {
                 let _ = shared.events.send(TtsEvent::Started);
             }
@@ -650,13 +809,113 @@ fn play_wav(bytes: &[u8], shared: &Shared, epoch: u64, announce: bool) -> Result
 }
 
 #[cfg(not(windows))]
-fn play_wav(_bytes: &[u8], _shared: &Shared, _epoch: u64, _announce: bool) -> Result<()> {
+fn play_wav(
+    _bytes: &[u8],
+    _shared: &Shared,
+    _epoch: u64,
+    _announce: bool,
+    _rate: f32,
+) -> Result<()> {
     bail!("この読み上げ再生機能はWindows専用です。")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn readout_rate_options_are_finite_and_bounded() {
+        let defaults = ReadoutOptions::default();
+        assert_eq!(defaults.speed, 1.0);
+        assert!(!defaults.catch_up);
+        assert_eq!(defaults.max_speed, 1.8);
+        let low = ReadoutOptions {
+            speed: 0.1,
+            catch_up: true,
+            max_speed: 0.2,
+        }
+        .normalized();
+        assert_eq!((low.speed, low.max_speed), (0.8, 0.8));
+        let high = ReadoutOptions {
+            speed: 5.0,
+            catch_up: true,
+            max_speed: 8.0,
+        }
+        .normalized();
+        assert_eq!((high.speed, high.max_speed), (1.6, 2.0));
+        let unknown = ReadoutOptions {
+            speed: f32::NAN,
+            catch_up: true,
+            max_speed: f32::INFINITY,
+        }
+        .normalized();
+        assert_eq!((unknown.speed, unknown.max_speed), (1.0, 1.8));
+    }
+
+    #[test]
+    fn catch_up_uses_age_and_generation_delay_and_returns_gradually() {
+        let options = ReadoutOptions {
+            catch_up: true,
+            ..Default::default()
+        };
+        let mut control = CatchUpRate::default();
+        let mut previous = options.speed;
+        for _ in 0..20 {
+            let rate = control.next(options, 3.0, 0.2);
+            assert!(rate >= previous && rate - previous <= 0.10001);
+            assert!(rate <= options.max_speed);
+            previous = rate;
+        }
+        assert!((previous - 1.8).abs() < 0.0001);
+        for _ in 0..20 {
+            let rate = control.next(options, 0.0, 0.2);
+            assert!(rate <= previous && previous - rate <= 0.10001);
+            assert!(rate >= options.speed);
+            previous = rate;
+        }
+        assert!((previous - options.speed).abs() < 0.0001);
+        assert!((control.next(options, 0.5, 2.0) - 1.1).abs() < 0.0001);
+        assert!((control.next(options, 0.0, 2.0) - 1.0).abs() < 0.0001);
+        let manual = ReadoutOptions {
+            speed: 1.3,
+            catch_up: false,
+            max_speed: 1.8,
+        };
+        assert_eq!(control.next(manual, 60.0, 20.0), 1.3);
+        assert_eq!(control.next(manual, 0.0, 0.0), 1.3);
+        assert!((control.next(options, 3.0, 2.0) - 1.4).abs() < 0.0001);
+    }
+
+    #[test]
+    fn latest_replacement_keeps_first_wait_age_but_not_a_stopped_epoch() {
+        let now = Instant::now();
+        let first = now - Duration::from_secs(5);
+        let live = ReadoutOptions {
+            catch_up: true,
+            ..Default::default()
+        };
+        let mut pending = None;
+        replace_pending(&mut pending, "first".into(), 1, live, first);
+        replace_pending(&mut pending, "latest".into(), 1, live, now);
+        let job = pending.as_ref().unwrap();
+        assert_eq!(job.text, "latest");
+        assert_eq!(job.pending_since, first);
+        replace_pending(&mut pending, "after stop".into(), 2, live, now);
+        assert_eq!(pending.as_ref().unwrap().pending_since, now);
+        assert_eq!(pending.as_ref().unwrap().epoch, 2);
+        assert!(yield_to_latest(live, true));
+        assert!(!yield_to_latest(live, false));
+        assert!(!yield_to_latest(ReadoutOptions::default(), true));
+    }
+
+    #[test]
+    fn native_request_passes_the_applied_speed_without_overriding_duration() {
+        let request = speech_request("irodori", "none", "読み上げ速度の試験です。", 42, 1.6);
+        assert_eq!(request["speed"].as_f64().unwrap(), 1.6_f32 as f64);
+        assert_eq!(request["response_format"], "wav");
+        assert!(request.get("seconds").is_none());
+        assert!(request.get("duration_scale").is_none());
+    }
+
     #[test]
     fn native_startup_requires_confirmed_four_gib_free_for_gpu() {
         const FOUR_GIB: u64 = 4 * 1_073_741_824;

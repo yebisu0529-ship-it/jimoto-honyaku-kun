@@ -12,6 +12,13 @@ const HEADER_HEIGHT: f32 = 56.0;
 const SOURCES_HEIGHT: f32 = 40.0;
 /// Height reserved above the history list for its label.
 const HISTORY_HEADING_HEIGHT: f32 = 28.0;
+/// The four pages in rail order, each with the Ctrl shortcut that opens it.
+const TAB_ORDER: [(Tab, &str, egui::Key); 4] = [
+    (Tab::Text, "文章", egui::Key::Num1),
+    (Tab::Live, "ライブ", egui::Key::Num2),
+    (Tab::Files, "履歴", egui::Key::Num3),
+    (Tab::Settings, "設定", egui::Key::Num4),
+];
 /// Below this content width the source and translation cards stack.
 const SIDE_BY_SIDE_MIN_WIDTH: f32 = 640.0;
 /// A text area never shrinks below three large controls, however short the window.
@@ -1179,7 +1186,7 @@ impl App {
                     ui.add_sized(
                         [ui.available_width(), height],
                         egui::TextEdit::multiline(&mut self.input)
-                            .hint_text("翻訳したい文章を入力してください")
+                            .hint_text(theme::hint("翻訳したい文章を入力してください"))
                             .font(egui::FontId::proportional(theme::SIZE_BODY))
                             .margin(theme::SPACE_3)
                             .desired_width(f32::INFINITY),
@@ -1308,7 +1315,7 @@ impl App {
                     ui.add_sized(
                         [ui.available_width(), height],
                         egui::TextEdit::multiline(&mut output)
-                            .hint_text("訳文はここに表示されます")
+                            .hint_text(theme::hint("訳文はここに表示されます"))
                             .font(egui::FontId::proportional(theme::reading_size(
                                 self.settings.font_size,
                             )))
@@ -1643,7 +1650,7 @@ impl App {
                     ui.add_sized(
                         [ui.available_width(), theme::CONTROL_H],
                         egui::TextEdit::singleline(&mut self.search)
-                            .hint_text("原文・訳文を検索")
+                            .hint_text(theme::hint("原文・訳文を検索"))
                             .margin(theme::SPACE_2),
                     );
                 });
@@ -2106,13 +2113,9 @@ impl App {
                         );
                 });
                 ui.add_space(theme::SPACE_4);
-                for (tab, label) in [
-                    (Tab::Text, "文章"),
-                    (Tab::Live, "ライブ"),
-                    (Tab::Files, "履歴"),
-                    (Tab::Settings, "設定"),
-                ] {
-                    let response = rail_item(ui, label, self.tab == tab);
+                for (tab, label, key) in TAB_ORDER {
+                    let response = rail_item(ui, label, self.tab == tab)
+                        .on_hover_text(format!("Ctrl + {}", key.symbol_or_name()));
                     #[cfg(test)]
                     {
                         self.ui_probe.nav_heights.push(response.rect.height());
@@ -2231,6 +2234,11 @@ impl App {
                 self.restore_normal_view(ctx);
             }
             return;
+        }
+        for (tab, _, key) in TAB_ORDER {
+            if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, key)) {
+                self.tab = tab;
+            }
         }
         let statuses = self.model_statuses();
         let mut open_from_status = None;
@@ -2860,6 +2868,95 @@ mod live_layout_tests {
         let drawn = drawn_text(&mut app, 860.0, 620.0);
         assert!(drawn.contains("2026/11/05 12:00 · 音声"), "{drawn}");
         assert!(!drawn.contains("T12:00:00"));
+    }
+
+    #[test]
+    fn ctrl_number_opens_each_page_from_the_keyboard() {
+        let context = egui::Context::default();
+        configure_theme(&context);
+        let mut app = App::inert();
+        app.tab = Tab::Text;
+        for (expected, key) in [
+            (Tab::Live, egui::Key::Num2),
+            (Tab::Files, egui::Key::Num3),
+            (Tab::Settings, egui::Key::Num4),
+            (Tab::Text, egui::Key::Num1),
+        ] {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(860.0, 620.0),
+                    )),
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::CTRL,
+                    }],
+                    ..Default::default()
+                },
+                |ctx| app.render_ui(ctx),
+            );
+            assert!(
+                app.tab == expected,
+                "Ctrl+{} did not open its page",
+                key.name()
+            );
+        }
+    }
+
+    #[test]
+    fn empty_fields_show_placeholders_in_the_muted_colour() {
+        fn visit<'a>(shape: &'a egui::epaint::Shape, out: &mut Vec<&'a egui::epaint::TextShape>) {
+            match shape {
+                egui::epaint::Shape::Text(text) => out.push(text),
+                egui::epaint::Shape::Vec(shapes) => shapes.iter().for_each(|s| visit(s, out)),
+                _ => {}
+            }
+        }
+        let context = egui::Context::default();
+        configure_theme(&context);
+        let mut app = App::inert();
+        app.tab = Tab::Text;
+        app.backend_ready = true;
+        let mut output = None;
+        for frame in 0..3 {
+            output = Some(context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 880.0),
+                    )),
+                    time: Some(frame as f64 / 60.0),
+                    ..Default::default()
+                },
+                |ctx| app.render_ui(ctx),
+            ));
+        }
+        let output = output.unwrap();
+        let mut texts = Vec::new();
+        for shape in &output.shapes {
+            visit(&shape.shape, &mut texts);
+        }
+        for placeholder in [
+            "翻訳したい文章を入力してください",
+            "訳文はここに表示されます",
+        ] {
+            let shape = texts
+                .iter()
+                .find(|text| text.galley.job.text == placeholder)
+                .unwrap_or_else(|| panic!("{placeholder} not drawn"));
+            let color = shape
+                .override_text_color
+                .unwrap_or(shape.galley.job.sections[0].format.color);
+            assert_eq!(
+                color,
+                theme::TEXT_MUTED,
+                "{placeholder} is drawn like entered text"
+            );
+        }
     }
 
     #[test]

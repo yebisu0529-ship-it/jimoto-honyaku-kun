@@ -12,6 +12,15 @@ const HEADER_HEIGHT: f32 = 56.0;
 const SOURCES_HEIGHT: f32 = 40.0;
 /// Height reserved above the history list for its label.
 const HISTORY_HEADING_HEIGHT: f32 = 28.0;
+/// Below this content width the source and translation cards stack.
+const SIDE_BY_SIDE_MIN_WIDTH: f32 = 640.0;
+/// A text area never shrinks below three large controls, however short the window.
+const MIN_TEXT_AREA: f32 = theme::CONTROL_H_LARGE * 3.0;
+
+/// A card's text area takes the height left under its header.
+fn text_area_height(ui: &egui::Ui) -> f32 {
+    ui.available_height().max(MIN_TEXT_AREA)
+}
 
 /// Measurements captured while drawing, so tests can assert real geometry
 /// instead of re-deriving layout from constants.
@@ -1039,7 +1048,9 @@ impl App {
     }
 
     fn languages(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
+        // ComboBox places itself at the top of the free space, so a centred row
+        // staggers it against the buttons. Top-aligning keeps one baseline.
+        ui.horizontal_top(|ui| {
             egui::ComboBox::from_id_salt("source-language")
                 .width(126.0)
                 .selected_text(language_label(&self.settings.translation.source_lang))
@@ -1121,7 +1132,7 @@ impl App {
             });
         }
     }
-    fn input_card(&mut self, ui: &mut egui::Ui, height: f32) {
+    fn input_card(&mut self, ui: &mut egui::Ui) {
         card().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -1142,6 +1153,7 @@ impl App {
                     self.input.clear();
                 }
             });
+            let height = text_area_height(ui);
             egui::ScrollArea::vertical()
                 .id_salt("source-scroll")
                 .max_height(height)
@@ -1152,7 +1164,7 @@ impl App {
                         egui::TextEdit::multiline(&mut self.input)
                             .hint_text("翻訳したい文章を入力してください")
                             .font(egui::FontId::proportional(theme::SIZE_BODY))
-                            .margin(12.0)
+                            .margin(theme::SPACE_3)
                             .desired_width(f32::INFINITY),
                     );
                 });
@@ -1235,7 +1247,7 @@ impl App {
             },
         ]
     }
-    fn output_card(&mut self, ui: &mut egui::Ui, height: f32) {
+    fn output_card(&mut self, ui: &mut egui::Ui) {
         card().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -1268,6 +1280,7 @@ impl App {
                     self.stop_readout();
                 }
             });
+            let height = text_area_height(ui);
             egui::ScrollArea::vertical()
                 .id_salt("output-scroll")
                 .max_height(height)
@@ -1282,7 +1295,7 @@ impl App {
                             .font(egui::FontId::proportional(theme::reading_size(
                                 self.settings.font_size,
                             )))
-                            .margin(12.0)
+                            .margin(theme::SPACE_3)
                             .desired_width(f32::INFINITY),
                     );
                 });
@@ -1299,8 +1312,22 @@ impl App {
             self.page_header(
                 ui,
                 "文章翻訳",
-                "文章・ファイル・画面の文字を翻訳します。",
+                "貼り付けた文章や画像の文字を翻訳します。",
                 |ui| {
+                    if ui.add_enabled(ready, standard("画像から翻訳")).clicked() {
+                        open_image = true;
+                    }
+                },
+            );
+            if open_image {
+                self.open_image();
+            }
+            ui.add_space(theme::SPACE_2);
+            // Languages, then the action they configure, on one line.
+            live_region(ui, "text-languages", theme::CONTROL_H_LARGE, |ui| {
+                ui.horizontal(|ui| {
+                    self.languages(ui);
+                    ui.add_space(theme::SPACE_4);
                     if ui
                         .add_enabled(translate_ready, primary("翻訳する"))
                         .on_hover_text("Ctrl + Enter")
@@ -1308,58 +1335,51 @@ impl App {
                     {
                         translate = true;
                     }
-                    if ui.add_enabled(ready, standard("画像から翻訳")).clicked() {
-                        open_image = true;
-                    }
-                },
-            );
+                });
+            });
             if translate {
                 self.manual_translate();
             }
-            if open_image {
-                self.open_image();
-            }
-            ui.add_space(theme::SPACE_2);
-            live_region(ui, "text-languages", 36.0, |ui| {
-                self.languages(ui);
-            });
             self.backend_notice(ui);
             ui.add_space(theme::SPACE_2);
             let ready =
                 self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
-            // The text area gets the remaining height after the card header
-            // (40), the two card paddings (32) and the row gap (8).
-            let available = (ui.available_height() - 8.0).max(240.0);
-            let stacked = ui.available_width() < 820.0;
-            let height = if stacked {
-                (available / 2.0 - 96.0).max(140.0)
-            } else {
-                (available - 96.0).max(180.0)
-            };
-            if stacked {
-                self.input_card(ui, height);
+            let total = ui.available_width();
+            if total < SIDE_BY_SIDE_MIN_WIDTH {
+                let half = ((ui.available_height() - theme::SPACE_2) / 2.0).max(0.0);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(total, half),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.input_card(ui),
+                );
                 ui.add_space(theme::SPACE_2);
-                self.output_card(ui, height);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(total, half),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.output_card(ui),
+                );
             } else {
-                let total = ui.available_width();
                 let input_width = total * 0.42;
                 let output_width = total - input_width - theme::SPACE_3;
+                // Measured outside the row: a horizontal row reports only one
+                // control height as available.
+                let height = ui.available_height();
                 ui.horizontal(|ui| {
                     ui.allocate_ui_with_layout(
-                        Vec2::new(input_width, ui.available_height()),
+                        Vec2::new(input_width, height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(input_width);
-                            self.input_card(ui, height);
+                            self.input_card(ui);
                         },
                     );
                     ui.add_space(theme::SPACE_3);
                     ui.allocate_ui_with_layout(
-                        Vec2::new(output_width, ui.available_height()),
+                        Vec2::new(output_width, height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(output_width);
-                            self.output_card(ui, height);
+                            self.output_card(ui);
                         },
                     );
                 });

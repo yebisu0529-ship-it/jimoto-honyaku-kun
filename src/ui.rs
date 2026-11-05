@@ -5,7 +5,6 @@ use super::theme::{
 use super::*;
 use plamo_translate::journal::ParagraphState;
 
-const LIVE_LATEST_HEIGHT: f32 = 312.0;
 /// Height reserved for the page title and its actions.
 const HEADER_HEIGHT: f32 = 56.0;
 /// Height reserved for the live input/display controls.
@@ -71,13 +70,13 @@ impl LiveLayout {
         // history viewport; the common DPI-scaled window gets a full paragraph.
         let compact = height < 840.0;
         Self {
-            latest_height: if height < 727.0 {
-                152.0 + (height - 620.0).clamp(0.0, 107.0) * (108.0 / 107.0)
-            } else if compact {
-                260.0
-            } else {
-                LIVE_LATEST_HEIGHT
-            },
+            // Fixed for a given window size (content changes never resize it),
+            // but it grows with the window so a short paragraph does not leave
+            // a large empty box on a tall screen. The history list keeps at
+            // least 110 points at the minimum window height.
+            latest_height: (height * 0.36)
+                .clamp(170.0, 300.0)
+                .min((height - 434.0).max(150.0)),
             status_height: if compact { 56.0 } else { 88.0 },
             compact,
         }
@@ -120,6 +119,26 @@ fn page_column(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     );
 }
 
+/// Left-aligned block for long prose inside a full-width surface. The block
+/// follows the window until a line would exceed the readable measure.
+fn measure_block<R>(
+    ui: &mut egui::Ui,
+    reading_size: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let width = ui.available_width().min(theme::prose_width(reading_size));
+    let height = ui.available_height();
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, height),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_width(width);
+            add(ui)
+        },
+    )
+    .inner
+}
+
 fn live_latest_panel(
     ui: &mut egui::Ui,
     current: Option<&Row>,
@@ -148,88 +167,94 @@ fn live_latest_panel(
     live_region(ui, "live-latest-panel", layout.latest_height, |ui| {
         theme::reading_surface().show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = theme::SPACE_1;
-            ui.add(
-                egui::Label::new(
-                    RichText::new("進行中の文章／最新の対訳")
-                        .size(12.0)
-                        .strong()
-                        .color(ACCENT),
-                )
-                .truncate(),
-            );
-            let state = match mode {
-                LatestMode::Draft => "認識途中 · 原文をつないで翻訳します".to_owned(),
-                LatestMode::Current => selected
-                    .map(|row| {
-                        format!(
-                            "{} · {} · {}",
-                            clock(row.record.start_ms),
-                            row.record.kind,
-                            paragraph_label(row)
-                        )
-                    })
-                    .unwrap_or_default(),
-                LatestMode::Empty => "YouTube字幕またはPC音声の入力を待っています".to_owned(),
-            };
-            ui.add(egui::Label::new(RichText::new(state).size(12.0).color(TEXT_MUTED)).truncate());
-            let source = match mode {
-                LatestMode::Draft => draft.to_owned(),
-                LatestMode::Current if show_original => {
-                    let accepted = selected.map(|row| row.record.source.as_str()).unwrap_or("");
-                    if draft.trim().is_empty() {
-                        accepted.to_owned()
-                    } else {
-                        format!("{accepted}\n\n追加で認識中の原文（未確定）:\n{draft}")
+            measure_block(ui, font_size, |ui| {
+                ui.spacing_mut().item_spacing.y = theme::SPACE_1;
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("進行中の文章／最新の対訳")
+                            .size(12.0)
+                            .strong()
+                            .color(ACCENT),
+                    )
+                    .truncate(),
+                );
+                let state = match mode {
+                    LatestMode::Draft => "認識途中 · 原文をつないで翻訳します".to_owned(),
+                    LatestMode::Current => selected
+                        .map(|row| {
+                            format!(
+                                "{} · {} · {}",
+                                clock(row.record.start_ms),
+                                row.record.kind,
+                                paragraph_label(row)
+                            )
+                        })
+                        .unwrap_or_default(),
+                    LatestMode::Empty => "YouTube字幕またはPC音声の入力を待っています".to_owned(),
+                };
+                ui.add(
+                    egui::Label::new(RichText::new(state).size(12.0).color(TEXT_MUTED)).truncate(),
+                );
+                let source = match mode {
+                    LatestMode::Draft => draft.to_owned(),
+                    LatestMode::Current if show_original => {
+                        let accepted = selected.map(|row| row.record.source.as_str()).unwrap_or("");
+                        if draft.trim().is_empty() {
+                            accepted.to_owned()
+                        } else {
+                            format!("{accepted}\n\n追加で認識中の原文（未確定）:\n{draft}")
+                        }
                     }
-                }
-                LatestMode::Current => {
-                    "原文は非表示です。表示メニューから切り替えられます。".to_owned()
-                }
-                LatestMode::Empty => "原文はここに表示されます。".to_owned(),
-            };
-            let error = selected.and_then(|row| row.error.as_deref());
-            let target = error.unwrap_or_else(|| {
-                if !translation.is_empty() {
-                    translation
-                } else if mode == LatestMode::Draft {
-                    "原文をつなぎながら訳文を更新します。"
-                } else if selected.is_some_and(|row| row.pending) {
-                    "翻訳しています…"
-                } else {
-                    "訳文はここに表示されます。"
-                }
-            });
-            let id = selected.map(|row| row.record.id).unwrap_or(0);
-            let show_source = show_original || mode == LatestMode::Draft;
-            let height = ui.available_height().max(24.0);
-            ui.columns(if show_source { 2 } else { 1 }, |columns| {
-                if show_source {
+                    LatestMode::Current => {
+                        "原文は非表示です。表示メニューから切り替えられます。".to_owned()
+                    }
+                    LatestMode::Empty => "原文はここに表示されます。".to_owned(),
+                };
+                let error = selected.and_then(|row| row.error.as_deref());
+                let target = error.unwrap_or_else(|| {
+                    if !translation.is_empty() {
+                        translation
+                    } else if mode == LatestMode::Draft {
+                        "原文をつなぎながら訳文を更新します。"
+                    } else if selected.is_some_and(|row| row.pending) {
+                        "翻訳しています…"
+                    } else {
+                        "訳文はここに表示されます。"
+                    }
+                });
+                let id = selected.map(|row| row.record.id).unwrap_or(0);
+                let show_source = show_original || mode == LatestMode::Draft;
+                let height = ui.available_height().max(24.0);
+                ui.columns(if show_source { 2 } else { 1 }, |columns| {
+                    if show_source {
+                        live_text_column(
+                            &mut columns[0],
+                            ("latest-source", id, mode == LatestMode::Draft),
+                            "原文",
+                            &source,
+                            (15.0, TEXT_MUTED),
+                            auto_scroll
+                                && (mode == LatestMode::Draft
+                                    || selected
+                                        .is_some_and(|row| row.pending || row.is_provisional())),
+                            height,
+                        );
+                    }
                     live_text_column(
-                        &mut columns[0],
-                        ("latest-source", id, mode == LatestMode::Draft),
-                        "原文",
-                        &source,
-                        (15.0, TEXT_MUTED),
+                        &mut columns[usize::from(show_source)],
+                        ("latest-target", id, false),
+                        if selected.is_some_and(Row::is_provisional) {
+                            "訳文（継続して更新）"
+                        } else {
+                            "訳文"
+                        },
+                        target,
+                        (font_size, if error.is_some() { ERROR } else { TEXT }),
                         auto_scroll
-                            && (mode == LatestMode::Draft
-                                || selected.is_some_and(|row| row.pending || row.is_provisional())),
+                            && selected.is_some_and(|row| row.pending || row.is_provisional()),
                         height,
                     );
-                }
-                live_text_column(
-                    &mut columns[usize::from(show_source)],
-                    ("latest-target", id, false),
-                    if selected.is_some_and(Row::is_provisional) {
-                        "訳文（継続して更新）"
-                    } else {
-                        "訳文"
-                    },
-                    target,
-                    (font_size, if error.is_some() { ERROR } else { TEXT }),
-                    auto_scroll && selected.is_some_and(|row| row.pending || row.is_provisional()),
-                    height,
-                );
+                });
             });
         });
     });
@@ -436,6 +461,78 @@ fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
         });
 }
 
+/// Three explicit live-input modes. Captions and PC audio can run together,
+/// but the choice is a single control instead of two independent checkboxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveSourceMode {
+    Off,
+    Captions,
+    Audio,
+    Both,
+}
+
+impl LiveSourceMode {
+    fn from_flags(captions: bool, audio: bool) -> Option<Self> {
+        match (captions, audio) {
+            (true, false) => Some(Self::Captions),
+            (false, true) => Some(Self::Audio),
+            (true, true) => Some(Self::Both),
+            (false, false) => None,
+        }
+    }
+
+    fn flags(self) -> (bool, bool) {
+        match self {
+            Self::Off => (false, false),
+            Self::Captions => (true, false),
+            Self::Audio => (false, true),
+            Self::Both => (true, true),
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Self::Off => "入力を止めます。保存済みの訳文はそのまま残ります",
+            Self::Captions => "YouTubeの字幕だけを翻訳します",
+            Self::Audio => "PCで再生中の音声だけを翻訳します",
+            Self::Both => "字幕を優先し、字幕が止まっている間はPC音声を使います",
+        }
+    }
+}
+
+/// Horizontal segmented switch. Returns the newly selected index.
+fn segmented(ui: &mut egui::Ui, labels: &[&str], selected: Option<usize>) -> Option<usize> {
+    let mut clicked = None;
+    egui::Frame::new()
+        .fill(INPUT)
+        .stroke(egui::Stroke::new(1.0_f32, BORDER_STRONG))
+        .corner_radius(theme::RADIUS_CONTROL)
+        .inner_margin(egui::Margin::same(2))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.horizontal(|ui| {
+                for (index, label) in labels.iter().enumerate() {
+                    let active = selected == Some(index);
+                    let response = ui.add(
+                        egui::Button::new(RichText::new(*label).size(13.0).color(if active {
+                            ON_ACCENT
+                        } else {
+                            TEXT_SECONDARY
+                        }))
+                        .fill(if active { ACCENT } else { INPUT })
+                        .stroke(egui::Stroke::NONE)
+                        .min_size(Vec2::new(0.0, theme::CONTROL_H)),
+                    );
+                    theme::focus_ring(ui, &response);
+                    if response.clicked() {
+                        clicked = Some(index);
+                    }
+                }
+            });
+        });
+    clicked
+}
+
 fn rail_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
     let height = theme::CONTROL_H_LARGE + 8.0;
     let (rect, response) = ui.allocate_exact_size(
@@ -561,6 +658,27 @@ impl App {
         });
     }
 
+    /// Apply one of the three explicit input modes. Audio start is deferred
+    /// through the existing preparation path when the engine is not ready.
+    fn apply_live_sources(&mut self, mode: LiveSourceMode) {
+        let (captions, audio) = mode.flags();
+        self.set_caption_enabled(captions);
+        let audio_active = self.audio_enabled || self.audio_start_requested;
+        if audio && !audio_active {
+            if self.backend_ready && self.asr_ready && self.audio_environment_ready() {
+                self.toggle_audio();
+            } else {
+                self.audio_start_requested = true;
+                self.prepare_audio();
+            }
+        } else if !audio && audio_active {
+            self.audio_start_requested = false;
+            if self.audio_enabled {
+                self.stop_audio();
+            }
+        }
+    }
+
     /// One fixed row for inputs, display options and the actions for the
     /// translation currently on screen.
     fn live_sources_row(&mut self, ui: &mut egui::Ui) {
@@ -578,49 +696,38 @@ impl App {
                     && self
                         .last_caption
                         .is_some_and(|time| time.elapsed() < Duration::from_secs(8));
-                let mut enabled = self.caption_enabled;
-                let caption = toggle(ui, &mut enabled, "YouTube字幕");
-                if caption.changed() {
-                    self.set_caption_enabled(enabled);
-                }
-                caption.on_hover_text(if caption_receiving {
-                    "字幕を受信中"
-                } else if self.caption_enabled {
-                    "字幕の受信待ち"
-                } else {
-                    "クリックで字幕を受け取ります"
-                });
-                let mut audio = self.audio_enabled || self.audio_start_requested;
-                let can_toggle =
-                    self.backend_ready || self.audio_enabled || self.audio_start_requested;
-                let audio_toggle = ui
-                    .add_enabled_ui(can_toggle, |ui| toggle(ui, &mut audio, "PC音声"))
-                    .inner;
-                if audio_toggle.changed() {
-                    if !audio && self.audio_start_requested && !self.audio_enabled {
-                        self.audio_start_requested = false;
-                    } else if self.audio_enabled
-                        || (self.audio_environment_ready()
-                            && self.asr_ready
-                            && self.backend_ready)
-                    {
-                        self.toggle_audio();
-                    } else {
-                        self.audio_start_requested = true;
-                        self.prepare_audio();
+                let audio_wanted = self.audio_enabled || self.audio_start_requested;
+                let current = LiveSourceMode::from_flags(self.caption_enabled, audio_wanted);
+                let selected = match current {
+                    None => 0,
+                    Some(LiveSourceMode::Captions) => 1,
+                    Some(LiveSourceMode::Audio) => 2,
+                    Some(LiveSourceMode::Both) => 3,
+                    Some(LiveSourceMode::Off) => 0,
+                };
+                let chosen = segmented(ui, &["停止", "字幕", "PC音声", "両方"], Some(selected));
+                if let Some(index) = chosen {
+                    let mode = match index {
+                        1 => LiveSourceMode::Captions,
+                        2 => LiveSourceMode::Audio,
+                        3 => LiveSourceMode::Both,
+                        _ => LiveSourceMode::Off,
+                    };
+                    if current != Some(mode) {
+                        self.apply_live_sources(mode);
                     }
                 }
-                audio_toggle.on_hover_text(if self.audio_enabled && self.asr_ready {
-                    if self.asr_busy {
-                        "音声を認識中"
-                    } else {
-                        "聞き取り中"
-                    }
-                } else if self.audio_start_requested {
-                    "音声認識の準備中"
+                let state = if self.caption_enabled && caption_receiving {
+                    ("字幕を受信中", ACCENT)
+                } else if audio_wanted && self.audio_enabled && self.asr_ready {
+                    ("音声を認識中", ACCENT)
+                } else if self.caption_enabled || audio_wanted {
+                    ("入力を待っています", TEXT_MUTED)
                 } else {
-                    "クリックでPCの音声を聞き取ります"
-                });
+                    ("停止中", TEXT_MUTED)
+                };
+                ui.add(egui::Label::new(RichText::new(state.0).size(12.0).color(state.1)))
+                    .on_hover_text(current.map(LiveSourceMode::hint).unwrap_or("入力を選ぶと翻訳が始まります"));
                 let was_enabled = self.settings.auto_read;
                 let read_toggle = ui
                     .add_enabled_ui(self.readout.ready.is_some(), |ui| {
@@ -1132,16 +1239,18 @@ impl App {
                 {
                     let rect = ui
                         .push_id(("history-row", row.record.id), |ui| {
-                            let rect = live_history_card(
-                                ui,
-                                row,
-                                self.settings.font_size,
-                                self.settings.live_show_original,
-                                &mut read_requested,
-                            );
-                            ui.add_space(theme::SPACE_2);
-                            ui.separator();
-                            rect
+                            measure_block(ui, self.settings.font_size, |ui| {
+                                let rect = live_history_card(
+                                    ui,
+                                    row,
+                                    self.settings.font_size,
+                                    self.settings.live_show_original,
+                                    &mut read_requested,
+                                );
+                                ui.add_space(theme::SPACE_2);
+                                ui.separator();
+                                rect
+                            })
                         })
                         .inner;
                     geometry.push(super::live_view::RowGeometry {
@@ -1420,11 +1529,68 @@ impl App {
     fn settings_youtube_card(&mut self, ui: &mut egui::Ui) {
         ui.set_min_width(ui.available_width());
         ui.label(RichText::new("YouTube字幕の接続").strong());
-        secondary(
-            ui,
-            "ブラウザーの字幕連携に、下の接続キーを設定してください。",
-        );
-        ui.label(RichText::new("接続キー").size(14.0));
+        let receiving = self.caption_enabled
+            && !self.caption_paused
+            && self
+                .last_caption
+                .is_some_and(|time| time.elapsed() < Duration::from_secs(8));
+        let (state, color) = if receiving {
+            ("字幕を受信中", theme::SUCCESS)
+        } else if self.caption_enabled {
+            ("接続待ち", WARNING)
+        } else {
+            ("停止中", TEXT_MUTED)
+        };
+        ui.horizontal_wrapped(|ui| {
+            badge(ui, state, color);
+            if self.caption_enabled {
+                if ui.add(standard("停止")).clicked() {
+                    self.set_caption_enabled(false);
+                }
+            } else if ui.add(standard("字幕を受け取る")).clicked() {
+                self.set_caption_enabled(true);
+            }
+        });
+        ui.add_space(theme::SPACE_2);
+        for (number, text) in [
+            (
+                1,
+                "上の「字幕を受け取る」を押します。ライブ翻訳の入力切替で「YouTube字幕」を選んでも同じです。",
+            ),
+            (
+                2,
+                "Chromeは chrome://extensions、Edgeは edge://extensions を開き、開発者モードをオンにします。",
+            ),
+            (
+                3,
+                "「パッケージ化されていない拡張機能を読み込む」で、下の「字幕連携フォルダー」を選びます。",
+            ),
+            (
+                4,
+                "拡張機能の設定画面に接続キーを貼り付け、「保存」→「接続確認」を押します。",
+            ),
+            (
+                5,
+                "YouTubeで動画を開き、CCをオンにして英語などの字幕を選びます。表示中の字幕が約300msごとに届きます。",
+            ),
+        ] {
+            ui.horizontal_top(|ui| {
+                ui.add_sized(
+                    [20.0, 18.0],
+                    egui::Label::new(
+                        RichText::new(format!("{number}"))
+                            .size(12.0)
+                            .strong()
+                            .color(ACCENT),
+                    ),
+                );
+                ui.add(
+                    egui::Label::new(RichText::new(text).size(13.0).color(TEXT_SECONDARY)).wrap(),
+                );
+            });
+            ui.add_space(theme::SPACE_1);
+        }
+        ui.label(RichText::new("接続キー").size(12.0).color(TEXT_MUTED));
         ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.settings.bridge_token)
@@ -1437,14 +1603,17 @@ impl App {
             {
                 let _ = clipboard.set_text(self.settings.bridge_token.clone());
             }
+            if ui.add(standard("字幕連携フォルダー")).clicked() {
+                let mut command = Command::new("explorer.exe");
+                command.arg(app_root().join("extension"));
+                command_hidden(&mut command);
+                let _ = command.spawn();
+            }
         });
-        if ui.add(standard("字幕連携のフォルダーを開く")).clicked() {
-            let mut command = Command::new("explorer.exe");
-            command.arg(app_root().join("extension"));
-            command_hidden(&mut command);
-            let _ = command.spawn();
-        }
-        secondary(ui, "拡張機能の追加はブラウザーで行ってください。");
+        secondary(
+            ui,
+            "字幕はこのPC内の 127.0.0.1:17862 にだけ送られ、外部には送信されません。",
+        );
     }
 
     fn settings_glossary_section(&mut self, ui: &mut egui::Ui) {
@@ -1950,7 +2119,7 @@ mod live_layout_tests {
             );
             assert!((heights[0] - layout.latest_height).abs() < 16.0);
         }
-        assert_eq!(LiveLayout::for_height(800.0).latest_height, 260.0);
+        assert_eq!(LiveLayout::for_height(800.0).latest_height, 288.0);
         assert_eq!(LiveLayout::for_height(800.0).status_height, 56.0);
     }
     #[test]

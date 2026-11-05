@@ -311,22 +311,24 @@ impl App {
                 }
             });
         if self.settings.ocr_backend == "indra" {
-            ui.label("日英の画面文字をCPUで読み取ります。認識言語は行ごとに自動判定します。");
+            ui.label(theme::label(
+                "日英の画面文字をCPUで読み取ります。認識言語は行ごとに自動判定します。",
+            ));
         } else if self.settings.ocr_backend == "paddle" {
-            ui.label("画像の文字を読み取る生成モデルです。複雑な文章や小さな文字は、原文との照合が必要です。");
+            ui.label(theme::label("画像の文字を読み取る生成モデルです。複雑な文章や小さな文字は、原文との照合が必要です。"));
             ui.horizontal_wrapped(|ui| {
                 ui.label("実行方式");
                 ui.selectable_value(&mut self.settings.ocr_device, "auto".into(), "自動");
                 ui.selectable_value(&mut self.settings.ocr_device, "cpu".into(), "CPU");
             });
         } else {
-            ui.label("Windowsに導入済みの文字認識を使います。");
+            ui.label(theme::label("Windowsに導入済みの文字認識を使います。"));
         }
-        ui.label(if self.screen_ocr_ready() {
+        ui.label(theme::label(if self.screen_ocr_ready() {
             "文字認識の準備完了"
         } else {
             "追加データの準備が必要です"
-        });
+        }));
         if self.settings.ocr_backend != "windows" && ui.button("文字認識を準備").clicked() {
             self.ocr.confirm = true;
         }

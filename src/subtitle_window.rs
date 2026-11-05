@@ -249,7 +249,8 @@ impl State {
                         .size(theme::SIZE_LABEL)
                         .color(MUTED),
                 );
-                ui.add(
+                theme::slider(
+                    ui,
                     egui::Slider::new(
                         &mut self.font_size,
                         theme::READING_MIN..=theme::SUBTITLE_READING_MAX,

@@ -213,7 +213,7 @@ impl App {
     }
     pub(super) fn paragraph_tools_settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("文章をつなぐ翻訳").strong());
-        ui.label("字幕と音声の原文を段落にまとめ、前の文章も参照して訳文を更新します。読み上げは文章の確定後に行います。");
+        ui.label(theme::label("字幕と音声の原文を段落にまとめ、前の文章も参照して訳文を更新します。読み上げは文章の確定後に行います。"));
         if ui
             .checkbox(
                 &mut self.settings.english_punctuation,
@@ -229,7 +229,9 @@ impl App {
                 self.paragraph_tools.engine.take();
             }
         }
-        ui.label(RichText::new("英語の句読点補助モデルをPC内で使います。原文の単語や数字を変える出力は採用しません。").size(12.0));
+        ui.label(theme::caption(
+            "英語の句読点補助モデルをPC内で使います。原文の単語や数字を変える出力は採用しません。",
+        ));
         if self.paragraph_tools.loading || self.paragraph_tools.preparing {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -260,7 +262,9 @@ impl App {
         } else if self.paragraph_tools.engine.is_some() {
             ui.colored_label(ACCENT, "英語の文章区切り補助 · 準備完了");
         } else {
-            ui.label("初回は約86MBを取得します。未準備でも、文章をつなぐ翻訳は利用できます。");
+            ui.label(theme::label(
+                "初回は約86MBを取得します。未準備でも、文章をつなぐ翻訳は利用できます。",
+            ));
             ui.hyperlink_to("補助モデルの利用条件（Apache 2.0）", "https://github.com/k2-fsa/sherpa-onnx/blob/af2d8d81dbfa61c4cea4c568da78f3982edca005/LICENSE");
             if ui
                 .add_enabled(
@@ -274,7 +278,7 @@ impl App {
         }
         if !self.paragraph_tools.error.is_empty() {
             ui.colored_label(
-                Color32::LIGHT_RED,
+                theme::ERROR,
                 "区切り補助を準備できませんでした。文章の翻訳は続けられます。",
             );
             egui::CollapsingHeader::new("区切り補助のエラー詳細").show(ui, |ui| {

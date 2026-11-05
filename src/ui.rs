@@ -185,6 +185,13 @@ fn status_message(ui: &mut egui::Ui, parts: &[(&str, Color32)]) {
     ui.add(egui::Label::new(job).truncate()).on_hover_text(full);
 }
 
+/// A saved timestamp as people read it; anything unparsable is shown as stored.
+fn history_time(created_at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|time| time.format("%Y/%m/%d %H:%M").to_string())
+        .unwrap_or_else(|_| created_at.to_owned())
+}
+
 fn paragraph_label(row: &Row) -> &'static str {
     match row.record.paragraph.as_ref().map(|p| p.state) {
         Some(ParagraphState::Open | ParagraphState::Closing) => "継続中の文章 · 訳文を更新中",
@@ -1584,17 +1591,14 @@ impl App {
             let mut export = false;
             self.page_header(
                 ui,
-                "ファイル・履歴",
-                "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。",
+                "履歴",
+                "これまでの訳文を探せます。ファイルも翻訳できます。",
                 |ui| {
                     if ui
-                        .add_enabled(has_rows, standard("タイムラインを書き出す"))
-                        .clicked()
-                    {
-                        export = true;
-                    }
-                    if ui
                         .add_enabled(ready, primary("ファイルを選んで翻訳"))
+                        .on_hover_text(
+                            "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。",
+                        )
                         .clicked()
                     {
                         translate_file = true;
@@ -1603,9 +1607,6 @@ impl App {
             );
             if translate_file {
                 self.translate_file();
-            }
-            if export {
-                self.export_history();
             }
             ui.add_space(theme::SPACE_2);
             live_region(ui, "files-languages", 36.0, |ui| {
@@ -1629,12 +1630,27 @@ impl App {
                 }
             }
             ui.add_space(theme::SPACE_2);
-            ui.add_sized(
-                [ui.available_width(), theme::CONTROL_H],
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("原文・訳文を検索")
-                    .margin(8.0),
-            );
+            // Search and export both act on the list below, so they share its row.
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(has_rows, standard("書き出し"))
+                        .on_hover_text("履歴をTXT・JSON・SRTに書き出します")
+                        .clicked()
+                    {
+                        export = true;
+                    }
+                    ui.add_sized(
+                        [ui.available_width(), theme::CONTROL_H],
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("原文・訳文を検索")
+                            .margin(theme::SPACE_2),
+                    );
+                });
+            });
+            if export {
+                self.export_history();
+            }
             ui.add_space(theme::SPACE_2);
             egui::ScrollArea::vertical()
                 .id_salt("file-history")
@@ -1654,7 +1670,8 @@ impl App {
                         ui.label(
                             RichText::new(format!(
                                 "{} · {}",
-                                row.record.created_at, row.record.kind
+                                history_time(&row.record.created_at),
+                                row.record.kind
                             ))
                             .size(theme::SIZE_CAPTION)
                             .color(TEXT_MUTED),
@@ -2826,6 +2843,23 @@ mod live_layout_tests {
             drawn.contains("保存できていません（Could not append translation history）"),
             "{drawn}"
         );
+    }
+
+    #[test]
+    fn history_shows_readable_times_and_keeps_unknown_values() {
+        assert_eq!(
+            history_time("2026-11-05T12:00:00+09:00"),
+            "2026/11/05 12:00"
+        );
+        assert_eq!(history_time(""), "");
+        assert_eq!(history_time("昨日"), "昨日");
+        let mut app = App::inert();
+        app.tab = Tab::Files;
+        app.rows = vec![row(1, false, false)];
+        app.rows[0].record.created_at = "2026-11-05T12:00:00+09:00".into();
+        let drawn = drawn_text(&mut app, 860.0, 620.0);
+        assert!(drawn.contains("2026/11/05 12:00 · 音声"), "{drawn}");
+        assert!(!drawn.contains("T12:00:00"));
     }
 
     #[test]

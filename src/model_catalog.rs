@@ -196,8 +196,8 @@ pub fn recommend(hardware: &Hardware, policy: Policy) -> Recommendation {
         let needed = inference_bytes(model);
         let mut reasons = Vec::new();
         let memory_fit = match budget {
-            Some(b) if needed <= b => { reasons.push(format!("推論用の見積もり{}が予算{}内です。", size(needed), size(b))); true },
-            Some(b) => { reasons.push(format!("推論に約{}必要ですが、予算は{}です。", size(needed), size(b))); false },
+            Some(b) if needed <= b => { reasons.push(format!("推論用の見積もり{}が利用可能枠{}以内です。", size(needed), size(b))); true },
+            Some(b) => { reasons.push(format!("推論に約{}必要ですが、利用可能枠は{}です。", size(needed), size(b))); false },
             None => { reasons.push("空きメモリーを確認できないため適合を保証できません。".into()); false },
         };
         let host_needed = if backend == Backend::Cpu { needed } else { GIB + model.bytes / 6 };
@@ -205,7 +205,7 @@ pub fn recommend(hardware: &Hardware, policy: Policy) -> Recommendation {
         if !host_fit { reasons.push(format!("OS・音声認識の予約後にRAM約{}も必要です。", size(host_needed))); }
         let disk_needed = disk_peak_bytes(model);
         let disk_fit = hardware.disk_free_bytes.is_some_and(|free| free >= disk_needed);
-        if !disk_fit { reasons.push(format!("保存先の空きは最低約{}必要です（モデル一時領域・音声認識・予備を含む）。", size(disk_needed))); }
+        if !disk_fit { reasons.push(format!("翻訳モデルの準備には、保存先に最低約{}の空きが必要です。音声認識と読み上げは追加で容量を確認します。", size(disk_needed))); }
         if model.quantization == "Q2_K" { reasons.push("Q2_Kは容量優先の手動候補です。公式評価で一部の翻訳精度低下があり、自動推奨しません。".into()); }
         if model.parameters_b >= 31.0 { reasons.push("31Bは待ち時間が長くなる可能性があります。リアルタイム用途の既定にはしません。".into()); }
         if !arch_ok { reasons.push("この配布ランタイムはWindows x64向けです。OS・CPUアーキテクチャを確認してください。".into()); }
@@ -233,7 +233,7 @@ pub fn recommend(hardware: &Hardware, policy: Policy) -> Recommendation {
         "実測ベンチマークでの最適値ではなく、現在の空き容量と応答速度を考慮した初回導入の目安です。".into(),
         format!("空きRAMからOS予備{}と{}用{}を予約しています。", size(os_reserve), if asr_cuda { "Qwen3-ASR CUDA" } else { "Whisper base CPU" }, size(asr_reserve)),
         "推論見積もりは重み110%＋実行用512 MiB＋2スロット分のKV余裕です。長文や他アプリの使用量で増えます。".into(),
-        "ディスクはモデル2倍の一時領域＋音声認識・ランタイム4 GiB＋予備2 GiBを見込んでいます。".into(),
+        "翻訳モデルの準備は重み2倍の一時領域＋実行環境4 GiB＋予備2 GiBを見込んでいます。音声認識と読み上げは別に空き容量を確認します。".into(),
     ];
     if backend != Backend::Cpu {
         if let Some((gpu, _, free)) = gpu {
@@ -261,7 +261,7 @@ pub fn recommend(hardware: &Hardware, policy: Policy) -> Recommendation {
     }
     if !known {
         warnings.push(
-            "RAMまたはディスクの空き容量が不明です。不明値を大容量として扱っていません。".into(),
+            "RAMまたはディスクの空き容量が不明です。不明な容量は十分にあるものとして扱っていません。".into(),
         );
     }
     alternatives.sort_by(|a, b| {

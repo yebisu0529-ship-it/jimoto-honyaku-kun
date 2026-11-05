@@ -11,6 +11,9 @@
   "qwen": {
     "repo": "Qwen/Qwen3-ASR-0.6B-hf",
     "revision": "7f1569a48a89f3e3f4dc3a5c9d28bddd903bc76c",
+    "model_file": "model.safetensors",
+    "model_bytes": 1564928088,
+    "model_sha256": "d3f212dd20abecd315d830bc54ae3865e56ebfc3276484e57b771288ba27fd35",
     "torch_cpu": "torch==2.11.0",
     "torch_cuda": "torch==2.11.0+cu128",
     "cpu_index": "https://download.pytorch.org/whl/cpu",
@@ -19,6 +22,9 @@
   "whisper": {
     "repo": "Systran/faster-whisper-base",
     "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+    "model_file": "model.bin",
+    "model_bytes": 145217532,
+    "model_sha256": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
     "packages": ["faster-whisper==1.2.1", "huggingface-hub==1.33.0"]
   }
 }

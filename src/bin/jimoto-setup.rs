@@ -25,7 +25,7 @@ fn main() -> Result<()> {
         "realtime" => Policy::Realtime,
         "balanced" => Policy::Balanced,
         "quality" => Policy::Quality,
-        _ => anyhow::bail!("policyはrealtime/balanced/qualityを指定してください"),
+        _ => anyhow::bail!("policyにはrealtime/balanced/qualityのいずれかを指定してください"),
     };
     let hardware = hardware::detect(&root)?;
     let rec = model_catalog::recommend(&hardware, policy);

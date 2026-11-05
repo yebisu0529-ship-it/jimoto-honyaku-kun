@@ -12,5 +12,6 @@ __pycache__/
 /verification/hardware-this-pc.json
 /verification/cli-plan.json
 /verification/portable-smoke-*/
-
+/verification/e2e-run-*/
+/verification/e2e-active.json
 /verification/

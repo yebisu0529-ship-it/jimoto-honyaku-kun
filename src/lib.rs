@@ -5,5 +5,7 @@ pub mod installer;
 pub mod journal;
 pub mod model_catalog;
 pub mod platform;
+pub mod speech_setup;
 pub mod storage;
 pub mod subtitles;
+pub mod tts;

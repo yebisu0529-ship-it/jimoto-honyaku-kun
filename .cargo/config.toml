@@ -1,0 +1,6 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[target.x86_64-pc-windows-msvc]
+# Keep the portable application independent of a separately installed VC runtime.
+rustflags = ["-C", "target-feature=+crt-static"]

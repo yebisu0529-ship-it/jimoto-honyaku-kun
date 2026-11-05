@@ -9,6 +9,7 @@ use plamo_translate::{
     platform,
     subtitles::{self, Cue},
 };
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -24,6 +25,7 @@ use std::{
 };
 
 mod preview;
+mod readout;
 mod services;
 mod setup;
 mod ui;
@@ -50,6 +52,7 @@ struct Settings {
     gpu_layers: u32,
     asr_device: String,
     model_store: String,
+    auto_read: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -86,6 +89,7 @@ impl Default for Settings {
             gpu_layers: 99,
             asr_device: "auto".into(),
             model_store: String::new(),
+            auto_read: false,
         }
     }
 }
@@ -175,6 +179,7 @@ enum Event {
         asr: Option<services::AsrStatus>,
     },
     AudioPrepared(std::result::Result<(), String>),
+    Readout(readout::ReadoutEvent),
 }
 struct Row {
     record: Record,
@@ -281,6 +286,8 @@ struct App {
     audio_confirmation: bool,
     audio_installing: bool,
     audio_cancel: Arc<AtomicBool>,
+    readout: readout::ReadoutState,
+    native_window: Option<isize>,
 }
 
 impl App {
@@ -354,6 +361,8 @@ impl App {
             audio_confirmation: false,
             audio_installing: false,
             audio_cancel: Arc::new(AtomicBool::new(false)),
+            readout: readout::ReadoutState::default(),
+            native_window: None,
         }
     }
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -364,12 +373,18 @@ impl App {
         let (settings, load_error) = match fs::read(config_path()) {
             Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
                 Ok(s) => (s, String::new()),
-                Err(e) => (Settings::default(), format!("設定の読込に失敗: {e}")),
+                Err(e) => (
+                    Settings::default(),
+                    format!("設定の読み込みに失敗しました: {e}"),
+                ),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 (Settings::default(), String::new())
             }
-            Err(e) => (Settings::default(), format!("設定の読込に失敗: {e}")),
+            Err(e) => (
+                Settings::default(),
+                format!("設定の読み込みに失敗しました: {e}"),
+            ),
         };
         let token = settings.bridge_token.clone();
         let bridge_stop = stop.clone();
@@ -422,7 +437,7 @@ impl App {
             input: String::new(),
             output: String::new(),
             status: if load_error.is_empty() {
-                "画面・文章・再生音声を、手元で翻訳。".into()
+                "画面・文章・再生音声を手元で翻訳します。".into()
             } else {
                 load_error
             },
@@ -486,8 +501,11 @@ impl App {
             audio_confirmation: false,
             audio_installing: false,
             audio_cancel: Arc::new(AtomicBool::new(false)),
+            readout: readout::ReadoutState::default(),
+            native_window: None,
         };
         app.initialize_services();
+        app.initialize_readout();
         app
     }
     fn translate(
@@ -585,16 +603,24 @@ impl App {
             return;
         };
         self.capture_busy = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         let tx = self.tx.clone();
         let ctx = ctx.clone();
+        let owner = self.native_window;
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(250));
-            let result = platform::capture_screen(screen.id)
-                .map(|im| (screen, im))
-                .map_err(|e| e.to_string());
+            let result = std::panic::catch_unwind(|| {
+                owner.map_or_else(
+                    || platform::capture_screen(screen.id),
+                    |owner| platform::capture_for_selection(screen.id, owner),
+                )
+            })
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "画面を取得できませんでした。もう一度お試しください。"
+                ))
+            })
+            .map(|im| (screen, im))
+            .map_err(|e| e.to_string());
             let _ = tx.send(Event::Screenshot(result));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.request_repaint();
         });
     }
@@ -736,6 +762,10 @@ impl App {
         }
     }
     fn take_ready_audio(&mut self) -> Option<platform::AudioChunk> {
+        if self.readout.suppress.load(Ordering::Acquire) {
+            self.pending_audio = None;
+            return None;
+        }
         if self.pending_audio.as_ref().is_some_and(|p| {
             self.audio_clock_ms()
                 .saturating_sub(self.audio_offset_ms.saturating_add(p.end_ms))
@@ -769,7 +799,7 @@ impl App {
         }
         if self.audio_enabled {
             self.stop_audio();
-            self.status = "音声の文字起こしを停止しました。保存済みの訳は残っています。".into();
+            self.status = "音声認識を停止しました。保存済みの訳文は残っています。".into();
             return;
         }
         let (tx, rx) = mpsc::sync_channel(1);
@@ -777,9 +807,12 @@ impl App {
         let capture_stop = stop.clone();
         let events = self.tx.clone();
         let seconds = self.settings.audio_seconds.clamp(2.0, 4.0);
+        let suppress = self.readout.suppress.clone();
         thread::spawn(move || {
-            if let Err(e) = platform::capture_loopback(capture_stop.clone(), tx, seconds) {
-                let _ = events.send(Event::Info(format!("音声取得を停止: {e:#}")));
+            if let Err(e) =
+                platform::capture_loopback_suppressing(capture_stop.clone(), tx, seconds, suppress)
+            {
+                let _ = events.send(Event::Info(format!("音声の取得を停止しました: {e:#}")));
             }
             capture_stop.store(true, Ordering::Relaxed);
         });
@@ -829,10 +862,15 @@ impl App {
                             .iter()
                             .find(|r| r.record.id == id)
                             .is_some_and(|r| self.overlay_allowed(&r.record.kind, generation));
+                    let mut read_text = None;
                     if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
                         row.pending = false;
                         match result {
                             Ok(text) => {
+                                if self.settings.auto_read && (lane == Lane::Manual || show_overlay)
+                                {
+                                    read_text = Some(text.clone());
+                                }
                                 row.record.translation = text.clone();
                                 if lane == Lane::Manual {
                                     self.output = text.clone();
@@ -855,6 +893,9 @@ impl App {
                                 self.status = error;
                             }
                         }
+                    }
+                    if let Some(text) = read_text {
+                        self.read_translation(text);
                     }
                 }
                 Event::Ocr(result) => match result {
@@ -922,6 +963,7 @@ impl App {
                     self.status = result.unwrap_or_else(|e| format!("ファイル翻訳: {e}"));
                 }
                 Event::Info(info) => self.status = info,
+                Event::Readout(event) => self.accept_readout_event(event),
                 Event::Hardware(result) => {
                     self.setup.detecting = false;
                     match result {
@@ -1032,12 +1074,18 @@ impl App {
             }
         }
         if self.audio_enabled {
+            let suppressed = self.readout.suppress.load(Ordering::Acquire);
+            if suppressed {
+                self.pending_audio = None;
+            }
             let mut capture_stopped = false;
             if let Some(audio) = &self.audio {
                 // Always drain capture into one persistent latest slot. Translation
                 // latency must not discard the only waiting audio chunk.
                 while let Ok(value) = audio.rx.try_recv() {
-                    self.pending_audio = Some(value);
+                    if !suppressed {
+                        self.pending_audio = Some(value);
+                    }
                 }
                 capture_stopped = audio.stop.load(Ordering::Relaxed);
             }
@@ -1190,7 +1238,7 @@ impl App {
             return;
         };
         if input == output {
-            self.status = "原本を保つため別のファイル名を選んでください。".into();
+            self.status = "元のファイルを保つため、別のファイル名を選んでください。".into();
             return;
         }
         self.file_busy = true;
@@ -1217,7 +1265,7 @@ impl App {
                     for (index, cue) in cues.iter_mut().enumerate() {
                         anyhow::ensure!(
                             !cancel.load(Ordering::Relaxed),
-                            "中止しました。原本と出力先は変更していません。"
+                            "中止しました。元のファイルと出力先は変更していません。"
                         );
                         cue.text = translator.translate(&cue.text, |_| {})?;
                         let _ = tx.try_send(Event::Info(format!(
@@ -1351,7 +1399,7 @@ impl App {
                 if w >= 5 && h >= 5 {
                     self.do_ocr(image::imageops::crop_imm(&selection.image, x, y, w, h).to_image());
                 } else {
-                    self.status = "少し広い範囲を選択してください。".into();
+                    self.status = "もう少し広い範囲を選択してください。".into();
                 }
             }
         }
@@ -1397,13 +1445,24 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.native_window.is_none()
+            && let Ok(handle) = frame.window_handle()
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            self.native_window = Some(handle.hwnd.get());
+        }
         self.process(ctx);
         self.poll_services();
+        self.poll_readout();
         self.render_ui(ctx);
         self.audio_setup_ui(ctx);
+        self.readout_setup_ui(ctx);
         self.selection_ui(ctx);
         self.overlay_ui(ctx);
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         if ctx.input(|i| !i.raw.dropped_files.is_empty()) {
             let files = ctx.input(|i| i.raw.dropped_files.clone());
             if let Some(path) = files.first().and_then(|f| f.path.clone()) {
@@ -1460,6 +1519,7 @@ impl Drop for App {
         self.stop.store(true, Ordering::Relaxed);
         self.setup.cancel.store(true, Ordering::Relaxed);
         self.audio_cancel.store(true, Ordering::Relaxed);
+        self.readout.cancel.store(true, Ordering::Relaxed);
         self.file_cancel.store(true, Ordering::Relaxed);
         if let Some(audio) = &self.audio {
             audio.stop.store(true, Ordering::Relaxed);
@@ -1926,5 +1986,18 @@ mod tests {
         a.stop_audio();
         assert!(a.audio_offset_ms >= 7000);
         assert!(a.audio_clock_ms() >= 7000);
+    }
+    #[test]
+    fn own_readout_discards_waiting_audio_and_capture_can_resume() {
+        let mut a = app();
+        a.audio_enabled = true;
+        a.pending_audio = Some(chunk(0, 1000));
+        a.readout.suppress.store(true, Ordering::Release);
+        assert!(a.take_ready_audio().is_none());
+        assert!(a.pending_audio.is_none());
+        a.readout.suppress.store(false, Ordering::Release);
+        a.pending_audio = Some(chunk(0, 1000));
+        assert!(a.take_ready_audio().is_some());
+        assert!(a.audio_enabled);
     }
 }

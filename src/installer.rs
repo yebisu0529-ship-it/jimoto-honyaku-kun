@@ -10,8 +10,8 @@ use std::{
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -70,11 +70,11 @@ pub struct InstallationManifest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-struct Artifact {
-    name: String,
-    url: String,
-    bytes: u64,
-    sha256: String,
+pub(crate) struct Artifact {
+    pub(crate) name: String,
+    pub(crate) url: String,
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct RuntimeManifest {
@@ -85,16 +85,16 @@ struct RuntimeManifest {
     files: Vec<RuntimeFile>,
 }
 #[derive(Debug, Serialize, Deserialize)]
-struct RuntimeFile {
-    path: String,
-    bytes: u64,
-    sha256: String,
+pub(crate) struct RuntimeFile {
+    pub(crate) path: String,
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
 }
 
-fn cancelled(cancel: &AtomicBool) -> Result<()> {
+pub(crate) fn cancelled(cancel: &AtomicBool) -> Result<()> {
     ensure!(
         !cancel.load(Ordering::Relaxed),
-        "準備を中止しました。取得途中のデータは次回再開できます。"
+        "準備を中止しました。次回は取得途中のデータから再開できます。"
     );
     Ok(())
 }
@@ -171,7 +171,7 @@ fn reparse(metadata: &fs::Metadata) -> bool {
 }
 
 /// Check every component before creating anything below it; never follow junctions.
-fn safe_components(path: &Path, create: bool) -> Result<()> {
+pub(crate) fn safe_components(path: &Path, create: bool) -> Result<()> {
     ensure!(path.is_absolute(), "保存先は絶対パスで指定してください。");
     let mut cursor = PathBuf::new();
     for component in path.components() {
@@ -208,12 +208,16 @@ fn safe_components(path: &Path, create: bool) -> Result<()> {
     }
     Ok(())
 }
-fn safe_file(path: &Path) -> Result<()> {
-    safe_components(path.parent().context("保存先の親がありません。")?, false)?;
+pub(crate) fn safe_file(path: &Path) -> Result<()> {
+    safe_components(
+        path.parent()
+            .context("保存先の親フォルダーがありません。")?,
+        false,
+    )?;
     match fs::symlink_metadata(path) {
         Ok(metadata) => ensure!(
             metadata.is_file() && !reparse(&metadata),
-            "通常ファイルではない保存先です: {}",
+            "保存先が通常ファイルではありません: {}",
             path.display()
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -229,13 +233,13 @@ fn within(root: &Path, path: &Path) -> Result<()> {
     safe_file(path)
 }
 
-struct RootLock {
+pub(crate) struct RootLock {
     file: Option<File>,
     path: PathBuf,
 }
-struct StagingGuard {
-    path: PathBuf,
-    parent: PathBuf,
+pub(crate) struct StagingGuard {
+    pub(crate) path: PathBuf,
+    pub(crate) parent: PathBuf,
 }
 impl Drop for StagingGuard {
     fn drop(&mut self) {
@@ -252,7 +256,7 @@ impl Drop for StagingGuard {
     }
 }
 impl RootLock {
-    fn acquire(root: &Path) -> Result<Self> {
+    pub(crate) fn acquire(root: &Path) -> Result<Self> {
         let path = root.join(".installer.lock");
         safe_file(&path)?;
         let mut options = OpenOptions::new();
@@ -283,7 +287,7 @@ impl Drop for RootLock {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     safe_file(path)?;
     let temp = path.with_file_name(format!(".write-{}.tmp", uuid::Uuid::new_v4()));
     let mut file = OpenOptions::new()
@@ -312,7 +316,7 @@ fn hash_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
-fn verify_file(path: &Path, artifact: &Artifact, cancel: &AtomicBool) -> Result<()> {
+pub(crate) fn verify_file(path: &Path, artifact: &Artifact, cancel: &AtomicBool) -> Result<()> {
     safe_file(path)?;
     ensure!(
         fs::metadata(path)?.len() == artifact.bytes,
@@ -435,6 +439,14 @@ fn receive(rx: &mpsc::Receiver<Packet>, cancel: &AtomicBool) -> Result<Packet> {
     }
 }
 fn range_response(headers: &header::HeaderMap, offset: u64, total: u64) -> Result<()> {
+    bounded_range_response(headers, offset, total - 1, total)
+}
+fn bounded_range_response(
+    headers: &header::HeaderMap,
+    offset: u64,
+    expected_end: u64,
+    total: u64,
+) -> Result<()> {
     let value = headers
         .get(header::CONTENT_RANGE)
         .context("再開応答にContent-Rangeがありません。")?
@@ -451,10 +463,249 @@ fn range_response(headers: &header::HeaderMap, offset: u64, total: u64) -> Resul
     ensure!(
         start.parse::<u64>()? == offset
             && declared_total.parse::<u64>()? == total
-            && end.parse::<u64>()? == total - 1,
+            && end.parse::<u64>()? == expected_end,
         "サーバーの再開位置またはサイズが一致しません。"
     );
     Ok(())
+}
+
+const PARALLEL_THRESHOLD: u64 = 64 * 1024 * 1024;
+const SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
+const DOWNLOAD_WORKERS: usize = 8;
+
+type SegmentJob = Box<dyn FnOnce() + Send + 'static>;
+
+// One bounded pool across retries: cancelled, stalled sockets cannot accumulate
+// new network threads or buffers each time the user restarts the installer.
+fn submit_segment(job: impl FnOnce() + Send + 'static, cancel: &AtomicBool) -> Result<()> {
+    static QUEUE: OnceLock<mpsc::SyncSender<SegmentJob>> = OnceLock::new();
+    let queue = QUEUE.get_or_init(|| {
+        let (tx, rx) = mpsc::sync_channel::<SegmentJob>(DOWNLOAD_WORKERS);
+        let rx = Arc::new(Mutex::new(rx));
+        for _ in 0..DOWNLOAD_WORKERS {
+            let rx = rx.clone();
+            thread::spawn(move || {
+                loop {
+                    let job = rx.lock().unwrap().recv();
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        tx
+    });
+    let mut job: SegmentJob = Box::new(job);
+    loop {
+        cancelled(cancel)?;
+        match queue.try_send(job) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::TrySendError::Full(pending)) => {
+                job = pending;
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                bail!("ダウンロード接続が途中で切れました。再実行で続きから取得できます。")
+            }
+        }
+    }
+}
+
+// Workers never own files. Dropping the coordinator immediately stops all disk
+// writes; a blocked socket can finish independently without holding the UI open.
+struct StopDownloads(Arc<AtomicBool>);
+impl Drop for StopDownloads {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+fn fetch_segment(
+    client: &Client,
+    artifact: &Artifact,
+    start: u64,
+    end: u64,
+    stop: &AtomicBool,
+    received: &AtomicU64,
+) -> Result<Option<Vec<u8>>> {
+    cancelled(stop)?;
+    let mut response = client
+        .get(&artifact.url)
+        .header(header::ACCEPT_ENCODING, "identity")
+        .header(header::RANGE, format!("bytes={start}-{end}"))
+        .timeout(Duration::from_secs(180))
+        .send()?;
+    if response.status() == StatusCode::OK {
+        return Ok(None); // Only an ignored Range permits the sequential fallback.
+    }
+    ensure!(
+        response.status() == StatusCode::PARTIAL_CONTENT,
+        "{}の取得に失敗しました（HTTP {}）。",
+        artifact.name,
+        response.status()
+    );
+    bounded_range_response(response.headers(), start, end, artifact.bytes)?;
+    let expected = end - start + 1;
+    ensure!(
+        response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .context("分割応答にContent-Lengthがありません。")?
+            .to_str()?
+            .parse::<u64>()?
+            == expected,
+        "配布サーバーのContent-Lengthが固定サイズと一致しません。"
+    );
+    if let Some(encoding) = response.headers().get(header::CONTENT_ENCODING) {
+        ensure!(
+            encoding == "identity",
+            "圧縮されたダウンロード応答は使用できません。"
+        );
+    }
+    let mut bytes = Vec::with_capacity(expected as usize);
+    let mut buffer = [0; 128 * 1024];
+    loop {
+        cancelled(stop)?;
+        let count = response.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        ensure!(
+            bytes.len() as u64 + count as u64 <= expected,
+            "固定サイズを超えるデータを受信しました。ファイルは確定していません。"
+        );
+        bytes.extend_from_slice(&buffer[..count]);
+        received.fetch_add(count as u64, Ordering::Relaxed);
+    }
+    ensure!(
+        bytes.len() as u64 == expected,
+        "取得データが途中で終了しました。次回再開できます。"
+    );
+    Ok(Some(bytes))
+}
+fn receive_segment(
+    rx: &mpsc::Receiver<Result<Option<Vec<u8>>>>,
+    cancel: &AtomicBool,
+    mut tick: impl FnMut(),
+) -> Result<Option<Vec<u8>>> {
+    loop {
+        cancelled(cancel)?;
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => tick(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("ダウンロード接続が途中で切れました。再実行で続きから取得できます。")
+            }
+        }
+    }
+}
+
+/// Returns false only when the server ignores Range. The existing sequential
+/// path can then resume from the contiguous prefix; no sparse files are created.
+fn download_parallel(
+    artifact: &Artifact,
+    partial: &Path,
+    client: Client,
+    cancel: &AtomicBool,
+    stage: &str,
+    callback: &mut impl FnMut(Progress),
+    segment_bytes: u64,
+) -> Result<bool> {
+    ensure!(
+        segment_bytes > 0 && segment_bytes <= SEGMENT_BYTES,
+        "分割ダウンロードのサイズが不正です。"
+    );
+    let mut offset = fs::metadata(partial).map(|m| m.len()).unwrap_or(0);
+    progress(
+        callback,
+        stage,
+        offset,
+        Some(artifact.bytes),
+        format!("{}を取得中", artifact.name),
+    );
+    cancelled(cancel)?;
+    let stop = StopDownloads(Arc::new(AtomicBool::new(false)));
+    let received = Arc::new(AtomicU64::new(offset));
+    // The tiny probe prevents a non-Range server from sending eight whole models.
+    let (tx, rx) = mpsc::sync_channel(1);
+    let worker_client = client.clone();
+    let worker_artifact = artifact.clone();
+    let worker_stop = stop.0.clone();
+    submit_segment(
+        move || {
+            let result = fetch_segment(
+                &worker_client,
+                &worker_artifact,
+                offset,
+                offset,
+                &worker_stop,
+                &AtomicU64::new(0),
+            );
+            let _ = tx.send(result);
+        },
+        cancel,
+    )?;
+    if receive_segment(&rx, cancel, || {})?.is_none() {
+        return Ok(false);
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(partial)?;
+    while offset < artifact.bytes {
+        cancelled(cancel)?;
+        let mut receivers = Vec::new();
+        let mut next = offset;
+        for _ in 0..DOWNLOAD_WORKERS {
+            if next == artifact.bytes {
+                break;
+            }
+            let start = next;
+            let end = (start + segment_bytes).min(artifact.bytes) - 1;
+            next = end + 1;
+            let (tx, rx) = mpsc::sync_channel(1);
+            let client = client.clone();
+            let artifact = artifact.clone();
+            let stop = stop.0.clone();
+            let received = received.clone();
+            submit_segment(
+                move || {
+                    let result = fetch_segment(&client, &artifact, start, end, &stop, &received);
+                    let _ = tx.send(result);
+                },
+                cancel,
+            )?;
+            receivers.push(rx);
+        }
+        for rx in receivers {
+            let bytes = receive_segment(&rx, cancel, || {
+                progress(
+                    callback,
+                    stage,
+                    received.load(Ordering::Relaxed),
+                    Some(artifact.bytes),
+                    format!("{}を取得中", artifact.name),
+                );
+            })?;
+            let Some(bytes) = bytes else {
+                return Ok(false);
+            };
+            // Only complete, validated, consecutive segments reach disk. A
+            // cancellation callback is checked again before every bounded write.
+            for chunk in bytes.chunks(128 * 1024) {
+                cancelled(cancel)?;
+                file.write_all(chunk)?;
+                offset += chunk.len() as u64;
+            }
+            progress(
+                callback,
+                stage,
+                received.load(Ordering::Relaxed),
+                Some(artifact.bytes),
+                format!("{}を取得中", artifact.name),
+            );
+        }
+    }
+    cancelled(cancel)?;
+    file.sync_all()?;
+    Ok(true)
 }
 fn quarantine(path: &Path) -> Result<()> {
     if path.exists() {
@@ -515,6 +766,18 @@ fn download_verified(
     }
     atomic_write(&meta, &serde_json::to_vec(artifact)?)?;
     let mut offset = fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
+    if offset < artifact.bytes && artifact.bytes >= PARALLEL_THRESHOLD {
+        download_parallel(
+            artifact,
+            &partial,
+            policy.client()?,
+            cancel,
+            stage,
+            callback,
+            SEGMENT_BYTES,
+        )?;
+        offset = fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
+    }
     if offset < artifact.bytes {
         let client = policy.client()?;
         let rx = start_stream(client, artifact.url.clone(), offset);
@@ -624,6 +887,55 @@ fn download_verified(
     Ok(())
 }
 
+/// Shared verified downloader for additional pinned, opt-in speech assets.
+/// The official HTTPS and redirect allowlist is identical to the main installer.
+pub(crate) fn download_official(
+    artifact: &Artifact,
+    target: &Path,
+    cancel: &AtomicBool,
+    stage: &str,
+    callback: &mut impl FnMut(Progress),
+) -> Result<()> {
+    download_verified(
+        artifact,
+        target,
+        NetworkPolicy::Official,
+        cancel,
+        stage,
+        callback,
+    )
+}
+
+pub(crate) fn remaining_bytes(artifact: &Artifact, target: &Path) -> Result<u64> {
+    safe_file(target)?;
+    if target.is_file() && fs::metadata(target)?.len() == artifact.bytes {
+        return Ok(0);
+    }
+    let partial = target.with_file_name(format!(
+        "{}.partial",
+        target.file_name().unwrap().to_string_lossy()
+    ));
+    let meta = target.with_file_name(format!(
+        "{}.partial.json",
+        target.file_name().unwrap().to_string_lossy()
+    ));
+    safe_file(&partial)?;
+    safe_file(&meta)?;
+    let identity = fs::metadata(&meta)
+        .ok()
+        .filter(|m| m.len() <= 64 * 1024)
+        .and_then(|_| fs::read(&meta).ok())
+        .and_then(|bytes| serde_json::from_slice::<Artifact>(&bytes).ok());
+    let size = fs::metadata(partial).map(|m| m.len()).unwrap_or(0);
+    Ok(
+        if identity.as_ref() == Some(artifact) && size <= artifact.bytes {
+            artifact.bytes - size
+        } else {
+            artifact.bytes
+        },
+    )
+}
+
 fn runtime_assets(backend: &str) -> Vec<Artifact> {
     let rows: &[(&str, u64, &str)] = match backend {
         "cpu" => &[(
@@ -662,7 +974,7 @@ fn runtime_assets(backend: &str) -> Vec<Artifact> {
         .collect()
 }
 
-fn archive_path(name: &str) -> Result<PathBuf> {
+pub(crate) fn archive_path(name: &str) -> Result<PathBuf> {
     ensure!(
         !name.is_empty() && name.len() <= 240 && !name.contains('\0'),
         "ZIPのパスが不正です。"
@@ -698,6 +1010,16 @@ fn unpack(
     staging: &Path,
     cancel: &AtomicBool,
     callback: &mut impl FnMut(Progress),
+) -> Result<Vec<RuntimeFile>> {
+    unpack_runtime(archives, staging, cancel, callback, "llama-server.exe")
+}
+
+pub(crate) fn unpack_runtime(
+    archives: &[PathBuf],
+    staging: &Path,
+    cancel: &AtomicBool,
+    callback: &mut impl FnMut(Progress),
+    executable: &str,
 ) -> Result<Vec<RuntimeFile>> {
     let mut files: BTreeMap<String, RuntimeFile> = BTreeMap::new();
     let mut total = 0_u64;
@@ -786,8 +1108,8 @@ fn unpack(
         }
     }
     ensure!(
-        files.contains_key("llama-server.exe"),
-        "ZIPにllama-server.exeがありません。"
+        files.contains_key(executable),
+        "ZIPに{executable}がありません。"
     );
     Ok(files.into_values().collect())
 }
@@ -1113,6 +1435,244 @@ mod tests {
             "test",
             &mut |_| {},
         )
+    }
+    // Serve requests concurrently and deliberately complete later ranges first.
+    fn range_fixture(body: Vec<u8>, count: usize) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/asset", listener.local_addr().unwrap());
+        let body = Arc::new(body);
+        let worker = thread::spawn(move || {
+            let mut workers = Vec::new();
+            for _ in 0..count {
+                let (mut socket, _) = listener.accept().unwrap();
+                let body = body.clone();
+                workers.push(thread::spawn(move || {
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    let mut byte = [0; 1];
+                    while !request.ends_with(b"\r\n\r\n") {
+                        if socket.read(&mut byte).unwrap() == 0 {
+                            break;
+                        }
+                        request.push(byte[0]);
+                    }
+                    let request = String::from_utf8(request).unwrap().to_lowercase();
+                    let range = request
+                        .lines()
+                        .find_map(|line| line.strip_prefix("range: bytes="))
+                        .unwrap();
+                    let (start, end) = range.split_once('-').unwrap();
+                    let start = start.parse::<usize>().unwrap();
+                    let end = if end.is_empty() {
+                        body.len() - 1
+                    } else {
+                        end.parse::<usize>().unwrap()
+                    };
+                    if end > start && start == 3 {
+                        thread::sleep(Duration::from_millis(80));
+                    }
+                    let reply = response(
+                        "206 Partial Content",
+                        &format!(
+                            "Content-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\n",
+                            end - start + 1,
+                            body.len()
+                        ),
+                        &body[start..=end],
+                    );
+                    let _ = socket.write_all(&reply);
+                    request
+                }));
+            }
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect()
+        });
+        (url, worker)
+    }
+    #[test]
+    fn parallel_ranges_commit_in_order_and_resume_after_cancel() {
+        let temp = Temp::new();
+        let body: Vec<u8> = (0..35).collect();
+        // Probe + eight 4-byte ranges, followed by the final sequential resume.
+        let (url, worker) = range_fixture(body.clone(), 10);
+        let spec = artifact(url, &body);
+        partial(&temp.0, &spec, &body[..3]);
+        let path = temp.0.join("model.gguf.partial");
+        let cancel = AtomicBool::new(false);
+        let result = download_parallel(
+            &spec,
+            &path,
+            NetworkPolicy::LocalTest.client().unwrap(),
+            &cancel,
+            "test",
+            &mut |p| {
+                // Progress reports received bytes, but only the ordered prefix is durable.
+                if p.downloaded_bytes > 3 && fs::metadata(&path).unwrap().len() >= 7 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+            4,
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), body[..7]);
+        cancel.store(false, Ordering::Relaxed);
+        download(&spec, &temp.0.join(&spec.name), &cancel).unwrap();
+        assert_eq!(fs::read(temp.0.join(&spec.name)).unwrap(), body);
+        let requests = worker.join().unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("range: bytes=7-"))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("range: bytes=31-34"))
+        );
+    }
+    #[test]
+    fn parallel_ranges_complete_out_of_order_with_exact_contents() {
+        let temp = Temp::new();
+        let body: Vec<u8> = (0..35).collect();
+        let (url, worker) = range_fixture(body.clone(), 9);
+        let spec = artifact(url, &body);
+        partial(&temp.0, &spec, &body[..3]);
+        let path = temp.0.join("model.gguf.partial");
+        assert!(
+            download_parallel(
+                &spec,
+                &path,
+                NetworkPolicy::LocalTest.client().unwrap(),
+                &AtomicBool::new(false),
+                "test",
+                &mut |_| {},
+                4
+            )
+            .unwrap()
+        );
+        assert_eq!(fs::read(path).unwrap(), body);
+        assert_eq!(worker.join().unwrap().len(), 9);
+    }
+    #[test]
+    fn parallel_ranges_reject_forged_bounds_lengths_and_short_bodies() {
+        for headers in [
+            "Content-Length: 1\r\nContent-Range: bytes 1-1/6\r\n",
+            "Content-Length: 1\r\nContent-Range: bytes 0-1/6\r\n",
+            "Content-Length: 1\r\nContent-Range: bytes 0-0/7\r\n",
+            "Content-Length: 2\r\nContent-Range: bytes 0-0/6\r\n",
+            "Content-Range: bytes 0-0/6\r\n",
+        ] {
+            let temp = Temp::new();
+            let (url, worker) = fixture(vec![response("206 Partial Content", headers, b"a")]);
+            let spec = artifact(url, b"abcdef");
+            assert!(
+                download_parallel(
+                    &spec,
+                    &temp.0.join("model.gguf.partial"),
+                    NetworkPolicy::LocalTest.client().unwrap(),
+                    &AtomicBool::new(false),
+                    "test",
+                    &mut |_| {},
+                    2
+                )
+                .is_err()
+            );
+            assert!(!temp.0.join("model.gguf.partial").exists());
+            worker.join().unwrap();
+        }
+        let temp = Temp::new();
+        let (url, worker) = fixture(vec![response(
+            "206 Partial Content",
+            "Content-Length: 1\r\nContent-Range: bytes 0-0/6\r\n",
+            b"",
+        )]);
+        let spec = artifact(url, b"abcdef");
+        assert!(
+            download_parallel(
+                &spec,
+                &temp.0.join("model.gguf.partial"),
+                NetworkPolicy::LocalTest.client().unwrap(),
+                &AtomicBool::new(false),
+                "test",
+                &mut |_| {},
+                2
+            )
+            .is_err()
+        );
+        worker.join().unwrap();
+    }
+    #[test]
+    fn parallel_ignored_range_preserves_partial_for_sequential_fallback() {
+        let temp = Temp::new();
+        let (url, worker) = fixture(vec![response("200 OK", "Content-Length: 6\r\n", b"abcdef")]);
+        let spec = artifact(url, b"abcdef");
+        partial(&temp.0, &spec, b"abc");
+        let path = temp.0.join("model.gguf.partial");
+        assert!(
+            !download_parallel(
+                &spec,
+                &path,
+                NetworkPolicy::LocalTest.client().unwrap(),
+                &AtomicBool::new(false),
+                "test",
+                &mut |_| {},
+                2
+            )
+            .unwrap()
+        );
+        assert_eq!(fs::read(path).unwrap(), b"abc");
+        worker.join().unwrap();
+    }
+    #[test]
+    fn parallel_cancel_returns_without_waiting_for_stalled_socket() {
+        let temp = Temp::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let spec = artifact(
+            format!("http://{}/asset", listener.local_addr().unwrap()),
+            b"abcdef",
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let server_cancel = cancel.clone();
+        let worker = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                if socket.read(&mut byte).unwrap() == 0 {
+                    break;
+                }
+                request.push(byte[0]);
+            }
+            socket.write_all(b"HTTP/1.1 206 Partial Content\r\nConnection: close\r\nContent-Length: 1\r\nContent-Range: bytes 0-0/6\r\n\r\n").unwrap();
+            server_cancel.store(true, Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(600));
+            let _ = socket.write_all(b"a");
+        });
+        let started = Instant::now();
+        let path = temp.0.join("model.gguf.partial");
+        assert!(
+            download_parallel(
+                &spec,
+                &path,
+                NetworkPolicy::LocalTest.client().unwrap(),
+                &cancel,
+                "test",
+                &mut |_| {},
+                2
+            )
+            .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(!path.exists());
+        worker.join().unwrap();
+        assert!(!path.exists());
     }
     #[test]
     fn resume_checks_range_and_hash_before_rename() {

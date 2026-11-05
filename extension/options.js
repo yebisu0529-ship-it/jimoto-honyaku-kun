@@ -3,7 +3,7 @@ const token = document.getElementById("token");
 const status = document.getElementById("status");
 async function render() {
   const { bridgeToken, bridgeStatus } = await chrome.storage.local.get(["bridgeToken", "bridgeStatus"]);
-  if (!bridgeToken) { status.textContent = "未設定：アプリの接続トークンを貼り付けて保存してください。"; return; }
+  if (!bridgeToken) { status.textContent = "未設定：アプリの接続キーを貼り付けて保存してください。"; return; }
   const time = bridgeStatus?.checkedAt ? new Date(bridgeStatus.checkedAt).toLocaleTimeString() : "";
   status.textContent = bridgeStatus ? `${bridgeStatus.detail}${time ? `（${time}）` : ""}` : "トークン保存済み。接続確認を押してください。";
 }

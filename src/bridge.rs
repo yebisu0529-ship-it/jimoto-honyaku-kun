@@ -96,7 +96,7 @@ pub fn run(token: String, stop: Arc<AtomicBool>, tx: SyncSender<Caption>) -> Res
                     .as_reader()
                     .take(32_769)
                     .read_to_string(&mut body)
-                    .context("字幕の読込")
+                    .context("字幕の読み込み")
                     .and_then(|_| {
                         anyhow::ensure!(body.len() <= 32_768, "字幕が長すぎます");
                         let caption: Caption = serde_json::from_str(&body)?;

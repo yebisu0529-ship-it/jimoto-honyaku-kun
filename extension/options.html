@@ -19,13 +19,13 @@
   <h1>地元翻訳くん YouTube字幕連携</h1>
   <p>translated by PLaMo</p>
   <p>表示中のYouTube字幕を、このPCの地元翻訳くんへ送ります。アプリの「設定と接続」で接続キーをコピーしてください。</p>
-  <label for="token">アプリの接続トークン</label>
+  <label for="token">アプリの接続キー</label>
   <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="アプリからコピーしたトークンを貼り付け">
   <button id="save" type="button">保存</button>
-  <button id="clear" type="button">トークンを削除</button>
+  <button id="clear" type="button">接続キーを削除</button>
   <button id="check" type="button">接続確認</button>
   <p id="status" role="status" aria-live="polite">状態を確認しています…</p>
-  <small>送信先は http://127.0.0.1:17862 固定です。トークンはこのブラウザーの拡張機能ローカル領域に保存され、暗号化保管ではありません。</small>
+  <small>送信先は http://127.0.0.1:17862 固定です。トークンはこのブラウザーの拡張機能ローカル領域に保存され、暗号化はされません。</small>
   <p>YouTubeでCCをオンにし、字幕の言語を選択してください。ページ上に表示された字幕だけを取得します。字幕のない動画や埋め込みプレーヤーには対応していません。</p>
   <script src="options.js"></script>
 </body>

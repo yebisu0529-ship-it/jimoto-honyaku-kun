@@ -273,6 +273,15 @@ impl App {
                 {
                     self.save_text();
                 }
+                if ui
+                    .add_enabled(!self.output.is_empty(), standard("読み上げ"))
+                    .clicked()
+                {
+                    self.read_translation(self.output.clone());
+                }
+                if self.readout_busy() && ui.add(standard("停止")).clicked() {
+                    self.stop_readout();
+                }
             });
             egui::ScrollArea::vertical()
                 .id_salt("output-scroll")
@@ -464,6 +473,7 @@ impl App {
             ui.colored_label(ERROR, &self.journal_error);
         }
         ui.add_space(4.0);
+        let mut read_requested = None;
         egui::ScrollArea::vertical()
             .id_salt("timeline")
             .stick_to_bottom(self.settings.auto_scroll)
@@ -472,7 +482,7 @@ impl App {
                 if self.rows.is_empty() {
                     card().show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
-                        ui.label("開始すると、ここに対訳が時刻つきで並びます。");
+                        ui.label("開始すると、ここに対訳が時刻付きで並びます。");
                         secondary(ui, "YouTube字幕またはPC音声をオンにしてください。");
                     });
                 }
@@ -509,6 +519,15 @@ impl App {
                             {
                                 let _ = clipboard.set_text(row.record.translation.clone());
                             }
+                            if ui
+                                .add_enabled(
+                                    !row.record.translation.is_empty(),
+                                    standard("読み上げ"),
+                                )
+                                .clicked()
+                            {
+                                read_requested = Some(row.record.translation.clone());
+                            }
                         });
                         if let Some(error) = &row.error {
                             ui.colored_label(ERROR, error);
@@ -540,6 +559,9 @@ impl App {
                     ui.add_space(4.0);
                 }
             });
+        if let Some(text) = read_requested {
+            self.read_translation(text);
+        }
     }
     pub(super) fn files_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("ファイル・履歴");
@@ -613,7 +635,7 @@ impl App {
                 });
             }
             if self.rows.is_empty() {
-                secondary(ui, "翻訳した履歴はここに表示されます。");
+                secondary(ui, "翻訳履歴はここに表示されます。");
             }
         });
     }
@@ -625,7 +647,7 @@ impl App {
         );
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("設定");
-            secondary(ui, "翻訳と音声認識は、このPC内で処理します。");
+            secondary(ui, "翻訳と音声認識はこのPC内で処理します。");
             ui.add_space(8.0);
             card().show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -686,12 +708,16 @@ impl App {
                     if self.asr_ready {
                         "音声認識の準備完了"
                     } else {
-                        "初回は必要なモデルの準備を行います"
+                        "初回は必要なモデルを準備します"
                     },
                 );
                 if ui.add(standard("音声認識を準備")).clicked() {
                     self.prepare_audio();
                 }
+            });
+            card().show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                self.readout_settings_ui(ui);
             });
             card().show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -758,8 +784,8 @@ impl App {
                         ("翻訳モデルのファイル", &mut self.settings.model),
                         ("翻訳エンジン", &mut self.settings.llama_server),
                         ("翻訳サーバー", &mut self.settings.translation.endpoint),
-                        ("音声モデル", &mut self.settings.asr_model),
-                        ("音声実行環境", &mut self.settings.python),
+                        ("音声認識モデル", &mut self.settings.asr_model),
+                        ("音声認識の実行環境", &mut self.settings.python),
                         ("音声認識サーバー", &mut self.settings.asr_endpoint),
                     ] {
                         ui.label(RichText::new(label).size(14.0));
@@ -792,6 +818,9 @@ impl App {
                     }
                     Err(error) => self.status = error,
                 }
+            }
+            if ui.add(standard("アプリを終了")).clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
         if previous_asr
@@ -835,6 +864,15 @@ impl App {
                     );
                     if !self.status.is_empty() {
                         ui.label(RichText::new(&self.status).size(12.0).color(SECONDARY));
+                    }
+                    if !self.readout.error.is_empty() {
+                        ui.label(RichText::new(&self.readout.error).size(12.0).color(ERROR));
+                    } else if !self.readout.status.is_empty() {
+                        ui.label(
+                            RichText::new(&self.readout.status)
+                                .size(12.0)
+                                .color(SECONDARY),
+                        );
                     }
                 });
             });

@@ -86,6 +86,70 @@ pub fn capture_screen(id: u32) -> Result<image::RgbaImage> {
 }
 
 #[cfg(windows)]
+pub fn capture_for_selection(screen_id: u32, owner: isize) -> Result<image::RgbaImage> {
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{
+            GetWindowThreadProcessId, IsWindow, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE,
+            ShowWindowAsync,
+        },
+    };
+    let window = HWND(owner as *mut _);
+    anyhow::ensure!(
+        owner != 0 && unsafe { IsWindow(Some(window)) }.as_bool(),
+        "画面取得用のウィンドウを確認できません。"
+    );
+    let process = std::process::id();
+    let mut owner_process = 0;
+    let owner_thread = unsafe { GetWindowThreadProcessId(window, Some(&mut owner_process)) };
+    anyhow::ensure!(
+        owner_thread != 0 && owner_process == process,
+        "別のアプリのウィンドウは画面取得用に非表示にできません。"
+    );
+    struct RestoreWindow {
+        window: HWND,
+        process: u32,
+        thread: u32,
+    }
+    impl Drop for RestoreWindow {
+        fn drop(&mut self) {
+            let mut process = 0;
+            let thread = unsafe { GetWindowThreadProcessId(self.window, Some(&mut process)) };
+            // The HWND could have been destroyed while the capture ran. Never
+            // restore a recycled handle belonging to an unrelated process.
+            if thread == self.thread && process == self.process {
+                let _ = unsafe { ShowWindowAsync(self.window, SW_SHOWNOACTIVATE) };
+            }
+        }
+    }
+    let _restore = if unsafe { IsWindowVisible(window) }.as_bool() {
+        // Arm restoration before requesting hide, including a failed request.
+        let restore = RestoreWindow {
+            window,
+            process,
+            thread: owner_thread,
+        };
+        anyhow::ensure!(
+            unsafe { ShowWindowAsync(window, SW_HIDE) }.as_bool(),
+            "画面取得のためにウィンドウを非表示にできませんでした。"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        Some(restore)
+    } else {
+        None
+    };
+    // Capture failures and Rust panics both restore via the guard. No egui
+    // viewport command or subsequent UI frame is needed to show the window.
+    std::panic::catch_unwind(|| capture_screen(screen_id))
+        .map_err(|_| anyhow::anyhow!("画面の取得処理が停止しました。もう一度お試しください。"))?
+}
+
+#[cfg(not(windows))]
+pub fn capture_for_selection(_screen_id: u32, _owner: isize) -> Result<image::RgbaImage> {
+    bail!("Display capture requires Windows")
+}
+
+#[cfg(windows)]
 pub fn ocr(image: &image::RgbaImage, language: &str) -> Result<String> {
     // A fresh worker ensures WinRT is initialized as MTA even if a caller is an STA UI.
     std::thread::scope(|scope| {
@@ -236,6 +300,17 @@ pub fn capture_loopback(
     tx: SyncSender<AudioChunk>,
     chunk_seconds: f32,
 ) -> Result<()> {
+    capture_loopback_suppressing(stop, tx, chunk_seconds, Arc::new(AtomicBool::new(false)))
+}
+
+/// Drop playback packets while our own TTS plays, including the partial window.
+#[cfg(windows)]
+pub fn capture_loopback_suppressing(
+    stop: Arc<AtomicBool>,
+    tx: SyncSender<AudioChunk>,
+    chunk_seconds: f32,
+    suppress: Arc<AtomicBool>,
+) -> Result<()> {
     use std::{
         sync::{atomic::Ordering, mpsc::TrySendError},
         time::{Duration, Instant},
@@ -316,6 +391,11 @@ pub fn capture_loopback(
         if stop.load(Ordering::Acquire) {
             break;
         }
+        if suppress.load(Ordering::Acquire) {
+            samples.clear();
+            first_sample_ms = None;
+            window_start = Instant::now();
+        }
         // Read packets directly: wasapi 0.22's copying helpers do not guard a null
         // packet pointer on AUDCLNT_BUFFERFLAGS_SILENT. Windows permits that pointer.
         while !stop.load(Ordering::Acquire) && unsafe { capture.GetNextPacketSize() }? > 0 {
@@ -324,6 +404,12 @@ pub fn capture_loopback(
             unsafe { capture.GetBuffer(&mut pointer, &mut frames, &mut flags, None, None) }?;
             // Always release an acquired packet, including when processing fails.
             let packet = (|| -> Result<()> {
+                if suppress.load(Ordering::Acquire) {
+                    samples.clear();
+                    first_sample_ms = None;
+                    window_start = Instant::now();
+                    return Ok(());
+                }
                 if frames == 0 {
                     return Ok(());
                 }
@@ -426,9 +512,26 @@ pub fn capture_loopback(
     bail!("System audio capture requires Windows")
 }
 
+#[cfg(not(windows))]
+pub fn capture_loopback_suppressing(
+    stop: Arc<AtomicBool>,
+    tx: SyncSender<AudioChunk>,
+    chunk_seconds: f32,
+    _suppress: Arc<AtomicBool>,
+) -> Result<()> {
+    capture_loopback(stop, tx, chunk_seconds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn selection_capture_rejects_null_owner_before_monitor_lookup() {
+        let error = capture_for_selection(u32::MAX, 0).unwrap_err();
+        assert!(error.to_string().contains("ウィンドウを確認できません"));
+    }
 
     #[test]
     fn ocr_language_selection_preserves_chinese_scripts() {

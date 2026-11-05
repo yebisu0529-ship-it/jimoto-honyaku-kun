@@ -6,9 +6,9 @@ translated by PLaMo
 
 Windows用のローカル翻訳アプリです。文章、画面の範囲、YouTubeの表示字幕、PCで再生中の音声を翻訳できます。範囲翻訳とライブ翻訳は同時に使えます。
 
-**[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/jimoto-honyaku-kun/releases)** · **プレビュー版 0.2.1**
+**[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/jimoto-honyaku-kun/releases)** · **プレビュー版 0.3.0**
 
-ZIPからの初回起動・PC情報検出・モデル取得の開始まで確認しています。モデル取得の完了から範囲翻訳・音声翻訳までの通し確認は未完了です。検証を続けながら改善するプレビュー版として公開しています。
+ZIPを新しいフォルダーへ展開し、空の保存領域から翻訳モデル・音声認識・読み上げを導入して、実際の推論と再生を確認しました。範囲選択のマウス操作とYouTube拡張の実ブラウザー接続は、追加検証が残るプレビュー版です。詳しくは[検証範囲](docs/VALIDATION.md)をご覧ください。
 
 ![初回のモデル準備画面（実コードから描画したデモ）](assets/screenshots/first-run.png)
 
@@ -17,6 +17,8 @@ ZIPからの初回起動・PC情報検出・モデル取得の開始まで確認
 Windows 10 / 11 x64向けのポータブル版は、ZIPを展開して `地元翻訳くん.cmd` を開きます。利用者がRustやPythonを事前に入れる必要はありません。`start.ps1` はGUIを開くための起動補助で、モデルの準備・起動・終了はアプリが管理します。起動直後に音声取得は始まりません。
 
 初回は、まずアプリ内で**翻訳モデル**を準備します。テキスト・画面OCR・YouTube字幕だけなら、Pythonや音声認識モデルは不要です。
+
+翻訳用のllama.cppには[Microsoft Visual C++ v14 再頒布可能パッケージ（x64）](https://learn.microsoft.com/ja-jp/cpp/windows/latest-supported-vc-redist?view=msvc-170)が必要です。未導入のPCでは、公式のx64版をインストールしてから翻訳エンジンを起動してください。なお、アプリ本体と初期設定ツールにはVisual C++ランタイムが静的に組み込まれています。
 
 1. 「PC情報と保存先」でRAM、GPUの専用VRAMと現在の空き、保存先ディスクの空きを確認します。機器情報はPC内で処理し、外部へ送信しません。
 2. 「速度を優先」「バランス」「精度を優先」から方針を選び、推奨モデル・必要容量・取得先を確認します。
@@ -51,7 +53,7 @@ YouTube字幕と音声認識は独立にオン・オフできます。両方を�
 
 ## 再生音声の翻訳は追加機能
 
-必要なときに、アプリの音声環境の準備から明示的に導入します。初回は数GBの取得が必要になる場合があります。アプリ専用の保存領域へ固定版uv・管理Python 3.13・独立した環境・音声モデルを用意し、システムPythonやグローバルPATHを変更しません。
+必要なときに、アプリの音声環境の準備から導入します。初回の空き容量の目安はQwen CUDAで14GiB、Qwen CPUで8GiB、Whisper CPUで4GiBです。翻訳モデル用の容量とは別に必要です。アプリ専用の保存領域へ固定版uv・管理Python 3.13・独立した環境・音声モデルを用意し、システムPythonやグローバルPATHを変更しません。
 
 - **多言語Whisper base / CPU**：対応GPUを確認できないPCの候補です。
 - **Qwen3-ASR-0.6B-hf / CUDA**：対応GPUと空き容量を確認できるPCの候補です。音声用PyTorch CUDA12.8はドライバー570.65以上を別に確認します。翻訳用CUDAが動くことだけでは、この条件を満たした扱いにしません。
@@ -60,13 +62,21 @@ YouTube字幕と音声認識は独立にオン・オフできます。両方を�
 
 準備後に「音声翻訳を開始」または `Ctrl+Alt+L` を押すと、Windowsの既定出力で再生中の音を取得します。マイク入力ではありません。音声は短い区間ごとに認識し、待ち行列を無制限に増やさず、古い区間より最新を優先します。逐語の同時通訳ではなく、区間ごとの字幕翻訳です。音声翻訳中も範囲OCRを使えます。
 
+## 日本語の読み上げ
+
+設定の「読み上げ」で、**Irodori-TTS v4.1 Small-MF**と**speech.cpp 0.10.1**を追加できます。小型の日本語モデルを使い、Pythonは不要です。初回は約1.95GBを取得し、展開用を含む空き容量の目安は約4.4GiBです。Windows版の実行には、CPUを使う場合もVulkan対応ドライバーが必要です。
+
+訳文やタイムラインの読み上げボタンで再生できます。「日本語の訳文を自動で読み上げる」は初期状態ではオフです。停止や停止後の再生ができ、読み上げ中はアプリ自身の音声を音声翻訳へ取り込まないようにします。GPUの空きを起動直前にも確認し、4GiB未満または確認できない場合は、その起動だけCPUを使います。
+
+音声の生成はPC内で行います。初回のモデル読み込みや長文の生成には待ち時間があり、ライブ字幕と同じ速度で読み上げ続けられることは保証していません。
+
 ## 保存・通信
 
 既定の保存先は利用者のLocal AppData配下です。実際の場所はアプリ内に表示します。設定・英語や日本語の原文と訳文・履歴を再起動後も保持し、最新のタイムラインを復元します。「新しいタイムライン」でも以前のファイルは残ります。保存中断からの回復では原本を保全します。
 
 タイムラインはTXT / JSON / SRTへ書き出せます。音声とYouTube、または複数動画が混在する履歴はSRTへの書き出しを拒否し、TXT / JSONを案内します。画面画像・生の音声を翻訳履歴へ保存する構成ではありません。
 
-翻訳・音声認識はPC内で実行し、原文・字幕・音声をクラウド推論へ送りません。初回のソフトウェアとモデルの取得にはネット接続を使います。ローカル接続は翻訳17860、音声認識17861、字幕ブリッジ17862。アプリは自分で起動したモデルプロセスだけを管理します。
+翻訳・音声認識・読み上げはPC内で実行し、原文・字幕・音声をクラウド推論へ送りません。初回のソフトウェアとモデルの取得にはネット接続を使います。ローカル接続は翻訳17860、音声認識17861、字幕ブリッジ17862、読み上げ17863です。アプリは自分で起動したモデルプロセスだけを管理します。
 
 ## CLI・開発・配布
 
@@ -78,9 +88,9 @@ YouTube字幕と音声認識は独立にオン・オフできます。両方を�
 .\jimoto-setup.exe --root C:\LocalModels\Jimoto --policy balanced --probe
 ```
 
-ソース版のビルドにはRust MSVC環境とWindows SDKが必要ですが、配布ZIPの利用者には不要です。`cargo build --release --locked`でビルドできます。パッケージの作成手順・収録範囲は [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)。モデル重み・利用者の履歴・ログ・認証情報はZIPへ入れません。
+ソース版のビルドにはRust MSVC環境とWindows SDKが必要ですが、配布ZIPの利用者には不要です。`cargo build --release --locked --target x86_64-pc-windows-msvc`でビルドできます。パッケージの作成手順・収録範囲は [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) を参照してください。モデル重み・利用者の履歴・ログ・認証情報はZIPへ入れません。
 
-検証範囲は [docs/VALIDATION.md](docs/VALIDATION.md)。Opus 5.5でUI/UXを2回監査し、配色・フォント・操作状態・初回導線を改善しました。CPUでの速度、すべてのGPUでの動作、14種類すべての実測性能を保証していません。
+検証範囲は [docs/VALIDATION.md](docs/VALIDATION.md) をご覧ください。Opus 5.5でUI/UXを2回監査し、配色・フォント・操作状態・初回導線を改善しました。公開する日本語はAntigravity CLIのGemini 4 Argonで校正しました。CPUでの速度、すべてのGPUでの動作、14種類すべての実測性能は保証していません。
 
 開発・検証時は、絶対パスの環境変数`PLAMO_DATA_DIR`で設定・履歴・モデルの保存領域を分離できます。相対パスは採用しません。通常利用では指定不要です。
 
@@ -91,3 +101,6 @@ YouTube字幕と音声認識は独立にオン・オフできます。両方を�
 - [PLaMo Community License](https://plamo.preferredai.jp/info/plamo-community-license-ja)
 - PFN公式GGUF：[0.8B](https://huggingface.co/pfnet/plamo-3-translate-0.8b-GGUF) / [2B](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF) / [8B](https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF) / [31B](https://huggingface.co/pfnet/plamo-3-translate-31b-GGUF)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) / [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B-hf) / [Whisper base](https://huggingface.co/Systran/faster-whisper-base)
+- [speech.cpp](https://github.com/nyosegawa/speech.cpp) / [Irodori-TTS v4.1 Small-MF GGUF](https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF)
+
+読み上げの準備では固定したモデルカードとMIT・音声コーデックのApache-2.0通知も取得します。

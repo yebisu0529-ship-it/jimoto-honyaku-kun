@@ -3,7 +3,7 @@ param(
     [string]$AppRoot = '',
     [string]$OutDir = '',
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$')]
-    [string]$Version = '0.2.1',
+    [string]$Version = '0.3.0',
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -22,8 +22,8 @@ $taskManifestOut = Join-Path $taskOutFull ($taskName + '.manifest.json')
 
 # Relative source -> relative archive destination. Every shipped entry is explicit.
 $taskFiles = @(
-    @{ Source = 'target/release/plamo-translate.exe'; Entry = 'plamo-translate.exe' },
-    @{ Source = 'target/release/jimoto-setup.exe'; Entry = 'jimoto-setup.exe' },
+    @{ Source = 'target/x86_64-pc-windows-msvc/release/plamo-translate.exe'; Entry = 'plamo-translate.exe' },
+    @{ Source = 'target/x86_64-pc-windows-msvc/release/jimoto-setup.exe'; Entry = 'jimoto-setup.exe' },
     @{ Source = '地元翻訳くん.cmd'; Entry = '地元翻訳くん.cmd' },
     @{ Source = 'start.cmd'; Entry = 'start.cmd' },
     @{ Source = 'start.ps1'; Entry = 'start.ps1' },

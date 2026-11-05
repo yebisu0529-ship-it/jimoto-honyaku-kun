@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "name": "speech-0.10.1-windows-x64-vulkan.zip",
+    "url": "https://github.com/nyosegawa/speech.cpp/releases/download/v0.10.1/speech-0.10.1-windows-x64-vulkan.zip",
+    "bytes": 29548632,
+    "sha256": "a8fe0e4b4f463c460e7ace9d38c363bec08b254cac5a7f764b7967af35d4fa1a",
+    "version": "0.10.1",
+    "executable": "speech.exe",
+    "source_commit": "03555100287c118b41d1b475044e5ab1e07baa8c",
+    "source_url": "https://github.com/nyosegawa/speech.cpp/tree/03555100287c118b41d1b475044e5ab1e07baa8c",
+    "license": "MIT",
+    "license_url": "https://github.com/nyosegawa/speech.cpp/blob/03555100287c118b41d1b475044e5ab1e07baa8c/LICENSE",
+    "requires_vulkan_loader": true,
+    "windows_cpu_note": "The official Windows Vulkan executable also requires the Vulkan loader when running on CPU."
+  },
+  "model": {
+    "name": "Irodori-TTS-866M-MF-v4.1-F16.gguf",
+    "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/resolve/9db7da1bec3d1069ef8e29732e0497be60c7b047/Irodori-TTS-866M-MF-v4.1-F16.gguf",
+    "bytes": 1920321792,
+    "sha256": "e237dc3eefe469b8bba87872beacf12fb7fe00dbdf85767edca8ec04ab910d13",
+    "revision": "9db7da1bec3d1069ef8e29732e0497be60c7b047",
+    "label": "Irodori-TTS v4.1 Small-MF",
+    "voice": "none",
+    "license": "MIT",
+    "codec_base_license": "Apache-2.0",
+    "model_card_url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/blob/9db7da1bec3d1069ef8e29732e0497be60c7b047/README.md",
+    "source_urls": [
+      "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF/tree/ccc78f5d480b6e51b69b2d5042a14c4da04fea6e",
+      "https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim/tree/47376ee24834d7a05a48ebabfe3cde29b3c5e214"
+    ],
+    "license_note": "Retain LICENSE-MIT and LICENSE-APACHE-2.0. The pinned model card also describes ethical restrictions."
+  },
+  "notices": [
+    {"name":"README.md","url":"https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/resolve/9db7da1bec3d1069ef8e29732e0497be60c7b047/README.md","bytes":9463,"sha256":"21751d3328526f4f05dbc1b68e79f8dc78d72a34d1fd36e8c909eff281128d99"},
+    {"name":"LICENSE-MIT","url":"https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/resolve/9db7da1bec3d1069ef8e29732e0497be60c7b047/LICENSE-MIT","bytes":1064,"sha256":"dfd47cc99fd79cced8e0cab04ed81f70b3d4f2f475a75746b341671bd3991c00"},
+    {"name":"LICENSE-APACHE-2.0","url":"https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/resolve/9db7da1bec3d1069ef8e29732e0497be60c7b047/LICENSE-APACHE-2.0","bytes":11358,"sha256":"cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"}
+  ]
+}

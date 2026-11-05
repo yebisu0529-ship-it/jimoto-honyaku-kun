@@ -199,7 +199,7 @@ impl App {
                 .is_some_and(|t| t.elapsed() > Duration::from_secs(90))
         {
             self.backend_loading = false;
-            self.service_error="モデルを読み込めませんでした。「モデルの準備」で小さいモデルやCPU実行をお試しください。".into();
+            self.service_error="モデルを読み込めませんでした。「モデルの準備」で小さいモデルやCPU実行を試してください。".into();
         }
         if self.audio_start_requested && self.asr_ready && self.backend_ready && !self.audio_enabled
         {
@@ -301,6 +301,7 @@ impl App {
         }
         let mut cmd = Command::new(&self.settings.python);
         cmd.current_dir(app_root())
+            .arg("-I")
             .arg(app_root().join("scripts/asr_server.py"))
             .args([
                 "--backend",
@@ -445,7 +446,7 @@ impl App {
         egui::Window::new("音声認識の追加準備").collapsible(false).resizable(false).default_width(width).anchor(egui::Align2::CENTER_CENTER,[0.0,0.0]).show(ctx,|ui|{
             ui.label("再生中の音声を、このPCで文字起こしする機能です。YouTube字幕だけを使う場合は不要です。");
             ui.add_space(12.0);ui.label(if self.settings.asr_backend=="qwen"{"Qwen3-ASR · 多言語 / GPU対応"}else{"Whisper · 多言語 / CPU"});
-            ui.label(if self.settings.asr_backend=="qwen"{"音声モデルと実行環境の取得に数GBの通信と空き容量が必要です。"}else{"小型の音声モデルと、音声用の実行環境を追加します。"});
+            ui.label(if self.settings.asr_backend=="qwen"{"初回は数GBを取得します。GPU用の音声認識環境は、保存先に最大14GB程度の空きが必要です。"}else{"小型の音声モデルと実行環境を追加します。保存先には約4GBの空きが必要です。"});
             ui.label("準備中も音声の取得は始まりません。インストールはアプリ専用フォルダーだけで行います。");
             ui.add_space(12.0);
             if self.audio_installing {

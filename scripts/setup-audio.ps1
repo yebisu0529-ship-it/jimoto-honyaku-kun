@@ -34,6 +34,28 @@ function Ensure-Directory([string]$Path) {
     [void][IO.Directory]::CreateDirectory($Path)
     Assert-NoReparse $Path
 }
+function Resolve-OwnedCacheFile([string]$Path, [string]$CacheRoot) {
+    # HF Hub 1.33 uses snapshot -> repo blob -> shared hub blob symlinks.
+    # Follow only file symlinks whose every hop stays in our own HF cache.
+    $prefix = [IO.Path]::GetFullPath($CacheRoot).TrimEnd('\', '/') + '\'
+    $cursor = [IO.Path]::GetFullPath($Path)
+    for ($hop = 0; $hop -lt 8; $hop++) {
+        if (-not $cursor.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw '音声モデルのキャッシュがアプリ専用領域の外を参照しています。'
+        }
+        if (-not [IO.File]::Exists($cursor)) { return $null }
+        $item = Get-Item -LiteralPath $cursor -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            Assert-NoReparse $cursor
+            return $cursor
+        }
+        if ($item.LinkType -ne 'SymbolicLink' -or @($item.Target).Count -ne 1) { return $null }
+        $target = [string]@($item.Target)[0]
+        if ([IO.Path]::IsPathRooted($target)) { $cursor = [IO.Path]::GetFullPath($target) }
+        else { $cursor = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetDirectoryName($cursor)) $target)) }
+    }
+    return $null
+}
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments
     if ($LASTEXITCODE -ne 0) { throw "準備コマンドが失敗しました（終了コード $LASTEXITCODE）。キャッシュは保持されています。" }
@@ -168,16 +190,55 @@ $venv = Join-Path $audio '.venv'
 $python = Join-Path $venv 'Scripts/python.exe'
 $modelMetadata = $metadata.$Backend
 if ($Backend -eq 'whisper' -and $Device -ne 'cpu') { throw 'Whisperの配布設定はCPU専用です。CPUを選択してください。' }
+$initialPeak = $(if ($Backend -eq 'whisper') { 4GB } elseif ($Device -eq 'cuda') { 14GB } else { 8GB })
+$uvArchive = Join-Path (Join-Path $audio 'tools') $metadata.uv.filename
+$resuming = [IO.File]::Exists($python) -and [IO.File]::Exists($uvArchive)
+if ($resuming) {
+    Assert-NoReparse $python
+    Assert-NoReparse $uvArchive
+    $resuming = (Get-Item -LiteralPath $uvArchive).Length -eq $metadata.uv.bytes -and
+        (Get-FileHash -LiteralPath $uvArchive -Algorithm SHA256).Hash -eq $metadata.uv.sha256
+}
+$missingModel = [long]$modelMetadata.model_bytes
+$hubModelRoot = Join-Path (Join-Path $audio 'huggingface/hub') ('models--' + $modelMetadata.repo.Replace('/', '--'))
+$cachedWeight = Join-Path (Join-Path $hubModelRoot ('snapshots/' + $modelMetadata.revision)) $modelMetadata.model_file
+$cachedBlob = Join-Path (Join-Path $hubModelRoot 'blobs') $modelMetadata.model_sha256
+foreach ($candidate in @($cachedWeight, $cachedBlob)) {
+    $ownedWeight = Resolve-OwnedCacheFile $candidate (Join-Path $audio 'huggingface')
+    if ($ownedWeight) {
+        if ((Get-Item -LiteralPath $ownedWeight).Length -eq $modelMetadata.model_bytes -and
+            (Get-FileHash -LiteralPath $ownedWeight -Algorithm SHA256).Hash -eq $modelMetadata.model_sha256) {
+            $missingModel = 0
+            break
+        }
+    }
+}
+# Initial peak includes copied package cache + venv. A resumed preparation does
+# not need that entire peak again: retain a repair reserve plus two copies of an
+# unfinished weight (HF blob + Windows snapshot). Existing data is never removed.
+$requiredFree = [long]$initialPeak
+if ($resuming) {
+    $repairReserve = $(if ($Backend -eq 'whisper') { 1GB } elseif ($Device -eq 'cuda') { 4GB } else { 2GB })
+    $requiredFree = [long]$repairReserve + 2 * $missingModel
+}
 if ($Plan) {
     [ordered]@{version=1; backend=$Backend; device=$Device; python_path=$python; model_repo=$modelMetadata.repo;
         model_revision=$modelMetadata.revision; uv_version=$metadata.uv.version; isolated=$true; downloads_started=$false;
         torch= $(if ($Backend -eq 'qwen') { $metadata.qwen.('torch_' + $Device) } else { $null });
-        manifest_path=(Join-Path $root 'audio-installation.json')} | ConvertTo-Json -Depth 5
+        manifest_path=(Join-Path $root 'audio-installation.json'); required_free_bytes=$requiredFree;
+        initial_peak_bytes=[long]$initialPeak; resuming=$resuming; missing_model_bytes=$missingModel;
+        disk_requirement_is_estimate=$true} | ConvertTo-Json -Depth 5
     return
+}
+$drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($root))
+if (-not $drive.IsReady) { throw '音声認識の保存先の空き容量を確認できませんでした。' }
+$availableFree = $drive.AvailableFreeSpace
+if ($availableFree -lt $requiredFree) {
+    throw ('音声認識の準備には空き容量が約{0:N1} GiB必要です（現在{1:N1} GiB）。保存先の空きを確認してください。' -f ($requiredFree / 1GB), ($availableFree / 1GB))
 }
 
 $savedEnvironment = @{}
-foreach ($name in @('UV_PYTHON_INSTALL_DIR', 'UV_PYTHON_BIN_DIR', 'UV_CACHE_DIR', 'UV_NO_PROGRESS', 'UV_LINK_MODE', 'HF_HOME', 'HF_HUB_OFFLINE', 'HF_HUB_DISABLE_TELEMETRY')) {
+foreach ($name in @('UV_PYTHON_INSTALL_DIR', 'UV_PYTHON_BIN_DIR', 'UV_CACHE_DIR', 'UV_NO_PROGRESS', 'UV_LINK_MODE', 'HF_HOME', 'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'TRANSFORMERS_CACHE', 'HF_HUB_OFFLINE', 'HF_HUB_DISABLE_TELEMETRY', 'HF_HUB_DISABLE_IMPLICIT_TOKEN')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
@@ -190,24 +251,21 @@ try {
     $env:UV_NO_PROGRESS = '1'
     $env:UV_LINK_MODE = 'copy'
     $env:HF_HOME = Join-Path $audio 'huggingface'
+    $env:HF_HUB_CACHE = Join-Path $env:HF_HOME 'hub'
+    $env:HUGGINGFACE_HUB_CACHE = $env:HF_HUB_CACHE
+    $env:TRANSFORMERS_CACHE = $null
     $env:HF_HUB_OFFLINE = $null
     $env:HF_HUB_DISABLE_TELEMETRY = '1'
-    $uv = $null
-    $available = Get-Command uv.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($available) {
-        $version = & $available.Source --version
-        if ($LASTEXITCODE -ne 0) { throw '既存uvの動作確認に失敗しました。' }
-        if ($version -match ('^uv ' + [regex]::Escape($metadata.uv.version) + '(?:\s|$)')) { $uv = $available.Source }
-    }
-    if (-not $uv) {
-        Write-Host '固定版のPython準備ツールを取得・検証しています。'
-        $archive = Join-Path (Join-Path $audio 'tools') $metadata.uv.filename
-        Download-Uv $metadata.uv $archive
-        $toolDirectory = Join-Path (Join-Path $audio 'tools') ('uv-' + $metadata.uv.version)
-        Expand-UvSafely $archive $toolDirectory
-        $uv = Join-Path $toolDirectory 'uv.exe'
-        Invoke-Checked $uv @('--version')
-    }
+    $env:HF_HUB_DISABLE_IMPLICIT_TOKEN = '1'
+    # Always verify and use our own pinned uv. A matching uv on the user's PATH
+    # is not evidence that its executable belongs to this isolated installation.
+    Write-Host '固定版のPython準備ツールを取得・検証しています。'
+    $archive = Join-Path (Join-Path $audio 'tools') $metadata.uv.filename
+    Download-Uv $metadata.uv $archive
+    $toolDirectory = Join-Path (Join-Path $audio 'tools') ('uv-' + $metadata.uv.version)
+    Expand-UvSafely $archive $toolDirectory
+    $uv = Join-Path $toolDirectory 'uv.exe'
+    Invoke-Checked $uv @('--version')
     Write-Host 'このアプリ専用のPython 3.13を準備しています。'
     Invoke-Checked $uv @('python', 'install', $metadata.python)
     if (-not [IO.File]::Exists($python)) {
@@ -223,7 +281,8 @@ assert os.path.normcase(os.path.abspath(sys.prefix)) == os.path.normcase(os.path
 base = os.path.normcase(os.path.abspath(sys.base_prefix))
 managed = os.path.normcase(os.path.abspath(sys.argv[2])) + os.sep
 assert base.startswith(managed), 'Python must be managed inside this app'
-assert not any('include-system-site-packages = true' in x.lower() for x in open(os.path.join(sys.prefix,'pyvenv.cfg'))), 'System packages must be disabled'
+with open(os.path.join(sys.prefix,'pyvenv.cfg'),encoding='utf-8') as configuration:
+    assert not any('include-system-site-packages = true' in x.lower() for x in configuration), 'System packages must be disabled'
 '@
     Invoke-Checked $python @('-I', '-c', $probe, $venv, $env:UV_PYTHON_INSTALL_DIR)
     if ($Backend -eq 'qwen') {
@@ -231,14 +290,14 @@ assert not any('include-system-site-packages = true' in x.lower() for x in open(
         $torchPackage = $metadata.qwen.('torch_' + $Device)
         $torchIndex = $metadata.qwen.($Device + '_index')
         Invoke-Checked $uv @('pip', 'install', '--python', $python, '--index-url', $torchIndex, $torchPackage)
-        Write-Host 'Qwen3-ASRの依存を準備しています。'
+        Write-Host 'Qwen3-ASRの依存パッケージを準備しています。'
         Invoke-Checked $uv @('pip', 'install', '--python', $python, '-r', (Join-Path $PSScriptRoot 'requirements.txt'))
     } else {
-        Write-Host 'Whisper CPUの依存を準備しています。'
+        Write-Host 'Whisper CPUの依存パッケージを準備しています。'
         $arguments = @('pip', 'install', '--python', $python) + @($metadata.whisper.packages)
         Invoke-Checked $uv $arguments
     }
-    Write-Host '固定版の音声モデルを取得し、依存とキャッシュを確認しています。'
+    Write-Host '固定版の音声モデルを取得し、依存パッケージとキャッシュを確認しています。'
     $resultPath = Join-Path $audio ('model-result-' + [Guid]::NewGuid().ToString('N') + '.json')
     $prepare = @'
 import json,os,sys

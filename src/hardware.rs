@@ -48,7 +48,8 @@ pub fn detect(target: &Path) -> Result<Hardware> {
     windows_detect(&ancestor, &mut hardware);
     #[cfg(not(windows))]
     hardware.warnings.push(
-        "この配布版の詳細な容量検出はWindows専用です。未取得の容量は推定で埋めていません。".into(),
+        "この配布版の詳細な容量検出はWindows専用です。未取得の容量は推定値で補っていません。"
+            .into(),
     );
     Ok(hardware)
 }

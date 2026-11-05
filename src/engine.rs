@@ -110,7 +110,7 @@ fn validate_options(options: &TranslationOptions) -> Result<()> {
     ensure!(supported(&options.target_lang), "未対応の翻訳先言語です。");
     ensure!(
         matches!(options.style.as_str(), "" | "default" | "plain" | "polite"),
-        "文体は標準・常体・敬体から指定してください。"
+        "文体には標準・常体・敬体のいずれかを指定してください。"
     );
     safe_field("コンテキスト", &options.context, 4000)?;
     ensure!(options.glossary.len() <= 100, "用語集は100項目までです。");
@@ -189,7 +189,7 @@ fn local_base(endpoint: &str) -> Result<Url> {
     let path = url.path().trim_end_matches('/');
     ensure!(
         path.is_empty() || path == "/v1",
-        "接続先にはサーバーのURL、または末尾/v1を指定してください。"
+        "接続先にはサーバーのURL、または末尾が/v1のURLを指定してください。"
     );
     url.set_path("/");
     Ok(url)

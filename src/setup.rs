@@ -238,11 +238,11 @@ impl App {
                 egui::Frame::new().fill(Color32::from_rgb(27,33,42)).stroke(egui::Stroke::new(1.0_f32,Color32::from_rgb(42,50,61))).corner_radius(8).inner_margin(16).show(ui,|ui|{
                     ui.set_min_width(ui.available_width());
                     let gpu=hardware.gpus.iter().find(|g|!g.is_software);
-                    ui.horizontal_wrapped(|ui|{ui.label(RichText::new(gpu.map(|g|g.name.as_str()).unwrap_or("CPUで実行するPC")).strong());
+                    ui.horizontal_wrapped(|ui|{ui.label(RichText::new(gpu.map(|g|g.name.as_str()).unwrap_or("CPUで実行")).strong());
                         if ui.add_enabled(!self.setup.installing,egui::Button::new("再確認")).clicked(){self.detect_capacity();}});
                     ui.horizontal_wrapped(|ui|{ui.label(format!("空きVRAM {}",measured(gpu.and_then(|g|g.free_vram_bytes))));ui.label(format!("空きメモリ {}",measured(hardware.ram_available_bytes)));ui.label(format!("空き容量 {}",measured(hardware.disk_free_bytes)));});
                     egui::CollapsingHeader::new("PC情報と保存先").show(ui,|ui|{
-                        ui.label(format!("CPU {}スレッド / メモリ全体 {}",hardware.cpu_logical,measured(hardware.ram_total_bytes)));
+                        ui.label(format!("CPU {}スレッド / メモリ合計 {}",hardware.cpu_logical,measured(hardware.ram_total_bytes)));
                         ui.label(format!("モデルの保存先: {}",self.model_store_root().display()));
                         if ui.add_enabled(!self.setup.installing,egui::Button::new("保存先を変更")).clicked() && let Some(folder)=rfd::FileDialog::new().pick_folder(){self.settings.model_store=folder.join("地元翻訳くん/engine").to_string_lossy().into();self.detect_capacity();}
                         let old=self.setup.force_cpu;ui.add_enabled_ui(!self.setup.installing,|ui|{ui::toggle(ui,&mut self.setup.force_cpu,"GPUを使わずCPUで実行する");});if old!=self.setup.force_cpu{self.recalculate_recommendation();}
@@ -291,7 +291,7 @@ impl App {
                     if ui.add_enabled(self.backend_ready,ui::primary("翻訳を始める").min_size(Vec2::new(200.0,36.0))).clicked(){self.tab=Tab::Text;}
                     if self.backend_loading {ui.horizontal(|ui|{ui.spinner();ui.label("モデルを読み込み中…");});}
                 }else {
-                    if self.setup.cancelled {ui.label("中止しました。続きから再開できます。別のモデルも選べます。");}
+                    if self.setup.cancelled {ui.label("中止しました。続きから再開するか、別のモデルを選べます。");}
                     let label=if self.setup.error.is_empty()&&!self.setup.cancelled{format!("ダウンロードして準備（{}）",bytes(model.bytes))}else{format!("続きから再開（{}）",bytes(model.bytes))};
                     if ui.add_enabled(self.setup_model_fits(),ui::primary(&label).min_size(Vec2::new(260.0,38.0))).clicked(){self.begin_install();}
                     if !self.setup_model_fits(){ui.colored_label(Color32::from_rgb(229,180,84),"容量の条件を確認できません。空き容量を増やすか、別のモデルを選んでください。");}

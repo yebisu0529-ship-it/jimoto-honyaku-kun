@@ -23,7 +23,7 @@ async function request(path, payload) {
     const { bridgeToken } = await chrome.storage.local.get("bridgeToken");
     if (controller.signal.aborted) return { ok: false };
     if (!bridgeToken) {
-      await status("missing-token", "アプリの接続トークンを設定してください。");
+      await status("missing-token", "アプリの接続キーを設定してください。");
       return { ok: false };
     }
     const response = await fetch(BRIDGE + path, {
@@ -68,6 +68,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     activeRequest?.abort();
     lastStatus = "";
     status(changes.bridgeToken.newValue ? "unchecked" : "missing-token",
-      changes.bridgeToken.newValue ? "接続確認を押してください。" : "アプリの接続トークンを設定してください。");
+      changes.bridgeToken.newValue ? "接続確認を押してください。" : "アプリの接続キーを設定してください。");
   }
 });

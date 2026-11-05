@@ -1,54 +1,63 @@
-# 地元翻訳くんのWindows配布版
+# 地元翻訳くん0.3.0のWindows配布版
 
-Windows 10/11 x64向けのポータブル版です。ZIPを展開し、「地元翻訳くん.cmd」を開きます。配布版の利用者がRustやシステムPythonを事前にインストールする必要はありません。起動補助にはWindows標準のWindows PowerShell 5.1を使います。
+Windows 10/11 x64向けのポータブル版です。ZIPを展開し、「地元翻訳くん.cmd」を開きます。RustやシステムPythonの事前インストールは不要です。起動補助にはWindows標準のWindows PowerShell 5.1を使います。
+
+翻訳用のllama.cppには[Microsoft Visual C++ v14 再頒布可能パッケージ（x64）](https://learn.microsoft.com/ja-jp/cpp/windows/latest-supported-vc-redist?view=msvc-170)が必要です。未導入のPCでは公式のx64版をインストールしてください。なお、アプリ本体と初期設定ツールにはVisual C++ランタイムが静的に組み込まれています。
 
 ## 初回の準備
 
-初回はアプリ内でPCのRAM・GPUの空き容量と保存先ディスクを確認し、翻訳モデルと実行方式を選びます。容量情報はこのPC内で処理され、送信しません。推奨は容量と応答速度を考えた目安です。14種類の公式GGUFすべてを実機比較して最速・最高品質を保証した結果ではありません。既存のモデルを利用者の選択なしに大きなモデルへ変更しません。
+アプリ内でRAM・GPUの空き容量と保存先ディスクを確認し、翻訳モデルと実行方式を選びます。検出結果はこのPC内で処理します。14種類の公式GGUFからの推奨は容量と応答速度を考えた目安で、全モデルを実機比較した最適値ではありません。既存のモデルを利用者の選択なしに変更しません。
 
-モデルとllama.cppランタイムは選択後にインターネットから取得します。ZIPには重みを同梱しません。必要容量と取得先を確認してから開始してください。ダウンロードは中止でき、対応する未完了ファイルを残した場合は同じ構成で再開できます。ハッシュ検証を通るまで完成モデルとして使いません。ダウンロードの開始・再開やモデルの読み込みは、アプリ内の状態表示に従ってください。
+翻訳モデルと固定版llama.cppランタイムは、選択後に取得します。ダウンロードは中止でき、対応する未完了ファイルを残した場合は同じ構成で再開できます。サイズ・SHA-256の検証を通るまで完成モデルとして使いません。必要な取得は初回準備の画面から開始します。
 
-GPUは搭載容量だけでなく現在の空きを確認します。NVIDIAの翻訳用CUDA12.4はWindowsドライバー551.61以上を基準にし、Qwen音声用PyTorch CUDA12.8は570.65以上を別に確認します。AMD/Intelなどは実際のVulkanランタイムを確認できた場合に候補となります。対応・空き容量を確認できない場合はCPUを候補にします。共有GPUメモリーを専用VRAMとして数えません。ドライバーやGPU世代によって実行時に使えない場合があるため、アプリの診断表示も確認してください。
+NVIDIAの翻訳用CUDA12.4はWindowsドライバー551.61以上、Qwen音声用PyTorch CUDA12.8は570.65以上を別に確認します。AMD/Intelなどは実際のVulkanランタイムを確認できた場合に候補となります。GPUを使う条件を確認できない場合はCPUを候補にし、共有GPUメモリーは専用VRAMへ加算しません。
 
 ## 音声認識は任意
 
-テキスト・画面OCR・YouTubeの表示字幕だけを翻訳する場合、音声認識環境は不要です。PCで再生中の音声も翻訳したいときに追加します。ASR環境の導入は別の操作で明示的に開始します。uvと管理Pythonをアプリ用のローカル領域へ導入し、必要な音声モデルを取得します。既存のシステムPythonを前提にしません。
+テキスト・画面OCR・YouTubeの表示字幕の翻訳に音声認識環境は不要です。PCで再生中の音声も翻訳する場合に、アプリから追加します。uv・管理Python・venv・モデル・キャッシュはアプリ専用領域へ用意し、既存のシステムPythonやHFキャッシュを前提にしません。
 
-対応GPUとドライバー・空き容量を確認できればQwen3-ASR CUDA、それ以外は多言語Whisper base CPUを候補にします。音声認識も翻訳もPC内で実行し、字幕・音声・翻訳文を外部ASRやクラウド推論サービスへ送る構成ではありません。初回のソフトウェア・重みの取得にはネット接続を使用します。
+確認できたGPU・ドライバー・空き容量に応じてQwen3-ASR CUDA、または多言語Whisper base CPUを候補にします。音声認識環境の初回準備に必要な空き容量の目安は、Qwen CUDAが14GiB、Qwen CPUが8GiB、Whisper CPUが4GiBです。翻訳用の容量とは別に確認し、再開時は検証できたキャッシュを考慮して必要な残容量を減らします。
 
-YouTube連携は同梱`extension/README.md`に従い、拡張機能を手動で読み込んで接続トークンを保存します。ブラウザーの英語CCなど、表示されている字幕が対象です。トークン・Cookie・ブラウザーのログイン情報はZIPに含めません。
+音声認識・翻訳はPC内で実行します。初回のソフトウェアや重みの取得にはネット接続を使いますが、字幕・音声・訳文を外部ASRやクラウド推論サービスへ送信する構成ではありません。
 
-設定・翻訳履歴・取得済みランタイム・モデルなどはアプリが選んだ保存先を使います。既定は利用者のLocal AppData配下です。開発者固有のドライブやユーザーフォルダーを指定する必要はありません。実際の場所はアプリ内の保存先表示を確認してください。ZIPの展開先を削除してもLocal AppDataの履歴やモデルが残る場合があります。
+## 日本語の訳文を読み上げる
+
+「読み上げを準備」からspeech.cpp 0.10.1と彩りTTSの小型モデル、Irodori-TTS v4.1 Small-MFを追加します。初回取得は合計約1.95GB、展開用を含む空き容量の目安は約4.4GiBです。TTS専用のPythonは不要です。準備だけでは読み上げや音声取得は始まりません。
+
+日本語の訳文にある「読み上げ」で手動再生できます。「声を試す」で確認し、「読み上げを停止」で止められます。「日本語の訳文を自動で読み上げる」は初期状態でオフです。読み上げ中は再生音声の取得を一時停止し、自分の読み上げが再び翻訳へ流れることを防ぎます。合成・待機中の音声取得は続きます。
+
+読み上げ用サーバーを起動するときに空きVRAMを再確認し、余裕を確認できない場合は今回の実行だけCPUへ切り替えます。保存済みの設定は変更しません。本配布の公式speech.cpp Windowsランタイムは、CPU実行でもシステムのVulkanローダーが必要です。
+
+## YouTube連携と保存先
+
+同梱の[拡張機能の手順](../extension/README.md)に従い、拡張機能を手動で読み込みます。アプリの「設定と接続」で接続キーをコピーし、拡張機能へ保存して接続確認を行います。アプリの「YouTube字幕を使う」をオンにし、YouTube側で英語CCなどの字幕を表示します。表示中の字幕が対象です。
+
+設定・翻訳履歴・取得済みランタイム・モデルなどの既定の保存先はLocal AppData配下です。実際の場所はアプリ内で確認できます。開発者固有のドライブやユーザーフォルダーを指定する必要はありません。ZIPの展開先を削除しても、Local AppDataの履歴やモデルは残る場合があります。
 
 ## ライセンス
 
-アプリ本体のコードは同梱`LICENSE`のMIT Licenseです。モデルや外部ランタイムにはそれぞれ別の利用条件があります。配布前・利用前にモデルの公式条件を確認してください。商用利用の適否をこの文書では判断していません。
+アプリ本体は同梱[LICENSE](../LICENSE)のMIT Licenseです。モデル・外部ランタイムには別の利用条件があります。配布前・利用前には、以下の公式本文とモデルカードを確認してください。
 
-- [PLaMo Community License公式本文](https://plamo.preferredai.jp/info/plamo-community-license-en)
-- [PFN公式0.8B GGUF](https://huggingface.co/pfnet/plamo-3-translate-0.8b-GGUF)
-- [PFN公式2B GGUF](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)
-- [PFN公式8B GGUF](https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF)
-- [PFN公式31B GGUF](https://huggingface.co/pfnet/plamo-3-translate-31b-GGUF)
-- [llama.cpp](https://github.com/ggml-org/llama.cpp)、[Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B-hf)、[Whisper base配布元](https://huggingface.co/Systran/faster-whisper-base)
+- [PLaMo Community License公式本文](https://plamo.preferredai.jp/info/plamo-community-license-en)：PLaMo翻訳モデルの条件。
+- PFN公式GGUF：[0.8B](https://huggingface.co/pfnet/plamo-3-translate-0.8b-GGUF)、[2B](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)、[8B](https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF)、[31B](https://huggingface.co/pfnet/plamo-3-translate-31b-GGUF)。
+- [speech.cppの固定版MIT License](https://github.com/nyosegawa/speech.cpp/blob/03555100287c118b41d1b475044e5ab1e07baa8c/LICENSE)：読み上げランタイムの条件。
+- [Irodori-TTS固定モデルカード](https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/blob/9db7da1bec3d1069ef8e29732e0497be60c7b047/README.md)：読み上げモデルと記載の利用条件。[モデルのMIT通知](https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/blob/9db7da1bec3d1069ef8e29732e0497be60c7b047/LICENSE-MIT)と[codec由来のApache-2.0通知](https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/blob/9db7da1bec3d1069ef8e29732e0497be60c7b047/LICENSE-APACHE-2.0)を保持します。
+- その他の配布元：[llama.cpp](https://github.com/ggml-org/llama.cpp)、[Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B-hf)、[Whisper base](https://huggingface.co/Systran/faster-whisper-base)。
 
-フォントはNoto Sans JPを本体に埋め込み、SIL Open Font Licenseの通知を`assets/fonts/OFL.txt`に同梱します。
+フォントはNoto Sans JPを本体に埋め込み、SIL Open Font Licenseの通知をassets/fonts/OFL.txtへ同梱します。翻訳・音声認識・読み上げのモデル重みは、いずれもZIPに同梱せず必要に応じて取得します。
 
 ## 配布担当者向けの作成手順
 
-事前に検証済みの`target/release/plamo-translate.exe`と`target/release/jimoto-setup.exe`を用意します。このパッケージ作成スクリプトはビルド・ダウンロード・公開を行いません。
+検証済みのtarget/x86_64-pc-windows-msvc/release/plamo-translate.exeとtarget/x86_64-pc-windows-msvc/release/jimoto-setup.exeを用意します。作成スクリプトはビルド・ダウンロード・公開を行いません。
 
-```powershell
-# 必須ファイルとポータブル起動構成を確認するだけ
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -PreflightOnly
+    # 必須ファイルと起動構成を確認するだけ
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -PreflightOnly
 
-# 確認用のローカルZIPを作成する
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Version 0.2.1
-```
+    # ローカルZIPを作成する
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Version 0.3.0
 
-既定の出力は`dist/Jimoto-Honyaku-kun-0.2.1-win-x64.zip`、SHA-256の`.zip.sha256`、内容一覧の`.manifest.json`です。出力先は`-OutDir`で指定できます。同名の既存出力は上書きせずエラーにします。バージョンまたは出力先を変更してください。
+出力はdist/Jimoto-Honyaku-kun-0.3.0-win-x64.zip、SHA-256の.zip.sha256、内容一覧の.manifest.jsonです。出力先は-OutDirで指定できます。同名の既存出力は上書きせず、バージョンまたは出力先を変更する形です。
 
-収録はファイル単位の許可リストです。GUI/セットアップCLI、起動スクリプト、任意ASR導入のスクリプトと固定メタデータ、ブラウザー拡張、README・LICENSE・本文書を入れます。モデル重み、取得済みruntime、`.venv`、検証素材、利用者の設定・履歴・トークン・ログ、Git情報、一時ファイルは入りません。機器名・ユーザー名・絶対パスもパッケージmanifestへ記録しません。
+収録はファイル単位の許可リストです。GUI・セットアップCLI・起動スクリプト・任意ASR用のスクリプトと固定メタデータ・ブラウザー拡張・README・LICENSE・配布資料を入れます。モデル重み、取得済みruntime、venv、検証素材、利用者の設定・履歴・接続キー・ログ、Git情報、一時ファイルは入りません。パッケージmanifestには相対パスとハッシュを記録し、機器名・ユーザー名・保存先の絶対パスは記録しません。
 
-一時ステージは出力先直下に新しいGUID名で作り、その場所と名前を再確認してから、そのステージだけを後処理で削除します。利用者のファイルを移動しません。ZIP作成後に全エントリーを許可リストと照合します。スクリプトの実行成功だけで動作品質は保証されないため、配布前には新しいWindows利用環境で起動・初回導入・中止再開・CPU/GPU切替・任意ASR・終了後の子プロセスを確認してください。
-
-GitHub公開・アップロード・リリース作成は別の作業です。このスクリプトでは実施しません。
+出力先の新しいGUIDステージへコピーし、場所と名前を確認してそのステージだけを後処理で削除します。利用者のファイルは移動しません。ZIPの全エントリーは許可リストと照合します。確認済みの範囲と未検証項目は[検証範囲](VALIDATION.md)を参照してください。GitHubへの公開・リリース作成は、このスクリプトでは行いません。

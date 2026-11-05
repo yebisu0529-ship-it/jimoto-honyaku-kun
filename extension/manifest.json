@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "地元翻訳くん - YouTube字幕連携",
-  "version": "0.2.1",
-  "description": "YouTubeの表示字幕を地元翻訳くんへ送信。translated by PLaMo。",
+  "version": "0.3.0",
+  "description": "YouTubeの表示字幕を地元翻訳くんへ送信します（translated by PLaMo）。",
   "permissions": ["storage"],
   "host_permissions": ["http://127.0.0.1:17862/*"],
   "background": { "service_worker": "background.js" },

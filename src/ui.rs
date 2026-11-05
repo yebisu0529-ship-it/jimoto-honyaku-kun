@@ -3,6 +3,7 @@ use super::theme::{
     SURFACE_RAISED, TEXT, TEXT_MUTED, TEXT_SECONDARY, WARNING,
 };
 use super::*;
+use plamo_translate::credit;
 use plamo_translate::journal::ParagraphState;
 
 /// Height reserved for the page title and its actions.
@@ -358,10 +359,11 @@ fn live_history_card(
                     }
                     if ui
                         .add_enabled(!row.record.translation.is_empty(), standard("コピー"))
+                        .on_hover_text("PLaMoのクレジットを付けてコピーします")
                         .clicked()
                         && let Ok(mut clipboard) = arboard::Clipboard::new()
                     {
-                        let _ = clipboard.set_text(row.record.translation.clone());
+                        let _ = clipboard.set_text(credit::published(&row.record.translation));
                     }
                 });
             });
@@ -787,10 +789,11 @@ impl App {
                     }
                     if ui
                         .add_enabled(!current_text.is_empty(), standard("コピー"))
+                        .on_hover_text("PLaMoのクレジットを付けてコピーします")
                         .clicked()
                         && let Ok(mut clipboard) = arboard::Clipboard::new()
                     {
-                        let _ = clipboard.set_text(current_text.clone());
+                        let _ = clipboard.set_text(credit::published(&current_text));
                     }
                 });
             });
@@ -1008,16 +1011,53 @@ impl App {
                 });
         });
     }
+    /// 下のステータス行に、各モデルが載っているかを小さく出す。
+    fn model_dots_ui(&self, ui: &mut egui::Ui) {
+        let ocr = match self.settings.ocr_backend.as_str() {
+            "indra" => "Indra OCR",
+            "paddle" => "PaddleOCR-VL",
+            _ => "Windows OCR",
+        };
+        let asr = match self.settings.asr_backend.as_str() {
+            "nemotron" => "Nemotron Speech",
+            "qwen" => "Qwen3-ASR",
+            _ => "Whisper",
+        };
+        let translation = format!("{} · {}", self.current_model_label(), self.connection_label());
+        let items = [
+            (
+                "翻訳",
+                self.backend_ready && self.service_error.is_empty(),
+                translation,
+            ),
+            ("OCR", self.screen_ocr_ready(), ocr.to_owned()),
+            ("STT", self.asr_ready, asr.to_owned()),
+            ("TTS", self.readout.ready.is_some(), "読み上げ".to_owned()),
+        ];
+        for (name, ready, detail) in items {
+            let hover = format!("{name}: {detail} · {}", if ready { "準備完了" } else { "未準備" });
+            ui.label(RichText::new(name).size(11.0).color(TEXT_SECONDARY))
+                .on_hover_text(hover.as_str());
+            ui.label(
+                RichText::new(if ready { "●" } else { "○" })
+                    .size(9.0)
+                    .color(if ready { ACCENT } else { TEXT_MUTED }),
+            )
+            .on_hover_text(hover);
+            ui.add_space(6.0);
+        }
+    }
     fn output_card(&mut self, ui: &mut egui::Ui, height: f32) {
         card().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("訳文").size(14.0).strong().color(ACCENT));
                 if ui
                     .add_enabled(!self.output.is_empty(), standard("コピー"))
+                    .on_hover_text("PLaMoのクレジットを付けてコピーします")
                     .clicked()
                     && let Ok(mut clipboard) = arboard::Clipboard::new()
                 {
-                    let _ = clipboard.set_text(self.output.clone());
+                    let _ = clipboard.set_text(credit::published(&self.output));
                 }
                 if ui
                     .add_enabled(!self.output.is_empty(), standard("保存"))
@@ -1802,7 +1842,7 @@ impl App {
                         )
                         .wrap(),
                     );
-                    ui.add(egui::Label::new(RichText::new("translated by PLaMo").size(8.5)).wrap());
+                    ui.add(egui::Label::new(RichText::new(credit::CREDIT).size(7.5)).wrap());
                 });
                 ui.add_space(theme::SPACE_4);
                 for (tab, label) in [
@@ -1944,6 +1984,7 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
+                    self.model_dots_ui(ui);
                     ui.label(
                         RichText::new(format!(
                             "{} · {}",

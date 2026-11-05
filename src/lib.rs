@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod credit;
 pub mod engine;
 pub mod hardware;
 pub mod indra_ocr;

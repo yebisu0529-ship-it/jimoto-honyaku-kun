@@ -1,6 +1,7 @@
 //! Mini root-window presentation. Source lifecycle stays in the existing App methods.
 use super::theme::{self, ACCENT, ERROR, TEXT_MUTED};
 use super::*;
+use plamo_translate::credit;
 use plamo_translate::journal::ParagraphState;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -357,9 +358,10 @@ impl App {
         };
         if ui
             .add_enabled(!text.is_empty(), egui::Button::new("訳文をコピー"))
+            .on_hover_text("PLaMoのクレジットを付けてコピーします")
             .clicked()
         {
-            ctx.copy_text(text.to_owned());
+            ctx.copy_text(credit::published(text));
             ui.close();
         }
         if ui
@@ -790,11 +792,15 @@ impl App {
                     if error.is_none() && self.readout_busy() {
                         ui.label(RichText::new("読み上げ中").size(11.0));
                     }
-                    !self.document.notice.is_empty()
+                    let notice = !self.document.notice.is_empty()
                         && ui
                             .small_button("お知らせ")
                             .on_hover_text(&self.document.notice)
-                            .clicked()
+                            .clicked();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(credit::LABEL).size(9.0).color(TEXT_MUTED));
+                    });
+                    notice
                 });
                 #[cfg(test)]
                 {

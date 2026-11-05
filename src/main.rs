@@ -3,7 +3,7 @@
 use anyhow::Result;
 use eframe::egui::{self, Color32, RichText, Vec2};
 use plamo_translate::{
-    bridge,
+    bridge, credit,
     engine::{self, TranslationOptions, Translator},
     journal::{Journal, Record},
     platform,
@@ -1472,7 +1472,7 @@ impl App {
             .set_file_name("translation.txt")
             .save_file()
         {
-            match fs::write(path, &self.output) {
+            match fs::write(path, credit::published(&self.output)) {
                 Ok(()) => self.status = "訳文を保存しました。".into(),
                 Err(e) => self.status = e.to_string(),
             }
@@ -1507,7 +1507,7 @@ impl App {
                     return;
                 }
             },
-            _ => timeline_txt(&records),
+            _ => credit::published(&timeline_txt(&records)),
         };
         match fs::write(path, content) {
             Ok(()) => self.status = "タイムラインを書き出しました。".into(),
@@ -1596,6 +1596,12 @@ impl App {
                     result
                 };
                 anyhow::ensure!(!cancel.load(Ordering::Relaxed), "中止しました。");
+                // 字幕は形式を崩すため、クレジットは本文のファイルだけに付ける
+                let content = if ext == "srt" || ext == "vtt" {
+                    content
+                } else {
+                    credit::published(&content)
+                };
                 fs::write(&output, content)?;
                 Ok(format!("保存しました: {}", output.display()))
             })();

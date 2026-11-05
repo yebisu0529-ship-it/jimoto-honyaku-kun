@@ -394,7 +394,7 @@ impl App {
             self.readout.pending_voice_read = None;
             self.readout.engine.take();
         }
-        ui.label(RichText::new("声の特徴を一度だけ保存し、字幕が変わっても同じ声で読み上げます。生成音声ファイルは残しません。").size(12.0));
+        ui.label(theme::caption("声の特徴を一度だけ保存し、字幕が変わっても同じ声で読み上げます。生成音声ファイルは残しません。"));
         let options = readout_options(&self.settings, false);
         self.settings.tts_speed = options.speed;
         self.settings.tts_max_speed = options.max_speed;
@@ -425,7 +425,9 @@ impl App {
                 "日本語の訳文を自動で読み上げる",
             );
         });
-        ui.label(RichText::new("読み上げ中は、再生音声の聞き取りを一時停止します。").size(12.0));
+        ui.label(theme::caption(
+            "読み上げ中は、再生音声の聞き取りを一時停止します。",
+        ));
         ui.horizontal_wrapped(|ui| {
             if self.readout.ready.is_none() {
                 if ui.button("読み上げを準備").clicked() {
@@ -448,7 +450,7 @@ impl App {
             ui.label(&self.readout.status);
         }
         if !self.readout.error.is_empty() {
-            ui.colored_label(Color32::from_rgb(240, 122, 122), &self.readout.error);
+            ui.colored_label(theme::ERROR, &self.readout.error);
         }
     }
     pub(super) fn readout_setup_ui(&mut self, ctx: &egui::Context) {
@@ -500,7 +502,7 @@ impl App {
                     });
                 }
                 if !self.readout.error.is_empty() {
-                    ui.colored_label(Color32::from_rgb(240, 122, 122), &self.readout.error);
+                    ui.colored_label(theme::ERROR, &self.readout.error);
                 }
             });
     }

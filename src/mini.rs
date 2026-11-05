@@ -589,8 +589,12 @@ impl App {
                                         .max(40.0),
                                         16.0,
                                     ],
-                                    egui::Label::new(RichText::new(label).size(12.0).color(ACCENT))
-                                        .truncate(),
+                                    egui::Label::new(
+                                        RichText::new(label)
+                                            .size(theme::SIZE_CAPTION)
+                                            .color(ACCENT),
+                                    )
+                                    .truncate(),
                                 );
                                 has_error && ui.small_button("通常表示で確認").clicked()
                             })
@@ -607,7 +611,7 @@ impl App {
                             .stick_to_bottom(self.settings.auto_scroll)
                             .show(ui, |ui| {
                                 let mut response = ui.add(
-                                    egui::Label::new(RichText::new(draft).size(17.0))
+                                    egui::Label::new(RichText::new(draft).size(theme::SIZE_BODY))
                                         .wrap()
                                         .selectable(true),
                                 );
@@ -695,14 +699,21 @@ impl App {
                         .max(40.0);
                         ui.add_sized(
                             [width, 22.0],
-                            egui::Label::new(RichText::new(heading).size(12.0).color(ACCENT))
-                                .truncate(),
+                            egui::Label::new(
+                                RichText::new(heading)
+                                    .size(theme::SIZE_CAPTION)
+                                    .color(ACCENT),
+                            )
+                            .truncate(),
                         );
                         if self.mini.manual {
                             let count_label = format!("ライブ新着{live_count}件");
                             ui.add_sized(
                                 [90.0, 22.0],
-                                egui::Label::new(RichText::new(&count_label).size(11.0)).truncate(),
+                                egui::Label::new(
+                                    RichText::new(&count_label).size(theme::SIZE_CAPTION),
+                                )
+                                .truncate(),
                             )
                             .on_hover_text(count_label);
                             ui.button("ライブへ戻る").clicked()
@@ -752,7 +763,9 @@ impl App {
                                 ui.separator();
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(source).size(14.0).color(TEXT_MUTED),
+                                        RichText::new(source)
+                                            .size(theme::SIZE_LABEL)
+                                            .color(TEXT_MUTED),
                                     )
                                     .wrap()
                                     .selectable(true),
@@ -781,16 +794,18 @@ impl App {
                     self.caption_enabled || self.audio_enabled,
                 );
                 let status_response = ui.horizontal(|ui| {
-                    ui.label(RichText::new(status.label()).size(12.0).color(
-                        if matches!(status, MiniStatus::Error(_)) {
-                            ERROR
-                        } else {
-                            ACCENT
-                        },
-                    ))
+                    ui.label(
+                        RichText::new(status.label())
+                            .size(theme::SIZE_CAPTION)
+                            .color(if matches!(status, MiniStatus::Error(_)) {
+                                ERROR
+                            } else {
+                                ACCENT
+                            }),
+                    )
                     .on_hover_text(error.map(MiniError::detail).unwrap_or(status.label()));
                     if error.is_none() && self.readout_busy() {
-                        ui.label(RichText::new("読み上げ中").size(11.0));
+                        ui.label(RichText::new("読み上げ中").size(theme::SIZE_CAPTION));
                     }
                     let notice = !self.document.notice.is_empty()
                         && ui

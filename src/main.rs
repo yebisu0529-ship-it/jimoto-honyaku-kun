@@ -1674,7 +1674,7 @@ impl App {
                             rect.min + Vec2::new(24.0, 24.0),
                             egui::Align2::LEFT_TOP,
                             "翻訳したい範囲をドラッグ · Escでキャンセル",
-                            egui::FontId::proportional(20.0),
+                            egui::FontId::proportional(theme::SIZE_TITLE),
                             ACCENT,
                         );
                         if ctx.input(|i| {

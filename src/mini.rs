@@ -323,6 +323,10 @@ impl App {
     }
 
     fn mini_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if ui.button("字幕ウィンドウ").clicked() {
+            self.subtitle_window.open = true;
+            ui.close();
+        }
         if ui.button("範囲を翻訳").clicked() {
             self.capture(ctx);
             ui.close();

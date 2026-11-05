@@ -33,6 +33,8 @@ pub(super) struct DocumentState {
     failures: HashMap<ParagraphKey, (u64, usize)>,
     spoken: HashSet<ParagraphKey>,
     displayed: Option<VisibleInterim>,
+    caption_position_ms: Option<u64>,
+    pub caption_media_paused: bool,
     started: Instant,
     observed_options: Option<TranslationOptions>,
     configure_after: u64,
@@ -56,6 +58,8 @@ impl Default for DocumentState {
             failures: HashMap::new(),
             spoken: HashSet::new(),
             displayed: None,
+            caption_position_ms: None,
+            caption_media_paused: true,
             started: Instant::now(),
             observed_options: None,
             configure_after: 0,
@@ -107,6 +111,74 @@ impl DocumentState {
     }
 }
 impl App {
+    /// Feed the independent subtitle viewport from accepted paragraph pairs,
+    /// never from the legacy twelve-second overlay string or a newer draft.
+    pub(super) fn document_update_subtitle_window(&mut self) {
+        use super::subtitle_window::{Phase, Playback, View};
+
+        let active_kind = if self.caption_enabled && (!self.caption_paused || !self.audio_enabled) {
+            Some(SourceKind::Caption)
+        } else if self.audio_enabled {
+            Some(SourceKind::Audio)
+        } else {
+            None
+        };
+        let expected = active_kind
+            .map(|kind| self.document_stamp(kind))
+            .or_else(|| self.subtitle_window.scope().cloned());
+        let playback = match active_kind {
+            None => Playback::Stopped,
+            Some(SourceKind::Caption) if self.document.caption_media_paused => Playback::Paused,
+            Some(_) => Playback::Running,
+        };
+        let to_view = |row: &Row| {
+            let (key, _) = self
+                .document
+                .rows
+                .iter()
+                .find(|(_, id)| **id == row.record.id)?;
+            let stamp = &key.0;
+            if expected.as_ref().is_some_and(|scope| scope != stamp) {
+                return None;
+            }
+            let cached = self.document.displayed.as_ref().filter(|cached| {
+                cached.row.record.id == row.record.id
+                    && self.document.cached_source_is_current(cached)
+            });
+            let source = cached
+                .map(|cached| cached.row.record.source.clone())
+                .or_else(|| self.document.translated_source.get(key).cloned())
+                .unwrap_or_else(|| row.record.source.clone());
+            let target = cached
+                .map(|cached| cached.row.record.translation.clone())
+                .unwrap_or_else(|| row.record.translation.clone());
+            let paragraph = row.record.paragraph.as_ref();
+            let revision = cached
+                .map(|cached| cached.snapshot.revision)
+                .or_else(|| paragraph.map(|paragraph| paragraph.revision))
+                .unwrap_or(0);
+            let phase = match paragraph.map(|paragraph| paragraph.state) {
+                Some(ParagraphState::Final) | None if row.is_confirmed() => Phase::Final,
+                Some(ParagraphState::Interrupted) => Phase::Interrupted,
+                Some(ParagraphState::Failed) => Phase::Failed,
+                _ => Phase::Updating,
+            };
+            Some(View {
+                stamp: stamp.clone(),
+                // Row IDs remain monotonic across splits and source queues.
+                paragraph_key: row.record.id,
+                revision,
+                source,
+                target,
+                phase,
+            })
+        };
+        let current = self.document_visible_row().and_then(to_view);
+        let view = current.or_else(|| self.rows.iter().rev().find_map(to_view));
+        self.subtitle_window
+            .update(expected.as_ref(), view.as_ref(), playback);
+    }
+
     /// Splitting a paragraph can invalidate its old whole-paragraph target.
     /// Keep that coherent revision only as a transient, explicitly provisional
     /// view while the new closed prefix is translated. It never enters history,
@@ -138,7 +210,12 @@ impl App {
     pub(super) fn document_source_changed(&mut self, kind: SourceKind) {
         self.document_ensure_scope(kind);
     }
-    fn document_stamp(&self, kind: SourceKind) -> SourceStamp {
+    pub(super) fn document_note_audio_activity(&mut self) {
+        self.document_ensure_scope(SourceKind::Audio);
+        let now = self.document.now();
+        self.document.audio.note_activity(now);
+    }
+    pub(super) fn document_stamp(&self, kind: SourceKind) -> SourceStamp {
         match kind {
             SourceKind::Audio => SourceStamp {
                 kind,
@@ -187,6 +264,9 @@ impl App {
             self.document_cancel_flight();
         }
         self.document_interrupt_source(kind, "source_changed");
+        if kind == SourceKind::Caption {
+            self.document.caption_position_ms = None;
+        }
         let now = self.document.now();
         self.document.source_mut(kind).reset(stamp, now);
     }
@@ -382,12 +462,25 @@ impl App {
         }
     }
     pub(super) fn document_ingest_caption(&mut self, caption: bridge::Caption) {
-        if caption.text == self.last_live_text {
-            return;
-        }
+        self.document.caption_media_paused = caption.paused;
         self.document_ensure_scope(SourceKind::Caption);
         let now = self.document.now();
         let start = (caption.position * 1000.0).max(0.0) as u64;
+        if !caption.paused
+            && !caption.text.trim().is_empty()
+            && self
+                .document
+                .caption_position_ms
+                .is_none_or(|previous| start > previous)
+        {
+            // A stable cue can remain visible for several seconds. Advancing
+            // playback is activity, not a new source revision or LLM request.
+            self.document.caption.note_activity(now);
+            self.document.caption_position_ms = Some(start);
+        }
+        if caption.text == self.last_live_text {
+            return;
+        }
         match self.document.caption.push_caption(
             &caption.text,
             start,
@@ -489,8 +582,10 @@ impl App {
             let outcome = self.document.audio.tick(now);
             self.document_apply(SourceKind::Audio, outcome);
         }
-        let outcome = self.document.caption.tick(now);
-        self.document_apply(SourceKind::Caption, outcome);
+        if !self.document.caption_media_paused {
+            let outcome = self.document.caption.tick(now);
+            self.document_apply(SourceKind::Caption, outcome);
+        }
         if self.close_after_restore.is_some() {
             return;
         }
@@ -831,11 +926,126 @@ mod tests {
     }
 
     #[test]
+    fn separate_subtitle_pairs_only_the_accepted_source_and_target_revision() {
+        let mut app = audio_app();
+        let source = "The library will open a new exhibition for local families next Friday";
+        feed(&mut app, source, 0, 1_000);
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 1_500);
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("図書館は来週金曜日に地域の家族向けの新しい展示を始めます。".into()),
+            0.1,
+        );
+        app.document_update_subtitle_window();
+        let accepted = app.subtitle_window.view().unwrap().clone();
+        assert_eq!(accepted.source, source);
+        feed(
+            &mut app,
+            "Visitors can compare the original documents and translated descriptions at every desk",
+            1_000,
+            2_000,
+        );
+        app.document_update_subtitle_window();
+        let pending = app.subtitle_window.view().unwrap();
+        assert_eq!(pending.source, accepted.source);
+        assert_eq!(pending.target, accepted.target);
+        assert_eq!(pending.revision, accepted.revision);
+        assert!(app.rows[0].record.source.len() > pending.source.len());
+
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 5_000);
+        let updated_source = request.snapshot.text.clone();
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("図書館は新しい展示を始め、来場者は資料の原文と翻訳を各机で比較できます。".into()),
+            0.1,
+        );
+        app.document_update_subtitle_window();
+        assert_eq!(app.subtitle_window.view().unwrap().source, updated_source);
+        assert!(app.subtitle_window.view().unwrap().revision > accepted.revision);
+    }
+
+    #[test]
+    fn separate_subtitle_retains_paused_and_stopped_text_but_clears_a_new_video() {
+        use super::super::subtitle_window::Playback;
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        let caption = |video: &str, paused| bridge::Caption {
+            video_id: video.into(),
+            text: "The library will hold a public exhibition about the town's history next Friday"
+                .into(),
+            position: 1.0,
+            paused,
+            epoch: 1,
+        };
+        app.accept_caption(caption("video-a", false));
+        app.document_take_caption();
+        let (id, request, options) = take_job(&mut app, SourceKind::Caption, 1_500);
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("図書館は町の歴史に関する公開展示を来週金曜日に開きます。".into()),
+            0.1,
+        );
+        app.document_update_subtitle_window();
+        let accepted = app.subtitle_window.view().unwrap().clone();
+        app.accept_caption(caption("video-a", true));
+        app.document_update_subtitle_window();
+        assert_eq!(app.subtitle_window.view(), Some(&accepted));
+        assert_eq!(app.subtitle_window.playback(), Playback::Paused);
+        app.set_caption_enabled(false);
+        app.document_update_subtitle_window();
+        assert_eq!(app.subtitle_window.view().unwrap().target, accepted.target);
+        assert_eq!(app.subtitle_window.playback(), Playback::Stopped);
+        app.set_caption_enabled(true);
+        app.accept_caption(caption("video-b", false));
+        app.document_update_subtitle_window();
+        assert!(app.subtitle_window.view().is_none());
+        assert_eq!(app.subtitle_window.scope().unwrap().video_id, "video-b");
+    }
+
+    #[test]
+    fn new_timeline_clears_subtitle_content_without_closing_the_window() {
+        let mut app = audio_app();
+        feed(
+            &mut app,
+            "The exhibition will open on Friday and visitors can compare both languages",
+            0,
+            1_000,
+        );
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 1_500);
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("展示は金曜日に始まります。".into()),
+            0.1,
+        );
+        app.document_update_subtitle_window();
+        app.subtitle_window.open = true;
+        app.subtitle_window.show_source = true;
+        app.subtitle_window.font_size = 30.0;
+        app.audio_enabled = false;
+        app.rows.clear();
+        app.invalidate_timeline();
+        app.document_update_subtitle_window();
+        assert!(app.subtitle_window.open);
+        assert!(app.subtitle_window.show_source);
+        assert_eq!(app.subtitle_window.font_size, 30.0);
+        assert!(app.subtitle_window.view().is_none());
+    }
+
+    #[test]
     fn tagged_split_keeps_raw_text_and_rejects_the_old_whole_paragraph_job() {
         let mut app = audio_app();
-        let prefix = "The exhibition contains about 150 English words and a Japanese translation A shared glossary keeps local place names consistent while staff explain unclear descriptions in ordinary language Visitors can compare the original material with a translation before leaving their comments";
+        let section = "The exhibition contains about 150 English words and a Japanese translation A shared glossary keeps local place names consistent while staff explain unclear descriptions in ordinary language Visitors can compare the original material with a translation before leaving their comments";
+        let prefix = [section; 3].join(" ");
         let tail = "The library team will review every comment on Friday and keep unfinished suggestions separate from completed revisions";
-        feed(&mut app, prefix, 0, 1_000);
+        feed(&mut app, &prefix, 0, 1_000);
         feed(&mut app, tail, 1_000, 2_000);
         let (first_id, first, first_options) = take_job(&mut app, SourceKind::Audio, 3_000);
         let translated_source = first.snapshot.text.clone();
@@ -886,6 +1096,59 @@ mod tests {
         assert!(app.paragraph_tools.error.is_empty());
         assert!(app.document.audio.pending_snapshots().is_empty());
         assert!(app.document.displayed.is_none());
+    }
+
+    #[test]
+    fn advancing_caption_heartbeats_and_player_pause_do_not_finalize_fragments() {
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        let caption = |text: &str, position: f64, paused| bridge::Caption {
+            text: text.into(),
+            video_id: "caption-cadence".into(),
+            position,
+            paused,
+            epoch: 1,
+        };
+        let first = "The labor market remains strong while inflation";
+        app.accept_caption(caption(first, 10.0, false));
+        app.document_take_caption();
+        let (id, request, options) = take_job(&mut app, SourceKind::Caption, 1_500);
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("労働市場は引き続き堅調ですが、インフレは".into()),
+            0.1,
+        );
+        let revision = app.document.caption.current_snapshot().unwrap().revision;
+        for second in (2..=30).step_by(2) {
+            app.document.started = Instant::now() - Duration::from_secs(second);
+            app.accept_caption(caption(first, 10.0 + second as f64, false));
+            app.document_take_caption();
+            app.document_tick();
+            assert!(app.document.caption.pending_snapshots().is_empty());
+            assert_eq!(
+                app.document.caption.current_snapshot().unwrap().revision,
+                revision
+            );
+            assert!(app.document.caption.next_request(second * 1_000).is_none());
+        }
+        app.accept_caption(caption("", 40.0, true));
+        app.document.started = Instant::now() - Duration::from_secs(120);
+        app.document_tick();
+        assert!(app.rows[0].is_provisional());
+        assert!(app.document.caption.pending_snapshots().is_empty());
+        let next = "is still above the target and requires continued attention";
+        app.accept_caption(caption(next, 40.1, false));
+        app.document_take_caption();
+        app.document_tick();
+        assert_eq!(
+            app.document.caption.current_snapshot().unwrap().text,
+            format!("{first} {next}")
+        );
+        assert!(app.document.caption.pending_snapshots().is_empty());
+        assert_eq!(app.rows.len(), 1);
+        assert!(app.document.spoken.is_empty());
     }
 
     #[test]

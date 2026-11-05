@@ -273,6 +273,27 @@ mod tests {
     }
 
     #[test]
+    fn applied_style_keeps_a_visible_focus_ring_and_large_targets() {
+        let context = egui::Context::default();
+        apply(&context);
+        let style = context.style();
+        assert!(style.spacing.interact_size.y >= 32.0);
+        assert_eq!(style.visuals.widgets.active.bg_stroke.color, ACCENT);
+        assert_eq!(style.visuals.widgets.active.bg_stroke.width, 2.0);
+        assert_eq!(
+            style.visuals.widgets.inactive.corner_radius.nw,
+            RADIUS_CONTROL
+        );
+        assert_eq!(
+            style
+                .text_styles
+                .get(&egui::TextStyle::Body)
+                .map(|font| font.size),
+            Some(SIZE_BODY)
+        );
+    }
+
+    #[test]
     fn reading_size_stays_within_the_supported_scale() {
         assert_eq!(reading_size(10.0), READING_MIN);
         assert_eq!(reading_size(22.0), 22.0);

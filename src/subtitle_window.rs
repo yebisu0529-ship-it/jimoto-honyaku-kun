@@ -3,12 +3,14 @@
 use eframe::egui::{self, Color32, RichText};
 use plamo_translate::live_text::{SourceKind, SourceStamp};
 
-const BACKGROUND: Color32 = Color32::from_rgb(20, 24, 31);
-const SURFACE: Color32 = Color32::from_rgb(27, 33, 42);
-const TEXT: Color32 = Color32::from_rgb(230, 234, 240);
-const MUTED: Color32 = Color32::from_rgb(163, 173, 186);
-const ACCENT: Color32 = Color32::from_rgb(60, 191, 164);
-const WARNING: Color32 = Color32::from_rgb(240, 185, 103);
+use super::theme;
+
+const BACKGROUND: Color32 = theme::CANVAS;
+const SURFACE: Color32 = theme::SURFACE;
+const TEXT: Color32 = theme::TEXT;
+const MUTED: Color32 = theme::TEXT_SECONDARY;
+const ACCENT: Color32 = theme::ACCENT;
+const WARNING: Color32 = theme::WARNING;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -220,7 +222,7 @@ impl State {
                 }
             });
             egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(14))
+                .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
                 .show(child, |ui| {
                     response = self.paint(ui);
                 });
@@ -242,21 +244,33 @@ impl State {
             ui.checkbox(&mut self.always_on_top, "最前面");
             ui.checkbox(&mut self.show_source, "原文");
             ui.menu_button("表示", |ui| {
-                ui.label("文字サイズ");
-                ui.add(egui::Slider::new(&mut self.font_size, 20.0..=36.0).suffix(" px"));
+                ui.label(RichText::new("文字サイズ").size(14.0).color(MUTED));
+                ui.add(
+                    egui::Slider::new(&mut self.font_size, theme::READING_MIN..=36.0)
+                        .integer()
+                        .suffix(" pt"),
+                );
                 ui.checkbox(&mut self.follow_latest, "末尾に追従する");
             });
-            if ui.button("末尾へ").clicked() {
+            if ui
+                .add(egui::Button::new("末尾へ").min_size(egui::vec2(0.0, theme::CONTROL_H)))
+                .clicked()
+            {
                 self.jump_to_end = true;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                closed = ui.button("閉じる").clicked();
+                closed = ui
+                    .add(
+                        egui::Button::new(RichText::new("閉じる").size(14.0))
+                            .min_size(egui::vec2(72.0, theme::CONTROL_H)),
+                    )
+                    .clicked();
             });
         });
         ui.add_space(6.0);
         let (label, color) = self.status();
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(label).size(13.0).color(color));
+            ui.label(RichText::new(label).size(14.0).color(color));
             if let Some(view) = &self.view {
                 ui.label(
                     RichText::new(match view.stamp.kind {
@@ -285,8 +299,11 @@ impl State {
                 ui.add(
                     egui::Label::new(
                         RichText::new(&view.target)
-                            .size(self.font_size.clamp(20.0, 36.0))
-                            .color(TEXT),
+                            .size(self.font_size.clamp(theme::READING_MIN, 36.0))
+                            .color(TEXT)
+                            .line_height(Some(
+                                (self.font_size.clamp(theme::READING_MIN, 36.0) * 1.55).ceil(),
+                            )),
                     )
                     .wrap()
                     .selectable(true),

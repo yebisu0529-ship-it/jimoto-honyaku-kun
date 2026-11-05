@@ -55,6 +55,12 @@ pub const SPACE_6: f32 = 24.0;
 pub const RAIL_WIDTH: f32 = 96.0;
 /// Outer gutter of the content area.
 pub const GUTTER: f32 = 24.0;
+
+/// Upper bound for a single prose column: about 75 Japanese characters at the
+/// current reading size, and never narrower than a comfortable minimum.
+pub fn prose_width(reading_size: f32) -> f32 {
+    (reading_size * 75.0).clamp(900.0, 1800.0)
+}
 /// Minimum interactive height. Every control is at least this tall.
 pub const CONTROL_H: f32 = 32.0;
 /// Primary actions and navigation items.

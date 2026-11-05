@@ -36,10 +36,11 @@ mod services;
 mod setup;
 mod streaming;
 mod subtitle_window;
+mod theme;
 mod ui;
 mod window_mode;
 
-const ACCENT: Color32 = Color32::from_rgb(60, 191, 164);
+use theme::ACCENT;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -100,7 +101,7 @@ impl Default for Settings {
             show_original: true,
             live_show_original: false,
             auto_scroll: true,
-            font_size: 20.0,
+            font_size: theme::READING_DEFAULT,
             template: root
                 .join("models/chat_template.jinja")
                 .to_string_lossy()
@@ -399,6 +400,8 @@ struct App {
     readout: readout::ReadoutState,
     ocr: screen_ocr::OcrState,
     native_window: Option<isize>,
+    #[cfg(test)]
+    ui_probe: ui::UiProbe,
 }
 
 impl App {
@@ -491,6 +494,8 @@ impl App {
             readout: readout::ReadoutState::default(),
             ocr: screen_ocr::OcrState::default(),
             native_window: None,
+            #[cfg(test)]
+            ui_probe: ui::UiProbe::default(),
         }
     }
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -640,6 +645,8 @@ impl App {
             readout: readout::ReadoutState::default(),
             ocr: screen_ocr::OcrState::default(),
             native_window: None,
+            #[cfg(test)]
+            ui_probe: ui::UiProbe::default(),
         };
         app.initialize_services();
         app.initialize_readout();
@@ -1945,7 +1952,7 @@ fn install_fonts(ctx: &egui::Context) {
 }
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
-    for (viewport_width, viewport_height) in [(1280, 880), (860, 620)] {
+    for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
         for (name, tab, filled) in [
             ("01-text-empty", Tab::Text, false),
             ("02-text-filled", Tab::Text, true),
@@ -2205,6 +2212,52 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             size.y as u32,
             |ctx| app.render_ui(ctx),
         )?;
+    }
+    // Independent subtitle window, drawn with its real paint path.
+    for (name, show_source, phase, target) in [
+        (
+            "16-subtitle-updating",
+            false,
+            subtitle_window::Phase::Updating,
+            "来館者はいつでも展示リストに戻れます。画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。\n\nフィードバックカードでは、印象に残った内容、分かりにくい箇所、今後の改善について3つの質問をします。",
+        ),
+        (
+            "17-subtitle-source",
+            true,
+            subtitle_window::Phase::Final,
+            "来館者はいつでも展示リストに戻れます。共通の用語集で地域の地名を統一します。",
+        ),
+    ] {
+        let ctx = egui::Context::default();
+        ui::configure_theme(&ctx);
+        let mut state = subtitle_window::State::default();
+        state.open = true;
+        state.show_source = show_source;
+        let stamp = plamo_translate::live_text::SourceStamp {
+            kind: plamo_translate::live_text::SourceKind::Audio,
+            generation: 1,
+            video_id: String::new(),
+            epoch: 0,
+        };
+        state.update(
+            Some(&stamp),
+            Some(&subtitle_window::View {
+                stamp: stamp.clone(),
+                paragraph_key: 1,
+                revision: 7,
+                source: "Visitors can return to the exhibit list whenever they wish. Common glossary terms keep the local place names consistent.".into(),
+                target: target.into(),
+                phase,
+            }),
+            subtitle_window::Playback::Running,
+        );
+        preview::render(&ctx, &folder.join(format!("{name}.png")), 720, 360, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(theme::CANVAS).inner_margin(20))
+                .show(ctx, |ui| {
+                    state.paint(ui);
+                });
+        })?;
     }
     Ok(())
 }

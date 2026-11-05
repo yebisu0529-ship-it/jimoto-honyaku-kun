@@ -1,4 +1,5 @@
 //! Mini root-window presentation. Source lifecycle stays in the existing App methods.
+use super::theme::{self, ACCENT, ERROR, TEXT_MUTED};
 use super::*;
 use plamo_translate::journal::ParagraphState;
 
@@ -388,20 +389,16 @@ impl App {
             self.audio_enabled || self.audio_start_requested,
         );
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .inner_margin(8.0)
-                    .fill(Color32::from_rgb(20, 24, 31)),
-            )
+            .frame(egui::Frame::new().inner_margin(6.0).fill(theme::CANVAS))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-                let toolbar_height = 36.0; // 28-point controls plus 4 points above/below.
+                let toolbar_height = 36.0; // 32-point controls plus 2 points above/below.
                 let (toolbar, ()) = fixed_region(ui, "mini-toolbar", toolbar_height, |ui| {
-                    ui.spacing_mut().interact_size.y = 28.0;
+                    ui.spacing_mut().interact_size.y = theme::CONTROL_H;
                     let toolbar_contents =
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             if ui
-                                .add_sized([72.0, 28.0], egui::Button::new("通常表示"))
+                                .add_sized([72.0, theme::CONTROL_H], egui::Button::new("通常表示"))
                                 .on_hover_text("通常表示に戻る（Esc）")
                                 .clicked()
                             {
@@ -416,7 +413,7 @@ impl App {
                                 });
                             } else if ui
                                 .add_sized(
-                                    [88.0, 28.0],
+                                    [88.0, theme::CONTROL_H],
                                     egui::Button::new(if active {
                                         "一時停止"
                                     } else {
@@ -430,7 +427,7 @@ impl App {
                             }
                             if ui
                                 .add_sized(
-                                    [86.0, 28.0],
+                                    [86.0, theme::CONTROL_H],
                                     egui::Button::new(if self.settings.auto_read {
                                         "読上 ON"
                                     } else {
@@ -499,139 +496,142 @@ impl App {
                                     .is_some_and(|p| p.state == ParagraphState::Failed)
                         }),
                 );
-                let (now_rect, inspect_error) = fixed_region(ui, "mini-draft", 72.0, |ui| {
-                    ui.spacing_mut().interact_size.y = 16.0;
-                    let (label, draft) = if interrupted {
-                        (
-                            "新しい訳は届いていません",
-                            if self.backend_loading {
-                                "翻訳モデルを準備しています"
-                            } else {
-                                "通常表示で入力・翻訳の状態を確認してください"
-                            },
-                        )
-                    } else if self.capture_busy
-                        || self.selection.is_some()
-                        || self.ocr.busy.is_some()
-                    {
-                        (
-                            "いま · 範囲を認識中",
-                            "処理中です。表示中の確定訳は保持しています",
-                        )
-                    } else if self.manual_busy.is_some() {
-                        (
-                            "いま · 手動翻訳中",
-                            "処理中です。表示中の確定訳は保持しています",
-                        )
-                    } else if let Some(row) = paragraph {
-                        (
-                            if row
-                                .record
-                                .paragraph
-                                .as_ref()
-                                .is_some_and(|p| p.state == ParagraphState::Closing)
-                            {
-                                "いま · 文章をまとめています"
-                            } else if !self.asr_partial.trim().is_empty() {
-                                "いま · 継続中の文章（追加で認識中の原文あり）"
-                            } else {
-                                "いま · 継続中の文章"
-                            },
-                            if row.record.translation.trim().is_empty() {
-                                "続きの原文を受け取り、文章全体の訳文を更新します"
-                            } else {
-                                row.record.translation.as_str()
-                            },
-                        )
-                    } else if self.mini.manual {
-                        (
-                            "いま · 手動翻訳",
-                            selected
-                                .map(|row| row.record.source.as_str())
-                                .unwrap_or(&self.input),
-                        )
-                    } else if let Some(row) =
-                        request.filter(|row| row.pending && !row.record.translation.is_empty())
-                    {
-                        (
-                            if row.record.kind == "YouTube" {
-                                "いま · 字幕を翻訳中"
-                            } else {
-                                "いま · 音声の文章を翻訳中"
-                            },
-                            row.record.translation.as_str(),
-                        )
-                    } else if !self.asr_partial.is_empty() {
-                        (
-                            "いま · PC音声 · 認識途中",
-                            "原文を認識しています。文章の訳文を更新します",
-                        )
-                    } else if let Some(row) = request.filter(|row| row.pending) {
-                        (
-                            "いま · 翻訳中",
-                            if row.record.translation.is_empty() {
-                                row.record.source.as_str()
-                            } else {
-                                row.record.translation.as_str()
-                            },
-                        )
-                    } else {
-                        ("いま · ライブ入力", "字幕・音声の新しい入力を待っています")
-                    };
-                    let has_error = error.is_some();
-                    let inspect = ui
-                        .horizontal(|ui| {
-                            ui.add_sized(
-                                [
-                                    (ui.available_width() - if has_error { 130.0 } else { 0.0 })
-                                        .max(40.0),
-                                    16.0,
-                                ],
-                                egui::Label::new(RichText::new(label).size(12.0).color(ACCENT))
-                                    .truncate(),
-                            );
-                            has_error && ui.small_button("通常表示で確認").clicked()
-                        })
-                        .inner;
-                    let now_scroll = egui::ScrollArea::vertical()
-                        .id_salt((
-                            "mini-paragraph-now",
-                            paragraph.map(|row| row.record.id),
-                            self.mini.manual,
-                        ))
-                        .max_height(44.0)
-                        .min_scrolled_height(44.0)
-                        .auto_shrink([false, false])
-                        .stick_to_bottom(self.settings.auto_scroll)
-                        .show(ui, |ui| {
-                            let mut response = ui.add(
-                                egui::Label::new(RichText::new(draft).size(17.0))
-                                    .wrap()
-                                    .selectable(true),
-                            );
-                            if let Some(row) = paragraph {
-                                let hover = if self.asr_partial.trim().is_empty() {
-                                    row.record.source.clone()
+                let draft_height = 72.0;
+                let (now_rect, inspect_error) =
+                    fixed_region(ui, "mini-draft", draft_height, |ui| {
+                        ui.spacing_mut().interact_size.y = 16.0;
+                        let (label, draft) = if interrupted {
+                            (
+                                "新しい訳は届いていません",
+                                if self.backend_loading {
+                                    "翻訳モデルを準備しています"
                                 } else {
-                                    format!(
-                                        "{}\n\n追加で認識中の原文（未確定）:\n{}",
-                                        row.record.source, self.asr_partial
-                                    )
-                                };
-                                response = response.on_hover_text(hover);
-                            } else if !self.asr_partial.trim().is_empty() {
-                                response = response.on_hover_text(&self.asr_partial);
-                            }
-                            let _ = response;
-                        });
-                    #[cfg(test)]
-                    {
-                        self.mini.now_scroll = Some((now_scroll.id, now_scroll.state.offset.y));
-                    }
-                    #[cfg(not(test))]
-                    let _ = now_scroll;
-                    inspect
-                });
+                                    "通常表示で入力・翻訳の状態を確認してください"
+                                },
+                            )
+                        } else if self.capture_busy
+                            || self.selection.is_some()
+                            || self.ocr.busy.is_some()
+                        {
+                            (
+                                "いま · 範囲を認識中",
+                                "処理中です。表示中の確定訳は保持しています",
+                            )
+                        } else if self.manual_busy.is_some() {
+                            (
+                                "いま · 手動翻訳中",
+                                "処理中です。表示中の確定訳は保持しています",
+                            )
+                        } else if let Some(row) = paragraph {
+                            (
+                                if row
+                                    .record
+                                    .paragraph
+                                    .as_ref()
+                                    .is_some_and(|p| p.state == ParagraphState::Closing)
+                                {
+                                    "いま · 文章をまとめています"
+                                } else if !self.asr_partial.trim().is_empty() {
+                                    "いま · 継続中の文章（追加で認識中の原文あり）"
+                                } else {
+                                    "いま · 継続中の文章"
+                                },
+                                if row.record.translation.trim().is_empty() {
+                                    "続きの原文を受け取り、文章全体の訳文を更新します"
+                                } else {
+                                    row.record.translation.as_str()
+                                },
+                            )
+                        } else if self.mini.manual {
+                            (
+                                "いま · 手動翻訳",
+                                selected
+                                    .map(|row| row.record.source.as_str())
+                                    .unwrap_or(&self.input),
+                            )
+                        } else if let Some(row) =
+                            request.filter(|row| row.pending && !row.record.translation.is_empty())
+                        {
+                            (
+                                if row.record.kind == "YouTube" {
+                                    "いま · 字幕を翻訳中"
+                                } else {
+                                    "いま · 音声の文章を翻訳中"
+                                },
+                                row.record.translation.as_str(),
+                            )
+                        } else if !self.asr_partial.is_empty() {
+                            (
+                                "いま · PC音声 · 認識途中",
+                                "原文を認識しています。文章の訳文を更新します",
+                            )
+                        } else if let Some(row) = request.filter(|row| row.pending) {
+                            (
+                                "いま · 翻訳中",
+                                if row.record.translation.is_empty() {
+                                    row.record.source.as_str()
+                                } else {
+                                    row.record.translation.as_str()
+                                },
+                            )
+                        } else {
+                            ("いま · ライブ入力", "字幕・音声の新しい入力を待っています")
+                        };
+                        let has_error = error.is_some();
+                        let inspect = ui
+                            .horizontal(|ui| {
+                                ui.add_sized(
+                                    [
+                                        (ui.available_width()
+                                            - if has_error { 130.0 } else { 0.0 })
+                                        .max(40.0),
+                                        16.0,
+                                    ],
+                                    egui::Label::new(RichText::new(label).size(12.0).color(ACCENT))
+                                        .truncate(),
+                                );
+                                has_error && ui.small_button("通常表示で確認").clicked()
+                            })
+                            .inner;
+                        let now_scroll = egui::ScrollArea::vertical()
+                            .id_salt((
+                                "mini-paragraph-now",
+                                paragraph.map(|row| row.record.id),
+                                self.mini.manual,
+                            ))
+                            .max_height(44.0)
+                            .min_scrolled_height(44.0)
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(self.settings.auto_scroll)
+                            .show(ui, |ui| {
+                                let mut response = ui.add(
+                                    egui::Label::new(RichText::new(draft).size(17.0))
+                                        .wrap()
+                                        .selectable(true),
+                                );
+                                if let Some(row) = paragraph {
+                                    let hover = if self.asr_partial.trim().is_empty() {
+                                        row.record.source.clone()
+                                    } else {
+                                        format!(
+                                            "{}\n\n追加で認識中の原文（未確定）:\n{}",
+                                            row.record.source, self.asr_partial
+                                        )
+                                    };
+                                    response = response.on_hover_text(hover);
+                                } else if !self.asr_partial.trim().is_empty() {
+                                    response = response.on_hover_text(&self.asr_partial);
+                                }
+                                let _ = response;
+                            });
+                        #[cfg(test)]
+                        {
+                            self.mini.now_scroll = Some((now_scroll.id, now_scroll.state.offset.y));
+                        }
+                        #[cfg(not(test))]
+                        let _ = now_scroll;
+                        inspect
+                    });
                 #[cfg(test)]
                 {
                     self.mini.now_rect = Some(now_rect);
@@ -684,7 +684,7 @@ impl App {
                         "確定した訳文がここに表示されます",
                     )
                 };
-                let return_live = fixed_region(ui, "mini-result-heading", 24.0, |ui| {
+                let return_live = fixed_region(ui, "mini-result-heading", 22.0, |ui| {
                     ui.spacing_mut().interact_size.y = 22.0;
                     ui.spacing_mut().button_padding.y = 3.0;
                     ui.horizontal(|ui| {
@@ -711,7 +711,13 @@ impl App {
                     .inner
                 })
                 .1;
-                let body_height = (ui.available_height() - 28.0).max(16.0);
+                // Reserve the 32-point status row plus its gap; the confirmed
+                // reading area still keeps 70 points at the 400x260 minimum.
+                let body_height = (ui.available_height() - 36.0).max(16.0);
+                let reading_size = theme::reading_size(self.settings.font_size);
+                let row_height = ui
+                    .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(reading_size)))
+                    .ceil();
                 let (body, scroll) = fixed_region(ui, "mini-body", body_height, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt((
@@ -721,18 +727,30 @@ impl App {
                         ))
                         .auto_shrink([false, false])
                         .max_height(body_height)
-                        .show(ui, |ui| {
+                        .show_viewport(ui, |ui, viewport| {
+                            // Clip to complete rows so a half-height glyph never
+                            // hangs at the bottom edge of a minimum-size window.
+                            let visible = viewport.translate(ui.max_rect().min.to_vec2());
+                            let rows = (visible.height() / row_height).floor().max(1.0);
+                            let clipped = egui::Rect::from_min_size(
+                                visible.min,
+                                egui::vec2(visible.width(), rows * row_height),
+                            );
+                            ui.set_clip_rect(ui.clip_rect().intersect(clipped));
                             ui.set_max_width(ui.available_width());
                             ui.add(
-                                egui::Label::new(RichText::new(translation).size(22.0))
-                                    .wrap()
-                                    .selectable(true),
+                                egui::Label::new(
+                                    theme::reading(translation, self.settings.font_size)
+                                        .line_height(Some(row_height)),
+                                )
+                                .wrap()
+                                .selectable(true),
                             );
                             if self.mini.show_original {
                                 ui.separator();
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(source).size(13.0).color(Color32::GRAY),
+                                        RichText::new(source).size(14.0).color(TEXT_MUTED),
                                     )
                                     .wrap()
                                     .selectable(true),
@@ -763,7 +781,7 @@ impl App {
                 let status_response = ui.horizontal(|ui| {
                     ui.label(RichText::new(status.label()).size(12.0).color(
                         if matches!(status, MiniStatus::Error(_)) {
-                            Color32::LIGHT_RED
+                            ERROR
                         } else {
                             ACCENT
                         },

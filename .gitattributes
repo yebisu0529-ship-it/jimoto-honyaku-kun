@@ -1,4 +1,12 @@
-# These bytes are embedded in the executable and have fixed SHA-256 values.
-# Keep them identical across Windows checkouts, including core.autocrlf=true.
+# These bytes are embedded in the executable, and their SHA-256 values are
+# pinned in code or recorded in installations. Keep them identical across
+# Windows checkouts, including core.autocrlf=true.
 scripts/plamo_template.jinja text eol=lf
 scripts/indra-requirements.lock text eol=lf
+scripts/indra-runtime.json text eol=lf
+scripts/indra_server.py text eol=lf
+scripts/setup-indra.ps1 text eol=lf
+scripts/nemotron-runtime.json text eol=lf
+scripts/paddle-ocr-runtime.json text eol=lf
+scripts/punctuation-runtime.json text eol=lf
+scripts/speech-runtime.json text eol=lf

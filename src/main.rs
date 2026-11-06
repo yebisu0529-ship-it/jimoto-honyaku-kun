@@ -2904,4 +2904,50 @@ mod tests {
         assert!(a.take_ready_audio().is_some());
         assert!(a.audio_enabled);
     }
+    #[test]
+    fn range_selection_takes_keyboard_focus_once_so_esc_can_cancel_it() {
+        let ctx = egui::Context::default();
+        let mut a = app();
+        let screen = platform::Screen {
+            id: 0,
+            name: "test".into(),
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+            scale: 1.0,
+        };
+        a.tx.send(Event::Screenshot(Ok((screen, image::RgbaImage::new(8, 8)))))
+            .unwrap();
+        let frame = |a: &mut App, events: Vec<egui::Event>| {
+            let output = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    a.process(ctx);
+                    a.selection_ui(ctx);
+                },
+            );
+            output
+                .viewport_output
+                .values()
+                .any(|viewport| viewport.commands.contains(&egui::ViewportCommand::Focus))
+        };
+        // Ctrl+Alt+T opens the overlay while another app holds the keyboard.
+        assert!(frame(&mut a, vec![]), "the overlay asks for keyboard focus");
+        assert!(!frame(&mut a, vec![]), "it asks only once");
+        frame(
+            &mut a,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(a.selection.is_none(), "Esc cancels the selection");
+    }
 }

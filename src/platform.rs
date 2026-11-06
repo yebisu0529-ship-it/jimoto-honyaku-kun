@@ -85,6 +85,20 @@ pub fn capture_screen(id: u32) -> Result<image::RgbaImage> {
     bail!("Display {id} is no longer connected; refresh the display list")
 }
 
+/// Only the chosen area, in the pixels of a full capture of the display.
+#[cfg(windows)]
+pub fn capture_area(screen_id: u32, area: (u32, u32, u32, u32)) -> Result<image::RgbaImage> {
+    let (x, y, width, height) = area;
+    for monitor in xcap::Monitor::all().context("Could not enumerate displays")? {
+        if monitor.id()? == screen_id {
+            return monitor
+                .capture_region(x, y, width, height)
+                .context("Screen capture failed; check that the selected display is connected");
+        }
+    }
+    bail!("Display {screen_id} is no longer connected; choose the area again")
+}
+
 #[cfg(windows)]
 pub fn capture_for_selection(screen_id: u32, owner: isize) -> Result<image::RgbaImage> {
     use windows::Win32::{
@@ -497,6 +511,10 @@ pub fn screens() -> Result<Vec<Screen>> {
 }
 #[cfg(not(windows))]
 pub fn capture_screen(_id: u32) -> Result<image::RgbaImage> {
+    bail!("Display capture requires Windows")
+}
+#[cfg(not(windows))]
+pub fn capture_area(_screen_id: u32, _area: (u32, u32, u32, u32)) -> Result<image::RgbaImage> {
     bail!("Display capture requires Windows")
 }
 #[cfg(not(windows))]

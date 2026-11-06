@@ -11,6 +11,16 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 type ParagraphKey = (SourceStamp, u64);
+
+/// The name history and badges show. Screen text arrives as captions under
+/// a scope of its own.
+fn source_name(kind: SourceKind, video_id: &str) -> &'static str {
+    match kind {
+        SourceKind::Audio => "音声",
+        SourceKind::Caption if video_id.starts_with(super::screen_feed::SCREEN_SOURCE) => "画面",
+        SourceKind::Caption => "YouTube",
+    }
+}
 /// Fixed parts kept as messages in the subtitle window.
 const SUBTITLE_HISTORY: usize = 100;
 
@@ -333,11 +343,7 @@ impl App {
                     end_ms: snapshot.end_ms,
                     source: snapshot.text.clone(),
                     translation: String::new(),
-                    kind: match snapshot.stamp.kind {
-                        SourceKind::Audio => "音声",
-                        SourceKind::Caption => "YouTube",
-                    }
-                    .into(),
+                    kind: source_name(snapshot.stamp.kind, &snapshot.stamp.video_id).into(),
                     video_id: snapshot.stamp.video_id.clone(),
                     created_at: chrono::Local::now().to_rfc3339(),
                     paragraph: Some(ParagraphMeta {
@@ -431,12 +437,7 @@ impl App {
                 end_ms: end_ms.max(start_ms),
                 source: text,
                 translation: String::new(),
-                kind: if kind == SourceKind::Audio {
-                    "音声"
-                } else {
-                    "YouTube"
-                }
-                .into(),
+                kind: source_name(kind, &self.video_id).into(),
                 video_id: if kind == SourceKind::Caption {
                     self.video_id.clone()
                 } else {
@@ -451,11 +452,7 @@ impl App {
             },
             pending: false,
             error: Some(error),
-            generation: self.source_generation(if kind == SourceKind::Audio {
-                "音声"
-            } else {
-                "YouTube"
-            }),
+            generation: self.source_generation(source_name(kind, &self.video_id)),
         });
         self.document_save(id, true);
         self.document.notice = "文章の一部を原文のまま保存しました。履歴で確認できます。".into();
@@ -920,11 +917,7 @@ impl App {
         }
         self.document_save(id, true);
         if final_paragraph && self.document.spoken.insert(key) {
-            let name = if kind == SourceKind::Audio {
-                "音声"
-            } else {
-                "YouTube"
-            };
+            let name = source_name(kind, &snapshot.stamp.video_id);
             if self.overlay_allowed(name, snapshot.stamp.generation) {
                 self.overlay_text.clone_from(&target);
                 self.overlay_source = snapshot.text;

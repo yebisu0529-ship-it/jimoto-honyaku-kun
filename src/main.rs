@@ -32,6 +32,7 @@ mod mini;
 mod paragraph_tools;
 mod preview;
 mod readout;
+mod screen_feed;
 mod screen_ocr;
 mod services;
 mod setup;
@@ -74,6 +75,7 @@ struct Settings {
     ocr_device: String,
     english_punctuation: bool,
     live_chunk: document::ChunkLength,
+    screen_interval_ms: u64,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -121,6 +123,7 @@ impl Default for Settings {
             ocr_device: "auto".into(),
             english_punctuation: true,
             live_chunk: document::ChunkLength::default(),
+            screen_interval_ms: 1_500,
         }
     }
 }
@@ -212,6 +215,10 @@ enum Event {
     },
     OcrSetup(screen_ocr::OcrSetupEvent),
     Screenshot(std::result::Result<(platform::Screen, image::RgbaImage), String>),
+    ScreenFrame {
+        epoch: u64,
+        result: std::result::Result<screen_feed::ScreenFrame, screen_feed::ScreenError>,
+    },
     Transcript {
         generation: u64,
         start_ms: u64,
@@ -287,6 +294,8 @@ struct Selection {
     texture: egui::TextureHandle,
     start: Option<egui::Pos2>,
     focus_requested: bool,
+    /// Chosen for the 画面 live input rather than a single reading.
+    continuous: bool,
 }
 struct AudioSession {
     stop: Arc<AtomicBool>,
@@ -306,7 +315,7 @@ impl LiveKind {
     fn from_record(kind: &str) -> Option<Self> {
         match kind {
             "音声" => Some(Self::Audio),
-            "YouTube" => Some(Self::Caption),
+            "YouTube" | "画面" => Some(Self::Caption),
             _ => None,
         }
     }
@@ -336,6 +345,10 @@ struct App {
     screens: Vec<platform::Screen>,
     screen_index: usize,
     selection: Option<Selection>,
+    screen_feed: Option<screen_feed::ScreenFeed>,
+    screen_area_requested: bool,
+    screen_epoch: u64,
+    capture_protected: bool,
     capture_busy: bool,
     manual_busy: Option<u64>,
     pending_ocr: Option<String>,
@@ -430,6 +443,10 @@ impl App {
             screens: Vec::new(),
             screen_index: 0,
             selection: None,
+            screen_feed: None,
+            screen_area_requested: false,
+            screen_epoch: 0,
+            capture_protected: false,
             capture_busy: false,
             manual_busy: None,
             pending_ocr: None,
@@ -581,6 +598,10 @@ impl App {
             screens: platform::screens().unwrap_or_default(),
             screen_index: 0,
             selection: None,
+            screen_feed: None,
+            screen_area_requested: false,
+            screen_epoch: 0,
+            capture_protected: false,
             capture_busy: false,
             manual_busy: None,
             pending_ocr: None,
@@ -948,6 +969,7 @@ impl App {
             return;
         }
         if !enabled {
+            self.screen_feed = None;
             self.document_close(plamo_translate::live_text::SourceKind::Caption);
         }
         self.caption_enabled = enabled;
@@ -1257,6 +1279,7 @@ impl App {
                     }
                 }
                 Event::OcrSetup(event) => self.accept_ocr_setup(event),
+                Event::ScreenFrame { epoch, result } => self.accept_screen_frame(epoch, result),
                 Event::Screenshot(result) => {
                     self.capture_busy = false;
                     match result {
@@ -1276,9 +1299,11 @@ impl App {
                                 texture,
                                 start: None,
                                 focus_requested: false,
+                                continuous: std::mem::take(&mut self.screen_area_requested),
                             });
                         }
                         Err(e) => {
+                            self.screen_area_requested = false;
                             self.status = e;
                             self.mini.manual_failed();
                         }
@@ -1381,6 +1406,10 @@ impl App {
         }
         self.kick_screen_ocr();
         while let Ok(caption) = self.bridge_rx.try_recv() {
+            // The 画面 input owns the caption source while it runs.
+            if self.screen_feed.is_some() {
+                continue;
+            }
             self.accept_caption(caption);
             self.document_take_caption();
         }
@@ -1712,7 +1741,9 @@ impl App {
                 let w = ((rect.width() * width as f32).ceil() as u32).min(width.saturating_sub(x));
                 let h =
                     ((rect.height() * height as f32).ceil() as u32).min(height.saturating_sub(y));
-                if w >= 5 && h >= 5 {
+                if w >= 5 && h >= 5 && selection.continuous {
+                    self.start_screen_feed(selection.screen.id, (x, y, w, h));
+                } else if w >= 5 && h >= 5 {
                     self.do_ocr(image::imageops::crop_imm(&selection.image, x, y, w, h).to_image());
                 } else {
                     self.status = "もう少し広い範囲を選択してください。".into();
@@ -1732,6 +1763,8 @@ impl eframe::App for App {
         }
         self.update_window_mode(ctx);
         self.process(ctx);
+        self.tick_screen_feed(ctx);
+        self.sync_capture_protection(ctx);
         self.poll_services();
         self.poll_readout();
         if self.window_mode.is_mini()
@@ -2656,6 +2689,7 @@ mod tests {
             ),
             start: None,
             focus_requested: false,
+            continuous: false,
         });
         for events in [
             vec![egui::Event::PointerMoved(egui::pos2(120.0, 120.0))],

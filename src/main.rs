@@ -2980,4 +2980,37 @@ mod tests {
         );
         assert!(a.selection.is_none(), "Esc cancels the selection");
     }
+    #[test]
+    fn automatic_readout_never_opens_the_voice_preparation() {
+        let mut a = app();
+        let ctx = egui::Context::default();
+        a.settings.auto_read = true;
+        let id = 43;
+        a.manual_busy = Some(id);
+        a.rows.push(Row {
+            record: record(id, "文章", "", 0, 0),
+            pending: true,
+            error: None,
+            generation: 0,
+        });
+        a.tx.send(Event::Done {
+            id,
+            lane: Lane::Manual,
+            result: Ok("完成した訳文です。".into()),
+            elapsed: 0.0,
+            generation: 0,
+        })
+        .unwrap();
+        a.process(&ctx);
+        assert_eq!(a.output, "完成した訳文です。", "the translation finished");
+        assert!(
+            !a.readout.confirm,
+            "with no voice, automatic readout stays quiet instead of asking again"
+        );
+        a.read_translation(a.output.clone());
+        assert!(
+            a.readout.confirm,
+            "a click on 読み上げ still offers to prepare"
+        );
+    }
 }

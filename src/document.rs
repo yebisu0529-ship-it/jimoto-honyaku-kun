@@ -1433,4 +1433,37 @@ mod tests {
         assert!(app.readout.engine.is_none());
         assert!(app.overlay_text.is_empty());
     }
+
+    #[test]
+    fn automatic_live_readout_never_opens_the_voice_preparation() {
+        let mut app = audio_app();
+        app.settings.auto_read = true;
+        feed(
+            &mut app,
+            "Readers can return to this complete explanation later",
+            0,
+            3_000,
+        );
+        // Quiet closes a short paragraph, the way document_tick does; only a
+        // closed paragraph reaches the live view and automatic readout.
+        let outcome = app.document.audio.tick(20_000);
+        app.document_apply(SourceKind::Audio, outcome);
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 20_000);
+        assert!(request.snapshot.closed, "the quiet closed the paragraph");
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("読者はあとでこの説明を読み返せます。".into()),
+            0.1,
+        );
+        assert!(
+            !app.overlay_text.is_empty(),
+            "the paragraph reached the live view"
+        );
+        assert!(
+            !app.readout.confirm,
+            "with no voice, automatic readout stays quiet instead of asking again"
+        );
+    }
 }

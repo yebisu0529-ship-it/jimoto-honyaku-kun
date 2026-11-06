@@ -364,4 +364,49 @@ mod tests {
         fs::remove_file(root.join("installation.json")).unwrap();
         fs::remove_dir(root).unwrap();
     }
+    #[test]
+    fn a_record_whose_metadata_differs_only_in_line_endings_is_still_this_model() {
+        // An early build embedded the metadata with a CRLF at the end, and a
+        // checkout with core.autocrlf=true embeds CRLF throughout. The pinned
+        // artifacts are the same, so such a record must not lock the voice out.
+        let created = std::env::temp_dir().join(format!("speech-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&created).unwrap();
+        let root = fs::canonicalize(&created).unwrap();
+        let text = std::str::from_utf8(METADATA).unwrap();
+        let record = |installed: &[u8]| {
+            fs::write(root.join("metadata.json"), installed).unwrap();
+            let manifest = Manifest {
+                version: 1,
+                metadata_sha256: format!("{:x}", Sha256::digest(installed)),
+                installation: expected(&root, "cpu", &metadata().unwrap()),
+            };
+            fs::write(
+                root.join("installation.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            // No model is installed here, so loading still fails afterwards;
+            // only the record verdict matters to this test.
+            load(&root).unwrap_err().to_string()
+        };
+        let mismatch = "読み上げのインストール記録が選択されたモデルと一致しません。";
+        for installed in [
+            format!("{}\r\n", text.trim_end_matches('\n')),
+            text.replace('\n', "\r\n"),
+        ] {
+            let verdict = record(installed.as_bytes());
+            assert!(
+                !verdict.contains(mismatch),
+                "rejected as another model: {verdict}"
+            );
+        }
+        let other_model = text.replacen(
+            "e237dc3eefe469b8bba87872beacf12fb7fe00dbdf85767edca8ec04ab910d13",
+            &"0".repeat(64),
+            1,
+        );
+        assert_ne!(other_model, text);
+        assert!(record(other_model.as_bytes()).contains(mismatch));
+        fs::remove_dir_all(&created).unwrap();
+    }
 }

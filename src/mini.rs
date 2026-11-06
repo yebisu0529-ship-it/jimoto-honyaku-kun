@@ -386,9 +386,10 @@ impl App {
             ctx.copy_text(credit::published(text));
             ui.close();
         }
-        if ui
-            .add_enabled(self.readout_busy(), egui::Button::new("読み上げを停止"))
-            .clicked()
+        if self.settings.readout_enabled
+            && ui
+                .add_enabled(self.readout_busy(), egui::Button::new("読み上げを停止"))
+                .clicked()
         {
             self.stop_readout();
             ui.close();
@@ -450,25 +451,27 @@ impl App {
                             {
                                 self.mini_toggle_live(ctx);
                             }
-                            let auto_read = ui
-                                .add(
-                                    egui::Button::new("自動読み上げ")
-                                        .selected(self.settings.auto_read)
-                                        .min_size(egui::vec2(0.0, theme::CONTROL_H)),
-                                )
-                                .on_hover_text(readout::AUTO_READ_HINT);
-                            // The fill alone shows the state; screen readers get it
-                            // as the button's selected state.
-                            auto_read.widget_info(|| {
-                                egui::WidgetInfo::selected(
-                                    egui::WidgetType::Button,
-                                    true,
-                                    self.settings.auto_read,
-                                    "自動読み上げ",
-                                )
-                            });
-                            if auto_read.clicked() {
-                                self.toggle_auto_read(ctx);
+                            if self.settings.readout_enabled {
+                                let auto_read = ui
+                                    .add(
+                                        egui::Button::new("自動読み上げ")
+                                            .selected(self.settings.auto_read)
+                                            .min_size(egui::vec2(0.0, theme::CONTROL_H)),
+                                    )
+                                    .on_hover_text(readout::AUTO_READ_HINT);
+                                // The fill alone shows the state; screen readers
+                                // get it as the button's selected state.
+                                auto_read.widget_info(|| {
+                                    egui::WidgetInfo::selected(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        self.settings.auto_read,
+                                        "自動読み上げ",
+                                    )
+                                });
+                                if auto_read.clicked() {
+                                    self.toggle_auto_read(ctx);
+                                }
                             }
                             let menu = ui
                                 .menu_button("…", |ui| self.mini_menu(ui, ctx))

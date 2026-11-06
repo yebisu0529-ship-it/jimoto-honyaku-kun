@@ -1404,6 +1404,7 @@ mod tests {
     #[test]
     fn stop_flushes_last_source_without_reading_it_after_input_stops() {
         let mut app = audio_app();
+        app.settings.readout_enabled = true;
         app.settings.auto_read = true;
         feed(
             &mut app,
@@ -1430,6 +1431,7 @@ mod tests {
     #[test]
     fn automatic_live_readout_never_opens_the_voice_preparation() {
         let mut app = audio_app();
+        app.settings.readout_enabled = true;
         app.settings.auto_read = true;
         feed(
             &mut app,

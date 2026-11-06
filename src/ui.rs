@@ -326,7 +326,8 @@ fn live_latest_panel(
     mode: super::live_view::LatestMode,
     layout: LiveLayout,
     preferences: (f32, bool, bool),
-    speaking: bool,
+    // Some(speaking) while readout is in use; None leaves its buttons out.
+    readout: Option<bool>,
 ) -> Option<PanelAction> {
     use super::live_view::LatestMode;
     let (font_size, show_original, auto_scroll) = preferences;
@@ -355,12 +356,13 @@ fn live_latest_panel(
                 // One line says what is shown; the actions for it sit beside it.
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(
-                                selected.is_some_and(Row::is_confirmed),
-                                standard("読み上げ"),
-                            )
-                            .clicked()
+                        if readout.is_some()
+                            && ui
+                                .add_enabled(
+                                    selected.is_some_and(Row::is_confirmed),
+                                    standard("読み上げ"),
+                                )
+                                .clicked()
                         {
                             action = Some(PanelAction::Read(translation.to_owned()));
                         }
@@ -374,7 +376,8 @@ fn live_latest_panel(
                         }
                         // Only while something is read, and to the left so the
                         // copy and read buttons never move.
-                        if speaking && ui.add(standard("読み上げを停止").selected(true)).clicked()
+                        if readout == Some(true)
+                            && ui.add(standard("読み上げを停止").selected(true)).clicked()
                         {
                             action = Some(PanelAction::StopReadout);
                         }
@@ -543,7 +546,8 @@ fn live_history_card(
     row: &Row,
     font_size: f32,
     show_original: bool,
-    read_requested: &mut Option<String>,
+    // None while readout is not in use, which leaves its button out.
+    read_requested: Option<&mut Option<String>>,
 ) -> egui::Rect {
     let unfinished = row_is_unfinished(row);
     egui::Frame::new()
@@ -552,9 +556,10 @@ fn live_history_card(
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(row.is_confirmed(), quiet("読み上げ"))
-                        .clicked()
+                    if let Some(read_requested) = read_requested
+                        && ui
+                            .add_enabled(row.is_confirmed(), quiet("読み上げ"))
+                            .clicked()
                     {
                         *read_requested = Some(row.record.translation.clone());
                     }
@@ -854,10 +859,11 @@ impl App {
             let mut switch_readout = false;
             let backend_ready = self.backend_ready;
             let auto_read = self.settings.auto_read;
+            let readout_used = self.settings.readout_enabled;
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Present on every page so the separate subtitle window, the
-                    // collapsed mini view and readout are always one click away.
+                    // collapsed mini view and readout in use are one click away.
                     if ui
                         .add(standard("字幕ウィンドウ"))
                         .on_hover_text(
@@ -874,20 +880,22 @@ impl App {
                     {
                         enter_mini = true;
                     }
-                    let readout = ui
-                        .add(standard("自動読み上げ").selected(auto_read))
-                        .on_hover_text(readout::AUTO_READ_HINT);
-                    // The fill alone shows the state; screen readers get it
-                    // as the button's selected state.
-                    readout.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::Button,
-                            true,
-                            auto_read,
-                            "自動読み上げ",
-                        )
-                    });
-                    switch_readout = readout.clicked();
+                    if readout_used {
+                        let readout = ui
+                            .add(standard("自動読み上げ").selected(auto_read))
+                            .on_hover_text(readout::AUTO_READ_HINT);
+                        // The fill alone shows the state; screen readers get it
+                        // as the button's selected state.
+                        readout.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Button,
+                                true,
+                                auto_read,
+                                "自動読み上げ",
+                            )
+                        });
+                        switch_readout = readout.clicked();
+                    }
                     actions(ui);
                     // The title takes whatever the actions leave, so a narrow
                     // window truncates it instead of overlapping the buttons.
@@ -1225,8 +1233,8 @@ impl App {
                 });
         });
     }
-    /// The four local models, in the order the status row shows them.
-    fn model_statuses(&self) -> [ModelStatus; 4] {
+    /// The local models in use, in the order the status row shows them.
+    fn model_statuses(&self) -> Vec<ModelStatus> {
         // `service_error` also carries speech-recognition failures, so the
         // translation state follows the translation engine alone.
         let translation = if self.backend_ready {
@@ -1253,13 +1261,6 @@ impl App {
         } else {
             Readiness::Missing
         };
-        let readout = if self.readout.ready.is_some() {
-            Readiness::Ready
-        } else if self.readout.preparing {
-            Readiness::Preparing
-        } else {
-            Readiness::Missing
-        };
         let translation_detail = format!(
             "{} · {}",
             self.current_model_label(),
@@ -1275,7 +1276,7 @@ impl App {
             "qwen" => "Qwen3-ASR",
             _ => "Whisper",
         };
-        [
+        let mut statuses = vec![
             ModelStatus {
                 name: "翻訳",
                 readiness: translation,
@@ -1294,13 +1295,22 @@ impl App {
                 detail: speech_detail.into(),
                 opens: Tab::Settings,
             },
-            ModelStatus {
+        ];
+        if self.settings.readout_enabled {
+            statuses.push(ModelStatus {
                 name: "読み上げ",
-                readiness: readout,
+                readiness: if self.readout.ready.is_some() {
+                    Readiness::Ready
+                } else if self.readout.preparing {
+                    Readiness::Preparing
+                } else {
+                    Readiness::Missing
+                },
                 detail: "Irodori-TTS".into(),
                 opens: Tab::Settings,
-            },
-        ]
+            });
+        }
+        statuses
     }
     fn output_card(&mut self, ui: &mut egui::Ui) {
         card().show(ui, |ui| {
@@ -1325,14 +1335,16 @@ impl App {
                 {
                     self.save_text();
                 }
-                if ui
-                    .add_enabled(self.manual_output_ready(), standard("読み上げ"))
-                    .clicked()
-                {
-                    self.read_translation(self.output.clone());
-                }
-                if self.readout_busy() && ui.add(standard("停止")).clicked() {
-                    self.stop_readout();
+                if self.settings.readout_enabled {
+                    if ui
+                        .add_enabled(self.manual_output_ready(), standard("読み上げ"))
+                        .clicked()
+                    {
+                        self.read_translation(self.output.clone());
+                    }
+                    if self.readout_busy() && ui.add(standard("停止")).clicked() {
+                        self.stop_readout();
+                    }
                 }
             });
             let height = text_area_height(ui);
@@ -1478,7 +1490,7 @@ impl App {
                     self.settings.live_show_original,
                     self.settings.auto_scroll,
                 ),
-                self.readout_busy(),
+                self.settings.readout_enabled.then(|| self.readout_busy()),
             );
             let mut read_requested = None;
             match panel_action {
@@ -1563,7 +1575,7 @@ impl App {
                                     row,
                                     self.settings.font_size,
                                     self.settings.live_show_original,
-                                    &mut read_requested,
+                                    self.settings.readout_enabled.then_some(&mut read_requested),
                                 );
                                 ui.add_space(theme::SPACE_2);
                                 ui.separator();
@@ -2398,7 +2410,7 @@ mod live_layout_tests {
                         crate::live_view::LatestMode::Draft,
                         LiveLayout::for_height(620.0),
                         (22.0, true, true),
-                        false,
+                        Some(false),
                     );
                 });
             },
@@ -2464,7 +2476,7 @@ mod live_layout_tests {
                             mode,
                             layout,
                             (24.0, true, true),
-                            false,
+                            Some(false),
                         );
                         heights.push(ui.cursor().top() - before);
                     });
@@ -2821,8 +2833,7 @@ mod live_layout_tests {
             (860.0, "とても長い状態の説明が続きます。".repeat(40)),
             (1280.0, "設定を保存しました。".to_owned()),
         ] {
-            let mut app = App::inert();
-            app.tab = Tab::Text;
+            let mut app = readout_app(Tab::Text);
             app.backend_ready = true;
             app.status = message;
             app.readout.error = "読み上げに失敗しました。".repeat(8);
@@ -3150,18 +3161,27 @@ mod live_layout_tests {
         frame(app, 5, vec![press(false)]);
     }
 
-    #[test]
-    fn readout_switch_is_on_every_page_and_turning_it_off_stops_the_voice() {
-        let voice = || plamo_translate::speech_setup::SpeechInstallation {
+    fn ready_voice() -> plamo_translate::speech_setup::SpeechInstallation {
+        plamo_translate::speech_setup::SpeechInstallation {
             executable: Default::default(),
             model: Default::default(),
             backend: String::new(),
             voice: String::new(),
-        };
+        }
+    }
+    /// An app whose readout was turned on in settings.
+    fn readout_app(tab: Tab) -> App {
+        let mut app = App::inert();
+        app.tab = tab;
+        app.settings.readout_enabled = true;
+        app
+    }
+
+    #[test]
+    fn readout_switch_is_on_every_page_and_turning_it_off_stops_the_voice() {
         for (tab, page, _) in TAB_ORDER {
-            let mut app = App::inert();
-            app.tab = tab;
-            app.readout.ready = Some(voice());
+            let mut app = readout_app(tab);
+            app.readout.ready = Some(ready_voice());
             app.settings.auto_read = true;
             click_label(&mut app, "自動読み上げ", 860.0, 620.0);
             assert!(
@@ -3175,8 +3195,7 @@ mod live_layout_tests {
             click_label(&mut app, "自動読み上げ", 860.0, 620.0);
             assert!(app.settings.auto_read, "{page}: the next click turns it on");
         }
-        let mut app = App::inert();
-        app.tab = Tab::Text;
+        let mut app = readout_app(Tab::Text);
         click_label(&mut app, "自動読み上げ", 860.0, 620.0);
         assert!(
             !app.settings.auto_read,
@@ -3187,9 +3206,8 @@ mod live_layout_tests {
             "and the click opens the voice preparation instead"
         );
 
-        let mut app = App::inert();
-        app.tab = Tab::Settings;
-        app.readout.ready = Some(voice());
+        let mut app = readout_app(Tab::Settings);
+        app.readout.ready = Some(ready_voice());
         app.settings.auto_read = true;
         click_label(&mut app, "日本語の訳文を自動で読み上げる", 1280.0, 880.0);
         assert!(
@@ -3199,6 +3217,79 @@ mod live_layout_tests {
         assert_eq!(
             app.readout.status, "読み上げを停止しました。",
             "and stops the voice like every other switch"
+        );
+    }
+
+    #[test]
+    fn readout_stays_out_of_the_app_until_its_setting_is_turned_on() {
+        const CONTROLS: [&str; 5] = [
+            "自動読み上げ",
+            "読み上げ",
+            "読み上げ未準備",
+            "読み上げ準備中",
+            "読み上げを停止",
+        ];
+        let shown = |app: &mut App, width, height| {
+            drawn_galleys(app, width, height)
+                .into_iter()
+                .map(|(text, _)| text)
+                .filter(|text| CONTROLS.contains(&text.as_str()))
+                .collect::<Vec<_>>()
+        };
+        for (tab, page, _) in TAB_ORDER {
+            let mut app = App::inert();
+            app.tab = tab;
+            app.readout.ready = Some(ready_voice());
+            app.settings.auto_read = true;
+            app.rows.push(row(1, false, false));
+            assert_eq!(
+                shown(&mut app, 1280.0, 880.0),
+                Vec::<String>::new(),
+                "{page}"
+            );
+            app.settings.readout_enabled = true;
+            assert!(
+                !shown(&mut app, 1280.0, 880.0).is_empty(),
+                "{page} shows readout once it is on"
+            );
+        }
+        let mut app = App::inert();
+        app.readout.ready = Some(ready_voice());
+        app.window_mode.enter(&egui::ViewportInfo::default());
+        assert_eq!(shown(&mut app, 400.0, 260.0), Vec::<String>::new(), "mini");
+        app.settings.readout_enabled = true;
+        assert!(shown(&mut app, 400.0, 260.0).contains(&"自動読み上げ".to_owned()));
+
+        let mut app = App::inert();
+        app.readout.ready = Some(ready_voice());
+        app.settings.auto_read = true;
+        // A non-Japanese target turns an attempt to read into an error message
+        // instead of a voice, so the attempt itself can be seen.
+        app.settings.translation.target_lang = "en".into();
+        app.auto_read_translation("A finished translation.".into(), true);
+        assert!(
+            app.readout.error.is_empty(),
+            "nothing is read while it is off"
+        );
+        app.settings.readout_enabled = true;
+        app.auto_read_translation("A finished translation.".into(), true);
+        assert!(
+            !app.readout.error.is_empty(),
+            "the same text is read once it is on"
+        );
+
+        let mut app = App::inert();
+        app.tab = Tab::Settings;
+        click_label(&mut app, "読み上げを使う", 1280.0, 880.0);
+        assert!(
+            app.settings.readout_enabled,
+            "the settings switch turns it on"
+        );
+        click_label(&mut app, "読み上げを使う", 1280.0, 880.0);
+        assert!(!app.settings.readout_enabled);
+        assert_eq!(
+            app.readout.status, "読み上げを停止しました。",
+            "turning it off stops the voice"
         );
     }
 }

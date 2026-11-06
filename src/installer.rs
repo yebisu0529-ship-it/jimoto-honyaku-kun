@@ -908,6 +908,78 @@ pub(crate) fn download_official(
     )
 }
 
+pub(crate) fn hugging_face_url(repo: &str, revision: &str, filename: &str) -> String {
+    format!("https://huggingface.co/{repo}/resolve/{revision}/{filename}")
+}
+
+/// Asks pinned files for their first byte with the installer's own client, so a
+/// refused redirect, an error status or a changed size is found before release.
+pub(crate) struct OfficialProbe(Client);
+impl OfficialProbe {
+    pub(crate) fn new() -> Result<Self> {
+        NetworkPolicy::Official.client().map(Self)
+    }
+    /// Returns the host that served the byte.
+    pub(crate) fn first_byte(&self, artifact: &Artifact) -> Result<String> {
+        probe(&self.0, NetworkPolicy::Official, artifact)
+    }
+}
+fn probe(client: &Client, policy: NetworkPolicy, artifact: &Artifact) -> Result<String> {
+    let url = Url::parse(&artifact.url)?;
+    ensure!(policy.permits(&url), "公式配布先以外のURLです。");
+    let response = client
+        .get(url)
+        .header(header::ACCEPT_ENCODING, "identity")
+        .header(header::RANGE, "bytes=0-0")
+        .timeout(Duration::from_secs(60))
+        .send()
+        .map_err(|error| {
+            let host = error
+                .url()
+                .and_then(Url::host_str)
+                .unwrap_or("?")
+                .to_owned();
+            anyhow::Error::new(error.without_url()).context(host)
+        })?;
+    let host = response.url().host_str().unwrap_or("?").to_owned();
+    served_as_pinned(response.status(), response.headers(), artifact.bytes)
+        .context(host.clone())?;
+    Ok(host)
+}
+// A pinned file answers with its first byte and pinned size, or with the whole
+// pinned size when the server ignores Range, as download_verified requires.
+fn served_as_pinned(status: StatusCode, headers: &header::HeaderMap, bytes: u64) -> Result<()> {
+    let shown = |name: header::HeaderName| {
+        headers.get(name).map_or_else(
+            || "なし".to_owned(),
+            |value| String::from_utf8_lossy(value.as_bytes()).into_owned(),
+        )
+    };
+    let length = match status {
+        StatusCode::PARTIAL_CONTENT => {
+            bounded_range_response(headers, 0, 0, bytes)
+                .with_context(|| format!("Content-Range: {}", shown(header::CONTENT_RANGE)))?;
+            1
+        }
+        StatusCode::OK => bytes,
+        status => bail!("HTTP {status}"),
+    };
+    ensure!(
+        headers.get(header::CONTENT_LENGTH).is_none_or(|value| {
+            value.to_str().ok().and_then(|value| value.parse().ok()) == Some(length)
+        }),
+        "Content-Length（{}）が{length}バイトではありません。",
+        shown(header::CONTENT_LENGTH)
+    );
+    ensure!(
+        headers
+            .get(header::CONTENT_ENCODING)
+            .is_none_or(|encoding| encoding == "identity"),
+        "圧縮されたダウンロード応答は使用できません。"
+    );
+    Ok(())
+}
+
 pub(crate) fn remaining_bytes(artifact: &Artifact, target: &Path) -> Result<u64> {
     safe_file(target)?;
     if target.is_file() && fs::metadata(target)?.len() == artifact.bytes {
@@ -938,7 +1010,7 @@ pub(crate) fn remaining_bytes(artifact: &Artifact, target: &Path) -> Result<u64>
     )
 }
 
-fn runtime_assets(backend: &str) -> Vec<Artifact> {
+pub(crate) fn runtime_assets(backend: &str) -> Vec<Artifact> {
     let rows: &[(&str, u64, &str)] = match backend {
         "cpu" => &[(
             "llama-b12119-bin-win-cpu-x64.zip",
@@ -1296,10 +1368,7 @@ pub fn install(
     let model_path = model_parent.join(&request.filename);
     let model = Artifact {
         name: request.filename.clone(),
-        url: format!(
-            "https://huggingface.co/{}/resolve/{}/{}",
-            request.repo, request.revision, request.filename
-        ),
+        url: hugging_face_url(&request.repo, &request.revision, &request.filename),
         bytes: request.bytes,
         sha256: request.sha256.to_ascii_lowercase(),
     };
@@ -1889,6 +1958,56 @@ mod tests {
         assert!(NetworkPolicy::Official.permits(
             &Url::parse("https://files.pythonhosted.org/packages/pinned/package.whl").unwrap()
         ));
+    }
+    #[test]
+    fn download_check_passes_only_a_file_the_installer_can_fetch() {
+        let body = b"pinned";
+        let cases: [(&str, &str, &[u8], Option<&str>); 6] = [
+            (
+                "206 Partial Content",
+                "Content-Length: 1\r\nContent-Range: bytes 0-0/6\r\n",
+                b"p",
+                None,
+            ),
+            ("200 OK", "Content-Length: 6\r\n", body, None),
+            (
+                "206 Partial Content",
+                "Content-Length: 1\r\nContent-Range: bytes 0-0/7\r\n",
+                b"p",
+                Some("bytes 0-0/7"),
+            ),
+            (
+                "200 OK",
+                "Content-Length: 7\r\n",
+                b"pinned!",
+                Some("Content-Length（7）"),
+            ),
+            (
+                "403 Forbidden",
+                "Content-Length: 0\r\n",
+                b"",
+                Some("HTTP 403"),
+            ),
+            (
+                "302 Found",
+                "Location: http://localhost:9/asset\r\nContent-Length: 0\r\n",
+                b"",
+                Some("redirect"),
+            ),
+        ];
+        for (status, headers, reply, failure) in cases {
+            let (url, worker) = fixture(vec![response(status, headers, reply)]);
+            let client = NetworkPolicy::LocalTest.client().unwrap();
+            let result = probe(&client, NetworkPolicy::LocalTest, &artifact(url, body));
+            match failure {
+                None => assert_eq!(result.unwrap(), "127.0.0.1"),
+                Some(evidence) => {
+                    let message = format!("{:#}", result.unwrap_err());
+                    assert!(message.contains(evidence), "{status}: {message}");
+                }
+            }
+            assert!(worker.join().unwrap()[0].contains("range: bytes=0-0"));
+        }
     }
     #[test]
     fn cancellation_does_not_replace_an_existing_installation_manifest() {

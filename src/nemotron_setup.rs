@@ -51,6 +51,10 @@ fn metadata() -> Result<Metadata> {
     );
     Ok(data)
 }
+pub(crate) fn downloads() -> Result<Vec<Artifact>> {
+    let data = metadata()?;
+    Ok(data.runtimes.into_values().chain([data.model]).collect())
+}
 fn metadata_hash() -> String {
     format!("{:x}", Sha256::digest(METADATA))
 }

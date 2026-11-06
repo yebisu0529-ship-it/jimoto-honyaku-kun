@@ -28,7 +28,21 @@ Windows 10 / 11（x64）向けのポータブル版です。
 - `target/x86_64-pc-windows-msvc/release/plamo-translate.exe`
 - `target/x86_64-pc-windows-msvc/release/jimoto-setup.exe`
 
-### 2. パッケージの検証と作成
+### 2. ダウンロード先の確認
+
+アプリは、翻訳モデルや音声認識・読み上げ・文字認識の準備で、固定した配布先からファイルを取得します。配布元がファイルを更新すると、古い固定先から取得できなくなることがあります（2026-11-06には、PLaMo 3 Translateの更新で翻訳モデル14件すべてがHTTP 403になりました）。パッケージを作る前に、すべての固定先から取得できることを確かめます。
+
+```powershell
+cargo run --release --locked --bin download-check
+```
+
+固定したファイルごとに、アプリと同じ接続設定（許可する配布先とリダイレクトの扱い）で先頭の1バイトだけを取得し、配布元が示すサイズが固定サイズと同じかを確かめます。SHA-256はダウンロード時に照合するため、ここでは確かめません。
+
+- すべて取得できると「〇件すべてを取得できます。」と表示され、終了コード0で終わります。
+- 取得できないファイルは `NG` の行に配布先と理由が表示され、終了コード1で終わります。その固定先を配布元の現在の版（コミット・サイズ・SHA-256）に更新してから、もう一度確かめてください。
+- 音声認識の準備でuvが名前とバージョンから取得するPython本体とパッケージ（PyPI・PyTorch）は対象外です。
+
+### 3. パッケージの検証と作成
 
 ```powershell
 # 必須ファイルと起動構成の事前チェックのみ
@@ -38,7 +52,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -P
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Version 0.5.0
 ```
 
-### 3. 出力ファイルと収録ルール
+### 4. 出力ファイルと収録ルール
 
 `dist/`（または `-OutDir` で指定した先）に以下の3ファイルを出力します。同名ファイルが既にある場合は上書きせず終了します。
 

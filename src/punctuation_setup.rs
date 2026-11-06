@@ -49,6 +49,13 @@ fn metadata() -> Result<Metadata> {
     ensure!(data.version == 1, "Unsupported punctuation metadata");
     Ok(data)
 }
+pub(crate) fn downloads() -> Result<Vec<Artifact>> {
+    let data = metadata()?;
+    Ok([data.runtime, data.model]
+        .into_iter()
+        .chain(data.notices)
+        .collect())
+}
 fn digest() -> String {
     format!("{:x}", Sha256::digest(METADATA))
 }

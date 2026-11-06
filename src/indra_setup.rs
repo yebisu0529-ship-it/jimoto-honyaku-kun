@@ -79,6 +79,15 @@ fn metadata() -> Result<Metadata> {
     );
     Ok(data)
 }
+pub(crate) fn downloads() -> Result<Vec<Artifact>> {
+    let data = metadata()?;
+    Ok([data.uv.artifact, data.python.artifact]
+        .into_iter()
+        .chain(data.wheels)
+        .chain(data.models)
+        .chain(data.notices)
+        .collect())
+}
 fn expected(root: &Path, data: &Metadata) -> IndraInstallation {
     IndraInstallation {
         version: 1,

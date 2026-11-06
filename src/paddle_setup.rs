@@ -57,6 +57,13 @@ fn metadata() -> Result<Metadata> {
     );
     Ok(data)
 }
+pub(crate) fn downloads() -> Result<Vec<Artifact>> {
+    let data = metadata()?;
+    Ok([data.model, data.mmproj]
+        .into_iter()
+        .chain(data.notices)
+        .collect())
+}
 fn expected(root: &Path, data: &Metadata) -> PaddleInstallation {
     PaddleInstallation {
         version: 1,

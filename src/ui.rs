@@ -848,11 +848,13 @@ impl App {
         live_region(ui, "page-header", HEADER_HEIGHT, |ui| {
             let mut enter_mini = false;
             let mut open_subtitle = false;
+            let mut switch_readout = false;
             let backend_ready = self.backend_ready;
+            let auto_read = self.settings.auto_read;
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Present on every page so the separate subtitle window and
-                    // the collapsed mini view are always one click away.
+                    // Present on every page so the separate subtitle window, the
+                    // collapsed mini view and readout are always one click away.
                     if ui
                         .add(standard("字幕ウィンドウ"))
                         .on_hover_text(
@@ -869,6 +871,20 @@ impl App {
                     {
                         enter_mini = true;
                     }
+                    let readout = ui
+                        .add(standard("自動読み上げ").selected(auto_read))
+                        .on_hover_text(readout::AUTO_READ_HINT);
+                    // The fill alone shows the state; screen readers get it
+                    // as the button's selected state.
+                    readout.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Button,
+                            true,
+                            auto_read,
+                            "自動読み上げ",
+                        )
+                    });
+                    switch_readout = readout.clicked();
                     actions(ui);
                     // The title takes whatever the actions leave, so a narrow
                     // window truncates it instead of overlapping the buttons.
@@ -893,6 +909,9 @@ impl App {
             }
             if enter_mini {
                 self.enter_mini_view(ui.ctx());
+            }
+            if switch_readout {
+                self.toggle_auto_read(ui.ctx());
             }
         });
     }
@@ -972,16 +991,6 @@ impl App {
                 ui.add_space(theme::SPACE_4);
                 ui.separator();
                 ui.add_space(theme::SPACE_2);
-                let was_enabled = self.settings.auto_read;
-                let read_toggle = ui
-                    .add_enabled_ui(self.readout.ready.is_some(), |ui| {
-                        toggle(ui, &mut self.settings.auto_read, "自動読み上げ")
-                    })
-                    .inner;
-                if was_enabled && !self.settings.auto_read {
-                    self.stop_readout();
-                }
-                read_toggle.on_hover_text("新しい確定訳を読み上げます");
                 ui.menu_button(RichText::new("表示").size(theme::SIZE_LABEL), |ui| {
                     toggle(ui, &mut self.settings.live_show_original, "原文を表示");
                     toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール")
@@ -3154,6 +3163,20 @@ mod live_layout_tests {
         assert!(
             app.tab == Tab::Settings && app.readout.confirm,
             "and the click opens the voice preparation instead"
+        );
+
+        let mut app = App::inert();
+        app.tab = Tab::Settings;
+        app.readout.ready = Some(voice());
+        app.settings.auto_read = true;
+        click_label(&mut app, "日本語の訳文を自動で読み上げる", 1280.0, 880.0);
+        assert!(
+            !app.settings.auto_read,
+            "the settings checkbox turns it off"
+        );
+        assert_eq!(
+            app.readout.status, "読み上げを停止しました。",
+            "and stops the voice like every other switch"
         );
     }
 }

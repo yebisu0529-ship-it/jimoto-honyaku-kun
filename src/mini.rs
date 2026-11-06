@@ -456,9 +456,7 @@ impl App {
                                         .selected(self.settings.auto_read)
                                         .min_size(egui::vec2(0.0, theme::CONTROL_H)),
                                 )
-                                .on_hover_text(
-                                    "新しい日本語の確定訳を自動で読み上げます。押すたびにオンとオフが切り替わります",
-                                );
+                                .on_hover_text(readout::AUTO_READ_HINT);
                             // The fill alone shows the state; screen readers get it
                             // as the button's selected state.
                             auto_read.widget_info(|| {
@@ -470,16 +468,7 @@ impl App {
                                 )
                             });
                             if auto_read.clicked() {
-                                if self.settings.auto_read {
-                                    self.settings.auto_read = false;
-                                    self.stop_readout();
-                                } else if self.readout.ready.is_some() {
-                                    self.settings.auto_read = true;
-                                } else {
-                                    self.restore_normal_view(ctx);
-                                    self.tab = Tab::Settings;
-                                    self.readout.confirm = true;
-                                }
+                                self.toggle_auto_read(ctx);
                             }
                             let menu = ui
                                 .menu_button("…", |ui| self.mini_menu(ui, ctx))
@@ -530,7 +519,9 @@ impl App {
                 );
                 let now_rows = if compact { 1.0 } else { 2.0 };
                 let now_row_height = ui
-                    .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(theme::SIZE_BODY)))
+                    .fonts_mut(|fonts| {
+                        fonts.row_height(&egui::FontId::proportional(theme::SIZE_BODY))
+                    })
                     .ceil();
                 let now_height = now_rows * now_row_height;
                 let draft_height = LABEL_ROW + ui.spacing().item_spacing.y + now_height;
@@ -623,9 +614,7 @@ impl App {
                                 left_label(
                                     ui,
                                     egui::vec2(width, LABEL_ROW),
-                                    RichText::new(label)
-                                        .size(theme::SIZE_CAPTION)
-                                        .color(ACCENT),
+                                    RichText::new(label).size(theme::SIZE_CAPTION).color(ACCENT),
                                 );
                                 has_error && ui.small_button("通常表示で確認").clicked()
                             })

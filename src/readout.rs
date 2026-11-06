@@ -7,6 +7,8 @@ use plamo_translate::{
     voice_profile::{self, VoiceProfile},
 };
 
+pub(super) const AUTO_READ_HINT: &str = "新しい日本語の訳文を自動で読み上げます。押すたびにオンとオフが切り替わり、オフにすると読み上げ中の文も止まります";
+
 pub(super) struct ReadoutState {
     pub ready: Option<SpeechInstallation>,
     pub engine: Option<TtsEngine>,
@@ -162,6 +164,21 @@ impl App {
         }
         self.readout.rate_active = false;
         self.readout.status = "読み上げを停止しました。".into();
+    }
+    /// Every 自動読み上げ control calls this, so they all behave alike.
+    pub(super) fn toggle_auto_read(&mut self, ctx: &egui::Context) {
+        if self.settings.auto_read {
+            self.settings.auto_read = false;
+            self.stop_readout();
+        } else if self.readout.ready.is_some() {
+            self.settings.auto_read = true;
+        } else {
+            if self.window_mode.is_mini() {
+                self.restore_normal_view(ctx);
+            }
+            self.tab = Tab::Settings;
+            self.readout.confirm = true;
+        }
     }
     pub(super) fn poll_readout(&mut self) {
         let events = self
@@ -420,6 +437,7 @@ impl App {
                 .text("自動調整の上限"),
         );
         self.settings.tts_max_speed = self.settings.tts_max_speed.max(self.settings.tts_speed);
+        let was_enabled = self.settings.auto_read;
         ui.add_enabled_ui(self.readout.ready.is_some(), |ui| {
             ui::toggle(
                 ui,
@@ -427,6 +445,9 @@ impl App {
                 "日本語の訳文を自動で読み上げる",
             );
         });
+        if was_enabled && !self.settings.auto_read {
+            self.stop_readout();
+        }
         ui.label(theme::caption(
             "読み上げ中は、再生音声の聞き取りを一時停止します。",
         ));

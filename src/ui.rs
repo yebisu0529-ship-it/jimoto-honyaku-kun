@@ -848,11 +848,13 @@ impl App {
         live_region(ui, "page-header", HEADER_HEIGHT, |ui| {
             let mut enter_mini = false;
             let mut open_subtitle = false;
+            let mut switch_readout = false;
             let backend_ready = self.backend_ready;
+            let auto_read = self.settings.auto_read;
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Present on every page so the separate subtitle window and
-                    // the collapsed mini view are always one click away.
+                    // Present on every page so the separate subtitle window, the
+                    // collapsed mini view and readout are always one click away.
                     if ui
                         .add(standard("字幕ウィンドウ"))
                         .on_hover_text(
@@ -869,6 +871,20 @@ impl App {
                     {
                         enter_mini = true;
                     }
+                    let readout = ui
+                        .add(standard("自動読み上げ").selected(auto_read))
+                        .on_hover_text(readout::AUTO_READ_HINT);
+                    // The fill alone shows the state; screen readers get it
+                    // as the button's selected state.
+                    readout.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Button,
+                            true,
+                            auto_read,
+                            "自動読み上げ",
+                        )
+                    });
+                    switch_readout = readout.clicked();
                     actions(ui);
                     // The title takes whatever the actions leave, so a narrow
                     // window truncates it instead of overlapping the buttons.
@@ -893,6 +909,9 @@ impl App {
             }
             if enter_mini {
                 self.enter_mini_view(ui.ctx());
+            }
+            if switch_readout {
+                self.toggle_auto_read(ui.ctx());
             }
         });
     }
@@ -972,16 +991,6 @@ impl App {
                 ui.add_space(theme::SPACE_4);
                 ui.separator();
                 ui.add_space(theme::SPACE_2);
-                let was_enabled = self.settings.auto_read;
-                let read_toggle = ui
-                    .add_enabled_ui(self.readout.ready.is_some(), |ui| {
-                        toggle(ui, &mut self.settings.auto_read, "自動読み上げ")
-                    })
-                    .inner;
-                if was_enabled && !self.settings.auto_read {
-                    self.stop_readout();
-                }
-                read_toggle.on_hover_text("新しい確定訳を読み上げます");
                 ui.menu_button(RichText::new("表示").size(theme::SIZE_LABEL), |ui| {
                     toggle(ui, &mut self.settings.live_show_original, "原文を表示");
                     toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール")
@@ -3064,5 +3073,110 @@ mod live_layout_tests {
         assert!(history_row_visible(&app.rows[0], Some(2)));
         assert!(row_is_unfinished(&app.rows[1]));
         assert!(!row_is_unfinished(&app.rows[0]));
+    }
+    /// Clicks the one control drawn with exactly `label`, the way a pointer
+    /// would: hover, press and release over the centre of its text.
+    fn click_label(app: &mut App, label: &str, width: f32, height: f32) {
+        fn centres(shape: &egui::epaint::Shape, label: &str, out: &mut Vec<egui::Pos2>) {
+            match shape {
+                egui::epaint::Shape::Text(text) if text.galley.job.text == label => {
+                    out.push(text.visual_bounding_rect().center())
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().for_each(|s| centres(s, label, out))
+                }
+                _ => {}
+            }
+        }
+        let context = egui::Context::default();
+        configure_theme(&context);
+        let frame = |app: &mut App, number: u32, events: Vec<egui::Event>| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, height),
+                    )),
+                    time: Some(f64::from(number) / 60.0),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.render_ui(context),
+            )
+        };
+        let mut found = Vec::new();
+        for number in 0..3 {
+            found.clear();
+            for clipped in frame(app, number, vec![]).shapes {
+                centres(&clipped.shape, label, &mut found);
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "expected one {label} control, found {found:?}"
+        );
+        let centre = found[0];
+        let press = |pressed| egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(app, 3, vec![egui::Event::PointerMoved(centre)]);
+        frame(app, 4, vec![press(true)]);
+        frame(app, 5, vec![press(false)]);
+    }
+
+    #[test]
+    fn readout_switch_is_on_every_page_and_turning_it_off_stops_the_voice() {
+        let voice = || plamo_translate::speech_setup::SpeechInstallation {
+            executable: Default::default(),
+            model: Default::default(),
+            backend: String::new(),
+            voice: String::new(),
+        };
+        for (tab, page, _) in TAB_ORDER {
+            let mut app = App::inert();
+            app.tab = tab;
+            app.readout.ready = Some(voice());
+            app.settings.auto_read = true;
+            click_label(&mut app, "自動読み上げ", 860.0, 620.0);
+            assert!(
+                !app.settings.auto_read,
+                "{page}: one click turns readout off"
+            );
+            assert_eq!(
+                app.readout.status, "読み上げを停止しました。",
+                "{page}: turning it off also stops the sentence being read"
+            );
+            click_label(&mut app, "自動読み上げ", 860.0, 620.0);
+            assert!(app.settings.auto_read, "{page}: the next click turns it on");
+        }
+        let mut app = App::inert();
+        app.tab = Tab::Text;
+        click_label(&mut app, "自動読み上げ", 860.0, 620.0);
+        assert!(
+            !app.settings.auto_read,
+            "a voice that is not ready stays off"
+        );
+        assert!(
+            app.tab == Tab::Settings && app.readout.confirm,
+            "and the click opens the voice preparation instead"
+        );
+
+        let mut app = App::inert();
+        app.tab = Tab::Settings;
+        app.readout.ready = Some(voice());
+        app.settings.auto_read = true;
+        click_label(&mut app, "日本語の訳文を自動で読み上げる", 1280.0, 880.0);
+        assert!(
+            !app.settings.auto_read,
+            "the settings checkbox turns it off"
+        );
+        assert_eq!(
+            app.readout.status, "読み上げを停止しました。",
+            "and stops the voice like every other switch"
+        );
     }
 }

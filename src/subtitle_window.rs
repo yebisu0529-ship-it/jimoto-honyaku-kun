@@ -213,14 +213,6 @@ impl State {
         }
         let mut response = WindowResponse::default();
         ctx.show_viewport_immediate(Self::viewport_id(), self.builder(), |child, _class| {
-            child.input(|input| {
-                if let Some(inner) = input.viewport().inner_rect {
-                    self.native_size = inner.size().max(egui::vec2(360.0, 220.0));
-                }
-                if let Some(outer) = input.viewport().outer_rect {
-                    self.native_position = Some(outer.min);
-                }
-            });
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
                 .show(child, |ui| {
@@ -230,6 +222,18 @@ impl State {
                 response = self.close();
             }
             if response.closed {
+                // Remember the geometry only when closing. egui turns a builder
+                // that follows the open window into a resize or move that runs
+                // after the next frame has read the window, which swaps it
+                // between its last two sizes for as long as frames are drawn.
+                child.input(|input| {
+                    if let Some(inner) = input.viewport().inner_rect {
+                        self.native_size = inner.size().max(egui::vec2(360.0, 220.0));
+                    }
+                    if let Some(outer) = input.viewport().outer_rect {
+                        self.native_position = Some(outer.min);
+                    }
+                });
                 // This command is scoped to the native child context, never root.
                 child.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -442,6 +446,35 @@ mod tests {
         }
         text
     }
+    fn show_native(
+        state: &mut State,
+        ctx: &egui::Context,
+        outer_min: egui::Pos2,
+        inner_size: egui::Vec2,
+        events: Vec<egui::ViewportEvent>,
+    ) {
+        let info = egui::ViewportInfo {
+            inner_rect: Some(egui::Rect::from_min_size(
+                outer_min + egui::vec2(8.0, 31.0),
+                inner_size,
+            )),
+            outer_rect: Some(egui::Rect::from_min_size(
+                outer_min,
+                inner_size + egui::vec2(16.0, 39.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(
+            egui::RawInput {
+                viewports: std::iter::once((egui::ViewportId::ROOT, info)).collect(),
+                ..Default::default()
+            },
+            |ctx| {
+                state.show(ctx);
+            },
+        );
+    }
     #[test]
     fn builder_is_resizable_non_focusing_independent_native_window() {
         let state = State::default();
@@ -579,5 +612,39 @@ mod tests {
         state.update(None, Some(&original), Playback::Running);
         paint(&mut state, &ctx, egui::vec2(360.0, 220.0));
         assert!((state.scroll_offset() - before).abs() < 1.0);
+    }
+    #[test]
+    fn a_dragged_window_is_never_moved_back_and_reopens_where_it_was_left() {
+        let ctx = egui::Context::default();
+        let mut state = State {
+            open: true,
+            ..State::default()
+        };
+        // eframe patches the window it created with every later builder, and
+        // runs the resulting commands after that frame has read the window.
+        let mut window = state.builder();
+        for (x, width) in [(100.0, 726.0), (100.0, 732.0), (112.0, 732.0)] {
+            show_native(
+                &mut state,
+                &ctx,
+                egui::pos2(x, 80.0),
+                egui::vec2(width, 360.0),
+                vec![],
+            );
+            let (commands, recreate) = window.patch(state.builder());
+            assert!(commands.is_empty() && !recreate, "{commands:?}");
+        }
+        show_native(
+            &mut state,
+            &ctx,
+            egui::pos2(112.0, 80.0),
+            egui::vec2(732.0, 360.0),
+            vec![egui::ViewportEvent::Close],
+        );
+        assert!(!state.open);
+        state.open = true;
+        let reopened = state.builder();
+        assert_eq!(reopened.inner_size, Some(egui::vec2(732.0, 360.0)));
+        assert_eq!(reopened.position, Some(egui::pos2(112.0, 80.0)));
     }
 }

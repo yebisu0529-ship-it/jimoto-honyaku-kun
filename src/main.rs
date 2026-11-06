@@ -284,6 +284,7 @@ struct Selection {
     image: image::RgbaImage,
     texture: egui::TextureHandle,
     start: Option<egui::Pos2>,
+    focus_requested: bool,
 }
 struct AudioSession {
     stop: Arc<AtomicBool>,
@@ -1275,6 +1276,7 @@ impl App {
                                 image,
                                 texture,
                                 start: None,
+                                focus_requested: false,
                             });
                         }
                         Err(e) => {
@@ -1635,6 +1637,12 @@ impl App {
             egui::ViewportId::from_hash_of("screen-selection"),
             builder,
             |ctx, _| {
+                if !selection.focus_requested {
+                    // Opened by Ctrl+Alt+T while another app holds the keyboard,
+                    // the overlay would otherwise leave Esc going to that app.
+                    selection.focus_requested = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
                 ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
                 ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
                 egui::CentralPanel::default()
@@ -2629,6 +2637,7 @@ mod tests {
                 egui::TextureOptions::LINEAR,
             ),
             start: None,
+            focus_requested: false,
         });
         for events in [
             vec![egui::Event::PointerMoved(egui::pos2(120.0, 120.0))],

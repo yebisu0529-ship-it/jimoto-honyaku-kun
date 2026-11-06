@@ -705,6 +705,7 @@ enum LiveSourceMode {
     Captions,
     Audio,
     Both,
+    Screen,
 }
 
 impl LiveSourceMode {
@@ -723,6 +724,7 @@ impl LiveSourceMode {
             Self::Captions => (true, false),
             Self::Audio => (false, true),
             Self::Both => (true, true),
+            Self::Screen => (true, false),
         }
     }
 
@@ -732,6 +734,7 @@ impl LiveSourceMode {
             Self::Captions => "YouTubeの字幕だけを翻訳します",
             Self::Audio => "PCで再生中の音声だけを翻訳します",
             Self::Both => "字幕を優先し、字幕が止まっている間はPC音声を使います",
+            Self::Screen => "選んだ画面の範囲を読み続け、文字が変わったときに翻訳します",
         }
     }
 }
@@ -949,27 +952,46 @@ impl App {
                         .last_caption
                         .is_some_and(|time| time.elapsed() < Duration::from_secs(8));
                 let audio_wanted = self.audio_enabled || self.audio_start_requested;
-                let current = LiveSourceMode::from_flags(self.caption_enabled, audio_wanted);
+                let current = if self.screen_feed.is_some() {
+                    Some(LiveSourceMode::Screen)
+                } else {
+                    LiveSourceMode::from_flags(self.caption_enabled, audio_wanted)
+                };
                 let selected = match current {
                     None => 0,
                     Some(LiveSourceMode::Captions) => 1,
                     Some(LiveSourceMode::Audio) => 2,
                     Some(LiveSourceMode::Both) => 3,
+                    Some(LiveSourceMode::Screen) => 4,
                     Some(LiveSourceMode::Off) => 0,
                 };
-                let chosen = segmented(ui, &["停止", "字幕", "PC音声", "両方"], Some(selected));
+                let chosen = segmented(
+                    ui,
+                    &["停止", "字幕", "PC音声", "両方", "画面"],
+                    Some(selected),
+                );
                 if let Some(index) = chosen {
                     let mode = match index {
                         1 => LiveSourceMode::Captions,
                         2 => LiveSourceMode::Audio,
                         3 => LiveSourceMode::Both,
+                        4 => LiveSourceMode::Screen,
                         _ => LiveSourceMode::Off,
                     };
                     if current != Some(mode) {
-                        self.apply_live_sources(mode);
+                        if mode == LiveSourceMode::Screen {
+                            self.begin_screen_feed(ui.ctx());
+                        } else {
+                            if self.screen_feed.is_some() {
+                                self.set_caption_enabled(false);
+                            }
+                            self.apply_live_sources(mode);
+                        }
                     }
                 }
-                let state = if self.caption_enabled && caption_receiving {
+                let state = if self.screen_feed.is_some() {
+                    ("画面を読み取り中", ACCENT)
+                } else if self.caption_enabled && caption_receiving {
                     ("字幕を受信中", ACCENT)
                 } else if audio_wanted && self.audio_enabled && self.asr_ready {
                     ("音声を認識中", ACCENT)

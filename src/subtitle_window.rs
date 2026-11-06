@@ -64,6 +64,9 @@ pub struct State {
     pub show_source: bool,
     pub font_size: f32,
     pub follow_latest: bool,
+    /// Leave screen captures while the 画面 input reads the screen.
+    pub content_protected: bool,
+    applied_protection: Option<bool>,
     scope: Option<SourceStamp>,
     view: Option<View>,
     /// Parts whose translation is final, oldest first. They are drawn as
@@ -87,6 +90,8 @@ impl Default for State {
             show_source: false,
             font_size: 25.0,
             follow_latest: true,
+            content_protected: false,
+            applied_protection: None,
             scope: None,
             view: None,
             history: Vec::new(),
@@ -224,10 +229,19 @@ impl State {
     /// Selecting/copying text can still focus it through ordinary user input.
     pub fn show(&mut self, ctx: &egui::Context) -> WindowResponse {
         if !self.open {
+            self.applied_protection = None;
             return WindowResponse::default();
         }
         let mut response = WindowResponse::default();
         ctx.show_viewport_immediate(Self::viewport_id(), self.builder(), |child, _class| {
+            // egui has no builder field for this, and a command sent before the
+            // window exists is dropped, so the window applies it itself.
+            if self.applied_protection != Some(self.content_protected) {
+                child.send_viewport_cmd(egui::ViewportCommand::ContentProtected(
+                    self.content_protected,
+                ));
+                self.applied_protection = Some(self.content_protected);
+            }
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
                 .show(child, |ui| {
@@ -302,6 +316,14 @@ impl State {
                 ui.label(
                     RichText::new(match view.stamp.kind {
                         SourceKind::Audio => "PC音声",
+                        SourceKind::Caption
+                            if view
+                                .stamp
+                                .video_id
+                                .starts_with(super::screen_feed::SCREEN_SOURCE) =>
+                        {
+                            "画面"
+                        }
                         SourceKind::Caption => "YouTube字幕",
                     })
                     .size(theme::SIZE_CAPTION)

@@ -13,6 +13,55 @@ enum Runtime {
     Indra(IndraEngine),
     Paddle(PaddleEngine),
 }
+#[derive(Clone)]
+pub(super) struct Recognizer {
+    backend: String,
+    language: String,
+    indra: Option<IndraInstallation>,
+    paddle: Option<PaddleInstallation>,
+    runtime: Arc<Mutex<Option<Runtime>>>,
+    control: ProcessControl,
+    runtime_root: PathBuf,
+    device: String,
+}
+impl Recognizer {
+    pub(super) fn recognize(&self, image: &image::RgbaImage) -> Result<String> {
+        if self.backend == "windows" {
+            return platform::ocr(image, &self.language);
+        }
+        let mut owned = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        if owned.is_none() {
+            *owned = Some(match self.backend.as_str() {
+                "indra" => Runtime::Indra(IndraEngine::start(
+                    self.indra
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("Indra OCRの追加データがありません。"))?,
+                    self.control.clone(),
+                )?),
+                "paddle" => {
+                    let installation =
+                        plamo_translate::installer::load_installation(&self.runtime_root)?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("先に翻訳モデルと実行環境を準備してください。")
+                            })?;
+                    Runtime::Paddle(PaddleEngine::start(
+                        self.paddle.clone().ok_or_else(|| {
+                            anyhow::anyhow!("PaddleOCRの追加データがありません。")
+                        })?,
+                        installation.llama_server,
+                        self.device.clone(),
+                        self.control.clone(),
+                    )?)
+                }
+                _ => anyhow::bail!("文字認識の方式を設定で選び直してください。"),
+            });
+        }
+        match owned.as_ref().unwrap() {
+            Runtime::Indra(engine) => engine.recognize(image),
+            Runtime::Paddle(engine) => engine.recognize(image),
+        }
+    }
+}
 pub(super) struct OcrState {
     pub generation: u64,
     pub busy: Option<u64>,
@@ -112,17 +161,15 @@ impl App {
         let (generation, image) = self.ocr.pending.take().unwrap();
         self.ocr.busy = Some(generation);
         self.status = "画像から文字を読み取っています…".into();
-        let backend = self.settings.ocr_backend.clone();
-        let language = self.settings.translation.source_lang.clone();
-        let indra = self.ocr.indra.clone();
-        let paddle = self.ocr.paddle.clone();
-        let runtime = self.ocr.runtime.clone();
-        let control = self
-            .ocr
-            .control
-            .get_or_insert_with(ProcessControl::new)
-            .clone();
-        let runtime_root = self.model_store_root();
+        let recognizer = self.screen_recognizer();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = recognizer.recognize(&image).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Event::Ocr { generation, result });
+        });
+    }
+    /// Everything one reading needs, shared by single readings and the 画面 input.
+    pub(super) fn screen_recognizer(&mut self) -> Recognizer {
         let device = if self.settings.ocr_device != "cpu"
             && self.settings.backend != "cpu"
             && self.setup.hardware.as_ref().is_some_and(|h| {
@@ -134,49 +181,23 @@ impl App {
         } else {
             "cpu".into()
         };
-        let tx = self.tx.clone();
-        thread::spawn(move || {
-            let result = (|| -> Result<String> {
-                if backend == "windows" {
-                    return platform::ocr(&image, &language);
-                }
-                let mut owned = runtime.lock().unwrap_or_else(|e| e.into_inner());
-                if owned.is_none() {
-                    *owned = Some(match backend.as_str() {
-                        "indra" => Runtime::Indra(IndraEngine::start(
-                            indra.ok_or_else(|| {
-                                anyhow::anyhow!("Indra OCRの追加データがありません。")
-                            })?,
-                            control.clone(),
-                        )?),
-                        "paddle" => {
-                            let installation =
-                                plamo_translate::installer::load_installation(&runtime_root)?
-                                    .ok_or_else(|| {
-                                        anyhow::anyhow!(
-                                            "先に翻訳モデルと実行環境を準備してください。"
-                                        )
-                                    })?;
-                            Runtime::Paddle(PaddleEngine::start(
-                                paddle.ok_or_else(|| {
-                                    anyhow::anyhow!("PaddleOCRの追加データがありません。")
-                                })?,
-                                installation.llama_server,
-                                device,
-                                control.clone(),
-                            )?)
-                        }
-                        _ => anyhow::bail!("文字認識の方式を設定で選び直してください。"),
-                    });
-                }
-                match owned.as_ref().unwrap() {
-                    Runtime::Indra(engine) => engine.recognize(&image),
-                    Runtime::Paddle(engine) => engine.recognize(&image),
-                }
-            })()
-            .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Event::Ocr { generation, result });
-        });
+        Recognizer {
+            backend: self.settings.ocr_backend.clone(),
+            language: self.settings.translation.source_lang.clone(),
+            indra: self.ocr.indra.clone(),
+            paddle: self.ocr.paddle.clone(),
+            runtime: self.ocr.runtime.clone(),
+            control: self
+                .ocr
+                .control
+                .get_or_insert_with(ProcessControl::new)
+                .clone(),
+            runtime_root: self.model_store_root(),
+            device,
+        }
+    }
+    pub(super) fn request_screen_ocr_setup(&mut self) {
+        self.ocr.confirm = true;
     }
     pub(super) fn screen_ocr_preparing(&self) -> bool {
         self.ocr.installing
@@ -324,6 +345,21 @@ impl App {
         } else {
             ui.label(theme::label("Windowsに導入済みの文字認識を使います。"));
         }
+        ui.add_space(theme::SPACE_2);
+        ui.label(theme::label("ライブ翻訳の「画面」で読み取る間隔"));
+        ui.horizontal_wrapped(|ui| {
+            for (interval, name) in [
+                (1_000, "1秒"),
+                (1_500, "1.5秒"),
+                (2_000, "2秒"),
+                (3_000, "3秒"),
+            ] {
+                ui.radio_value(&mut self.settings.screen_interval_ms, interval, name);
+            }
+        });
+        ui.label(theme::caption(
+            "選んだ範囲の文字が変わったときだけ翻訳します。画像はメモリ上だけで扱い、ファイルには保存しません。",
+        ));
         ui.label(theme::label(if self.screen_ocr_ready() {
             "文字認識の準備完了"
         } else {

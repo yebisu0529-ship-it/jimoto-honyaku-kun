@@ -581,10 +581,10 @@ impl App {
                             request.filter(|row| row.pending && !row.record.translation.is_empty())
                         {
                             (
-                                if row.record.kind == "YouTube" {
-                                    "いま · 字幕を翻訳中"
-                                } else {
-                                    "いま · 音声の文章を翻訳中"
+                                match row.record.kind.as_str() {
+                                    "YouTube" => "いま · 字幕を翻訳中",
+                                    "画面" => "いま · 画面の文字を翻訳中",
+                                    _ => "いま · 音声の文章を翻訳中",
                                 },
                                 row.record.translation.as_str(),
                             )

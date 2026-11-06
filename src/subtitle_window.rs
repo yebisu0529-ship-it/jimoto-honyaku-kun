@@ -75,6 +75,8 @@ pub struct State {
     playback: Playback,
     waiting_for_update: bool,
     scroll_offset: f32,
+    /// The reading area showed its last line on the previous frame.
+    showing_end: bool,
     jump_to_end: bool,
     native_size: egui::Vec2,
     native_position: Option<egui::Pos2>,
@@ -98,6 +100,7 @@ impl Default for State {
             playback: Playback::Running,
             waiting_for_update: false,
             scroll_offset: 0.0,
+            showing_end: true,
             jump_to_end: false,
             native_size: egui::vec2(720.0, 360.0),
             native_position: None,
@@ -242,11 +245,9 @@ impl State {
                 ));
                 self.applied_protection = Some(self.content_protected);
             }
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
-                .show(child, |ui| {
-                    response = self.paint(ui);
-                });
+            Self::panel().show(child, |ui| {
+                response = self.paint(ui);
+            });
             if child.input(|input| input.viewport().close_requested()) {
                 response = self.close();
             }
@@ -268,6 +269,11 @@ impl State {
             }
         });
         response
+    }
+
+    /// The native window's panel. Previews and tests draw through it too.
+    pub fn panel() -> egui::CentralPanel {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
     }
 
     /// Headless-previewable content; emits no native close/focus commands.
@@ -300,10 +306,24 @@ impl State {
                 self.jump_to_end = true;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Near the minimum window width the button's usual padding would
+                // push it over 末尾へ, so the padding shrinks to the room left.
+                let room = ui.available_width();
+                let text = ui
+                    .painter()
+                    .layout_no_wrap(
+                        "閉じる".into(),
+                        egui::FontId::proportional(theme::SIZE_LABEL),
+                        TEXT,
+                    )
+                    .size()
+                    .x;
+                let padding = &mut ui.spacing_mut().button_padding.x;
+                *padding = padding.min((room - text) / 2.0).max(2.0);
                 closed = ui
                     .add(
                         egui::Button::new(RichText::new("閉じる").size(theme::SIZE_LABEL))
-                            .min_size(egui::vec2(72.0, theme::CONTROL_H)),
+                            .min_size(egui::vec2(room.min(72.0), theme::CONTROL_H)),
                     )
                     .clicked();
             });
@@ -342,6 +362,7 @@ impl State {
         } else if !self.follow_latest {
             area = area.vertical_scroll_offset(self.scroll_offset);
         }
+        let at_end = self.showing_end;
         let output = area.show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             let forming = self.view.as_ref().filter(|view| {
@@ -350,12 +371,30 @@ impl State {
                     .iter()
                     .any(|done| done.paragraph_key == view.paragraph_key)
             });
-            for view in &self.history {
-                self.message(ui, view, false);
+            let messages: Vec<(&View, bool)> = self
+                .history
+                .iter()
+                .map(|view| (view, false))
+                .chain(forming.map(|view| (view, view.phase != Phase::Final)))
+                .collect();
+            let newest = messages.len().saturating_sub(1);
+            for (index, (view, outlined)) in messages.iter().enumerate() {
+                if index > 0 {
+                    ui.add_space(theme::SPACE_3);
+                }
+                // While the end of the talk is in view, an older message that
+                // starts above the reading area would show only its lower part.
+                // It keeps its space but is not drawn; scrolling up shows it.
+                let whole = !at_end
+                    || index == newest
+                    || ui.next_widget_position().y >= ui.clip_rect().top();
+                let mut space = egui::UiBuilder::new();
+                if !whole {
+                    space = space.invisible();
+                }
+                ui.scope_builder(space, |ui| self.message(ui, view, *outlined));
             }
-            if let Some(view) = forming {
-                self.message(ui, view, view.phase != Phase::Final);
-            } else if self.history.is_empty() {
+            if messages.is_empty() {
                 ui.add_space(12.0);
                 ui.label(
                     RichText::new("まとまった訳文を待っています。")
@@ -371,6 +410,8 @@ impl State {
             }
         });
         self.scroll_offset = output.state.offset.y;
+        self.showing_end =
+            output.state.offset.y + output.inner_rect.height() + 0.5 >= output.content_size.y;
         #[cfg(test)]
         {
             self.body_rect = Some(output.inner_rect);
@@ -422,7 +463,6 @@ impl State {
                     );
                 }
             });
-        ui.add_space(theme::SPACE_3);
     }
 
     fn status(&self) -> (String, Color32) {
@@ -474,7 +514,7 @@ mod tests {
                 ..Default::default()
             },
             |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+                State::panel().show(ctx, |ui| {
                     state.paint(ui);
                 });
             },
@@ -755,6 +795,114 @@ mod tests {
             drawn.matches(done.target.as_str()).count(),
             1,
             "a part that becomes fixed is drawn once"
+        );
+    }
+    // Shapes inside the reading area are clipped to it; the header is not.
+    fn cut_at_the_top(state: &State, output: &egui::FullOutput) -> bool {
+        let body = state.body_rect.unwrap();
+        output.shapes.iter().any(|clipped| {
+            clipped.clip_rect.top() > body.top() - 8.0
+                && clipped.shape.visual_bounding_rect().top() < clipped.clip_rect.top() - 0.5
+        })
+    }
+    fn talk(state: &mut State, newest: &str) {
+        let forming = View {
+            target: newest.into(),
+            ..view(9, 1, Phase::Updating)
+        };
+        state.update(Some(&forming.stamp), Some(&forming), Playback::Running);
+        state.set_history(
+            (1..=8)
+                .map(|key| View {
+                    target: format!("{key}番目に確定した部分です。前の話の続きを確認できます。"),
+                    ..view(key, 1, Phase::Final)
+                })
+                .collect(),
+        );
+    }
+    #[test]
+    fn at_the_newest_message_no_message_is_drawn_cut_at_the_top() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(720.0, 360.0);
+        let mut state = State::default();
+        talk(&mut state, "いま話している途中の部分です。");
+        let mut output = paint(&mut state, &ctx, size);
+        for _ in 0..3 {
+            output = paint(&mut state, &ctx, size);
+        }
+        assert!(
+            state.scroll_offset() > 0.0,
+            "the talk is taller than the window"
+        );
+        assert!(!cut_at_the_top(&state, &output));
+        assert!(painted_text(&output).contains("いま話している途中の部分です。"));
+
+        let long = "訳文が長く続いて、ウィンドウの高さを超えています。".repeat(12);
+        talk(&mut state, &long);
+        for _ in 0..3 {
+            output = paint(&mut state, &ctx, size);
+        }
+        assert!(
+            painted_text(&output).contains(&long),
+            "the newest message is drawn even when it is taller than the window"
+        );
+    }
+    #[test]
+    fn header_buttons_do_not_overlap_at_the_minimum_size() {
+        fn flatten<'a>(shape: &'a egui::Shape, shapes: &mut Vec<&'a egui::Shape>) {
+            match shape {
+                egui::Shape::Vec(inner) => inner.iter().for_each(|s| flatten(s, shapes)),
+                shape => shapes.push(shape),
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::ui::configure_theme(&ctx);
+        let mut state = State::default();
+        let output = paint(&mut state, &ctx, egui::vec2(360.0, 220.0));
+        let mut shapes = Vec::new();
+        output
+            .shapes
+            .iter()
+            .for_each(|clipped| flatten(&clipped.shape, &mut shapes));
+        let button = |label: &str| {
+            let text = shapes
+                .iter()
+                .find_map(|shape| match shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(shape.visual_bounding_rect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label} is not drawn"));
+            shapes
+                .iter()
+                .filter_map(|shape| match shape {
+                    egui::Shape::Rect(frame) if frame.rect.contains_rect(text) => Some(frame.rect),
+                    _ => None,
+                })
+                .min_by(|a, b| a.area().total_cmp(&b.area()))
+                .unwrap_or_else(|| panic!("{label} has no button frame"))
+        };
+        assert!(
+            !button("末尾へ").intersects(button("閉じる")),
+            "閉じる covers 末尾へ"
+        );
+    }
+    #[test]
+    fn scrolling_up_by_hand_still_shows_the_message_at_the_top_edge() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(720.0, 360.0);
+        let mut state = State {
+            follow_latest: false,
+            ..State::default()
+        };
+        talk(&mut state, "いま話している途中の部分です。");
+        paint(&mut state, &ctx, size);
+        state.scroll_offset = 30.0;
+        let output = paint(&mut state, &ctx, size);
+        assert!(
+            cut_at_the_top(&state, &output),
+            "the first message is drawn while it scrolls past the top"
         );
     }
 }

@@ -2269,9 +2269,10 @@ fn render_demo_views(folder: &Path) -> Result<()> {
         )?;
     }
     // Independent subtitle window, drawn with its real paint path.
-    for (name, show_source, phase, target, fixed) in [
+    for (name, size, show_source, phase, target, fixed) in [
         (
             "16-subtitle-updating",
+            [720, 360],
             false,
             subtitle_window::Phase::Updating,
             "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
@@ -2282,10 +2283,22 @@ fn render_demo_views(folder: &Path) -> Result<()> {
         ),
         (
             "17-subtitle-source",
+            [720, 360],
             true,
             subtitle_window::Phase::Final,
             "来館者はいつでも展示リストに戻れます。共通の用語集で地域の地名を統一します。",
             &[][..],
+        ),
+        (
+            "19-subtitle-minimum",
+            [360, 220],
+            false,
+            subtitle_window::Phase::Updating,
+            "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
+            &[
+                "来館者はいつでも展示リストに戻れます。",
+                "画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。",
+            ][..],
         ),
     ] {
         let ctx = egui::Context::default();
@@ -2325,13 +2338,17 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 })
                 .collect(),
         );
-        preview::render(&ctx, &folder.join(format!("{name}.png")), 720, 360, |ctx| {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(theme::CANVAS).inner_margin(20))
-                .show(ctx, |ui| {
+        preview::render(
+            &ctx,
+            &folder.join(format!("{name}.png")),
+            size[0],
+            size[1],
+            |ctx| {
+                subtitle_window::State::panel().show(ctx, |ui| {
                     state.paint(ui);
                 });
-        })?;
+            },
+        )?;
     }
     Ok(())
 }

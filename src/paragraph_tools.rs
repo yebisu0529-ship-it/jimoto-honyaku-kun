@@ -214,6 +214,17 @@ impl App {
     pub(super) fn paragraph_tools_settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("文章をつなぐ翻訳").strong());
         ui.label(theme::label("字幕と音声の原文を段落にまとめ、前の文章も参照して訳文を更新します。読み上げは文章の確定後に行います。"));
+        ui.add_space(theme::SPACE_2);
+        ui.label(theme::label("区切りの長さ"));
+        ui.horizontal_wrapped(|ui| {
+            for (length, name) in document::ChunkLength::CHOICES {
+                ui.radio_value(&mut self.settings.live_chunk, length, name);
+            }
+        });
+        ui.label(theme::caption(
+            "短いほど早く確定して読みやすく、長いほど広い文脈で訳します。短くしても、直前の文章を参考にして訳します。",
+        ));
+        ui.add_space(theme::SPACE_2);
         if ui
             .checkbox(
                 &mut self.settings.english_punctuation,

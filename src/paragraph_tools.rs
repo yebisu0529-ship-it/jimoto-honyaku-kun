@@ -213,7 +213,11 @@ impl App {
     }
     pub(super) fn paragraph_tools_settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("文章をつなぐ翻訳").strong());
-        ui.label(theme::label("字幕と音声の原文を段落にまとめ、前の文章も参照して訳文を更新します。読み上げは文章の確定後に行います。"));
+        ui.label(theme::label(if self.settings.readout_enabled {
+            "字幕と音声の原文を段落にまとめ、前の文章も参照して訳文を更新します。読み上げは文章の確定後に行います。"
+        } else {
+            "字幕と音声の原文を段落にまとめ、前の文章も参照して訳文を更新します。"
+        }));
         ui.add_space(theme::SPACE_2);
         ui.label(theme::label("区切りの長さ"));
         ui.horizontal_wrapped(|ui| {

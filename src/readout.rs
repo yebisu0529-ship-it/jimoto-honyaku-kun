@@ -103,7 +103,7 @@ impl App {
     /// offers to prepare a missing voice; asking after every translation
     /// would bring the dialog back each time it is declined.
     pub(super) fn auto_read_translation(&mut self, text: String, live: bool) {
-        if self.readout.ready.is_some() {
+        if self.settings.readout_enabled && self.readout.ready.is_some() {
             self.read_translation_mode(text, live);
         }
     }
@@ -369,6 +369,18 @@ impl App {
     }
     pub(super) fn readout_settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("訳文の読み上げ").strong());
+        let was_used = self.settings.readout_enabled;
+        ui::toggle(ui, &mut self.settings.readout_enabled, "読み上げを使う");
+        if was_used && !self.settings.readout_enabled {
+            self.stop_readout();
+            self.readout.engine.take();
+        }
+        if !self.settings.readout_enabled {
+            ui.label(theme::caption(
+                "オンにすると、訳文の「読み上げ」と「自動読み上げ」が画面に出ます。",
+            ));
+            return;
+        }
         ui.label(theme::label("日本語の訳文を、このPC内で音声にします。"));
         ui.label(theme::caption("Irodori-TTS v4.1 Small-MF / speech.cpp"));
         let old_voice = self.settings.tts_voice_profile.clone();
@@ -563,6 +575,10 @@ mod tests {
         let settings: Settings =
             serde_json::from_str(r#"{"auto_read":true,"font_size":22.0}"#).unwrap();
         assert!(settings.auto_read);
+        assert!(
+            !settings.readout_enabled,
+            "settings saved before the switch existed keep readout hidden"
+        );
         assert_eq!(settings.font_size, 22.0);
         assert_eq!(settings.tts_speed, 1.0);
         assert!(settings.tts_catch_up);

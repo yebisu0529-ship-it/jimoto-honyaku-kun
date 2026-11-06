@@ -66,6 +66,9 @@ struct Settings {
     gpu_layers: u32,
     asr_device: String,
     model_store: String,
+    /// Readout is a hidden feature: its controls, its status and automatic
+    /// reading stay out of the app until this is turned on in settings.
+    readout_enabled: bool,
     auto_read: bool,
     tts_speed: f32,
     tts_catch_up: bool,
@@ -114,6 +117,7 @@ impl Default for Settings {
             gpu_layers: 99,
             asr_device: "auto".into(),
             model_store: String::new(),
+            readout_enabled: false,
             auto_read: false,
             tts_speed: 1.0,
             tts_catch_up: true,
@@ -3032,6 +3036,7 @@ mod tests {
     fn automatic_readout_never_opens_the_voice_preparation() {
         let mut a = app();
         let ctx = egui::Context::default();
+        a.settings.readout_enabled = true;
         a.settings.auto_read = true;
         let id = 43;
         a.manual_busy = Some(id);

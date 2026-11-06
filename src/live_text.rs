@@ -50,6 +50,10 @@ pub struct Policy {
     /// gap provides a useful boundary. The ordinary 900/450 limit is a trigger.
     pub absolute_max_chars: usize,
     pub acoustic_gap_ms: u64,
+    /// A pause this long after a finished sentence with enough text to stand
+    /// alone is taken as the speaker handing over, so the part closes there.
+    /// Zero disables it.
+    pub turn_pause_ms: u64,
 }
 
 impl Default for Policy {
@@ -81,6 +85,7 @@ impl Default for Policy {
             retries: 1,
             absolute_max_chars: 3_000,
             acoustic_gap_ms: 12_000,
+            turn_pause_ms: 1_500,
         }
     }
 }
@@ -316,9 +321,10 @@ impl Accumulator {
         }
         let mut outcome = self.tick(now_ms);
         if self.current.as_ref().is_some_and(|p| {
+            let gap = fragment.start_ms.saturating_sub(p.snapshot.end_ms);
             p.snapshot.text.chars().count() >= self.soft_limit(&p.snapshot.text)
-                && fragment.start_ms.saturating_sub(p.snapshot.end_ms)
-                    >= self.policy.acoustic_gap_ms
+                && gap >= self.policy.acoustic_gap_ms
+                || self.handed_over(&p.snapshot.text, gap)
         }) {
             outcome.merge(self.close_current());
         }
@@ -446,7 +452,31 @@ impl Accumulator {
             .current
             .as_ref()
             .map(|p| (p.snapshot.key, p.snapshot.text.len()));
-        outcome.merge(self.append(&text[delta_offset..], start_ms, end_ms, now_ms, raw_tail));
+        // YouTube marks a new speaker with ">>". Each marker in the new text
+        // closes the part before it, and the marker itself is not translated.
+        let mut turn_start = None;
+        let mut at = delta_offset;
+        for (index, piece) in text[delta_offset..].split(SPEAKER_TURN).enumerate() {
+            if index > 0 {
+                outcome.merge(self.close_current());
+                turn_start = Some(at + piece.len() - piece.trim_start().len());
+            }
+            let mut words = if index > 0 { piece.trim_start() } else { piece };
+            if text[at + piece.len()..].starts_with(SPEAKER_TURN) {
+                words = words.trim_end();
+            }
+            outcome.merge(self.append(words, start_ms, end_ms, now_ms, raw_tail && index == 0));
+            at += piece.len() + SPEAKER_TURN.len();
+        }
+        if let Some(offset) = turn_start {
+            location = self.current.as_ref().and_then(|p| {
+                let tail = text.get(offset..)?;
+                p.snapshot
+                    .text
+                    .ends_with(tail)
+                    .then(|| (p.snapshot.key, p.snapshot.text.len() - tail.len(), offset))
+            });
+        }
         let after = self
             .current
             .as_ref()
@@ -641,6 +671,21 @@ impl Accumulator {
         } else {
             self.close_at_boundary(now_ms)
         }
+    }
+
+    /// A pause mid-sentence is a speaker thinking, so only a pause after a
+    /// finished sentence counts as handing over.
+    fn handed_over(&self, text: &str, pause_ms: u64) -> bool {
+        let text = text.trim_end();
+        let enough = if cjk_count(text) > 0 {
+            cjk_count(text) >= self.policy.first_cjk_chars.max(1)
+        } else {
+            word_count(text) >= self.policy.first_words.max(1)
+        };
+        self.policy.turn_pause_ms > 0
+            && pause_ms >= self.policy.turn_pause_ms
+            && enough
+            && last_sentence_boundary(text) == Some(text.len())
     }
 
     pub fn close(&mut self, _now_ms: u64) -> PushOutcome {
@@ -1083,6 +1128,8 @@ impl Accumulator {
 fn last_sentence_boundary(text: &str) -> Option<usize> {
     sentence_boundaries(text).into_iter().last()
 }
+
+const SPEAKER_TURN: &str = ">>";
 
 fn sentence_boundaries(text: &str) -> Vec<usize> {
     let mut boundaries = Vec::new();
@@ -2342,5 +2389,88 @@ mod tests {
         let capped =
             compose_context("user", &"s".repeat(3_000), &"t".repeat(3_000), 4_000).unwrap();
         assert!(capped.chars().count() <= 1_604);
+    }
+
+    fn spoken(a: &mut Accumulator, id: u64, text: &str, start_ms: u64, end_ms: u64) {
+        a.push_audio(
+            AudioFragment {
+                id,
+                text: text.to_owned(),
+                start_ms,
+                end_ms,
+            },
+            end_ms,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_pause_after_a_finished_sentence_hands_over_to_a_new_part() {
+        let finished = "The library will open a new exhibition next week.";
+        let mut a = Accumulator::new(stamp(SourceKind::Audio), Policy::default());
+        spoken(&mut a, 1, finished, 0, 2_000);
+        spoken(&mut a, 2, "Thank you for the introduction.", 3_600, 5_000);
+        assert_eq!(a.pending_snapshots()[0].text, finished);
+        assert_eq!(
+            a.current_snapshot().unwrap().text,
+            "Thank you for the introduction."
+        );
+
+        for (first, gap, why) in [
+            (
+                "The library will open a new exhibition and",
+                1_600,
+                "a pause mid-sentence keeps one part",
+            ),
+            (finished, 1_000, "a short pause keeps one part"),
+            (
+                "Thank you.",
+                1_600,
+                "too little text to stand alone keeps one part",
+            ),
+        ] {
+            let mut a = Accumulator::new(stamp(SourceKind::Audio), Policy::default());
+            spoken(&mut a, 1, first, 0, 2_000);
+            spoken(&mut a, 2, "visitors are welcome.", 2_000 + gap, 4_000 + gap);
+            assert!(a.pending_snapshots().is_empty(), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_speaker_marker_in_captions_starts_a_new_part_without_the_marker() {
+        let mut a = Accumulator::new(stamp(SourceKind::Caption), Policy::default());
+        let first = "I think the exhibition is ready for visitors";
+        a.push_caption(first, 0, 3_000, 0).unwrap();
+        let window = format!("{first} >> Thank you, let us open the doors");
+        a.push_caption(&window, 0, 3_000, 300).unwrap();
+        assert_eq!(a.pending_snapshots()[0].text, first);
+        assert_eq!(
+            a.current_snapshot().unwrap().text,
+            "Thank you, let us open the doors"
+        );
+
+        a.push_caption(&format!("{window} now"), 0, 3_000, 600)
+            .unwrap();
+        assert_eq!(
+            a.pending_snapshots().len(),
+            1,
+            "an old marker is not reused"
+        );
+        assert_eq!(
+            a.current_snapshot().unwrap().text,
+            "Thank you, let us open the doors now"
+        );
+        let corrected = format!("{first} >> Thank you, let us open the door now");
+        a.push_caption(&corrected, 0, 3_000, 900).unwrap();
+        assert_eq!(
+            a.current_snapshot().unwrap().text,
+            "Thank you, let us open the door now",
+            "a correction after the marker edits the new part"
+        );
+        let all = [a.pending_snapshots(), vec![a.current_snapshot().unwrap()]].concat();
+        assert!(
+            all.iter().all(|p| !p.text.contains(SPEAKER_TURN)),
+            "{all:?}"
+        );
     }
 }

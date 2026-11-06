@@ -73,6 +73,7 @@ struct Settings {
     ocr_backend: String,
     ocr_device: String,
     english_punctuation: bool,
+    live_chunk: document::ChunkLength,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -119,6 +120,7 @@ impl Default for Settings {
             ocr_backend: "windows".into(),
             ocr_device: "auto".into(),
             english_punctuation: true,
+            live_chunk: document::ChunkLength::default(),
         }
     }
 }
@@ -2237,18 +2239,23 @@ fn render_demo_views(folder: &Path) -> Result<()> {
         )?;
     }
     // Independent subtitle window, drawn with its real paint path.
-    for (name, show_source, phase, target) in [
+    for (name, show_source, phase, target, fixed) in [
         (
             "16-subtitle-updating",
             false,
             subtitle_window::Phase::Updating,
-            "来館者はいつでも展示リストに戻れます。画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。\n\nフィードバックカードでは、印象に残った内容、分かりにくい箇所、今後の改善について3つの質問をします。",
+            "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
+            &[
+                "来館者はいつでも展示リストに戻れます。",
+                "画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。",
+            ][..],
         ),
         (
             "17-subtitle-source",
             true,
             subtitle_window::Phase::Final,
             "来館者はいつでも展示リストに戻れます。共通の用語集で地域の地名を統一します。",
+            &[][..],
         ),
     ] {
         let ctx = egui::Context::default();
@@ -2266,13 +2273,27 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             Some(&stamp),
             Some(&subtitle_window::View {
                 stamp: stamp.clone(),
-                paragraph_key: 1,
+                paragraph_key: fixed.len() as u64 + 1,
                 revision: 7,
                 source: "Visitors can return to the exhibit list whenever they wish. Common glossary terms keep the local place names consistent.".into(),
                 target: target.into(),
                 phase,
             }),
             subtitle_window::Playback::Running,
+        );
+        state.set_history(
+            fixed
+                .iter()
+                .zip(1..)
+                .map(|(target, key)| subtitle_window::View {
+                    stamp: stamp.clone(),
+                    paragraph_key: key,
+                    revision: 1,
+                    source: String::new(),
+                    target: (*target).into(),
+                    phase: subtitle_window::Phase::Final,
+                })
+                .collect(),
         );
         preview::render(&ctx, &folder.join(format!("{name}.png")), 720, 360, |ctx| {
             egui::CentralPanel::default()

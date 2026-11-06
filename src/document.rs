@@ -11,6 +11,42 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 type ParagraphKey = (SourceStamp, u64);
+/// Fixed parts kept as messages in the subtitle window.
+const SUBTITLE_HISTORY: usize = 100;
+
+/// How much live text becomes one translated, then fixed, part.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ChunkLength {
+    Short,
+    #[default]
+    Standard,
+    Long,
+}
+impl ChunkLength {
+    pub(super) const CHOICES: [(Self, &'static str); 3] = [
+        (Self::Short, "短め（1〜2文ほど）"),
+        (Self::Standard, "標準（2〜4文ほど）"),
+        (Self::Long, "長め（段落ごと）"),
+    ];
+    /// A part closes at a sentence end once it passes the first pair of
+    /// lengths, as soon as it reaches the second pair or the time limit.
+    fn policy(self) -> Policy {
+        let (min, min_cjk, max, max_cjk, max_ms) = match self {
+            Self::Short => (120, 60, 240, 120, 20_000),
+            Self::Standard => (240, 120, 480, 240, 30_000),
+            Self::Long => return Policy::default(),
+        };
+        Policy {
+            min_boundary_chars: min,
+            min_boundary_cjk_chars: min_cjk,
+            max_paragraph_chars: max,
+            max_paragraph_cjk_chars: max_cjk,
+            max_paragraph_ms: max_ms,
+            ..Policy::default()
+        }
+    }
+}
 struct Flight {
     row_id: u64,
     request: Request,
@@ -38,6 +74,7 @@ pub(super) struct DocumentState {
     started: Instant,
     observed_options: Option<TranslationOptions>,
     configure_after: u64,
+    applied_chunk: Option<ChunkLength>,
     pub notice: String,
 }
 impl Default for DocumentState {
@@ -63,6 +100,7 @@ impl Default for DocumentState {
             started: Instant::now(),
             observed_options: None,
             configure_after: 0,
+            applied_chunk: None,
             notice: String::new(),
         }
     }
@@ -175,8 +213,18 @@ impl App {
         };
         let current = self.document_visible_row().and_then(to_view);
         let view = current.or_else(|| self.rows.iter().rev().find_map(to_view));
+        let mut history: Vec<View> = self
+            .rows
+            .iter()
+            .rev()
+            .filter_map(to_view)
+            .filter(|view| view.phase == Phase::Final)
+            .take(SUBTITLE_HISTORY)
+            .collect();
+        history.reverse();
         self.subtitle_window
             .update(expected.as_ref(), view.as_ref(), playback);
+        self.subtitle_window.set_history(history);
     }
 
     /// Splitting a paragraph can invalidate its old whole-paragraph target.
@@ -576,6 +624,12 @@ impl App {
         self.document = DocumentState::default();
     }
     pub(super) fn document_tick(&mut self) {
+        let chunk = self.settings.live_chunk;
+        if self.document.applied_chunk != Some(chunk) {
+            self.document.audio.set_policy(chunk.policy());
+            self.document.caption.set_policy(chunk.policy());
+            self.document.applied_chunk = Some(chunk);
+        }
         let now = self.document.now();
         // Draft activity must not close the preceding piece while an utterance continues.
         if self.asr_partial.is_empty() || !self.audio_enabled {
@@ -1039,6 +1093,57 @@ mod tests {
         assert!(app.subtitle_window.view().is_none());
     }
 
+    #[test]
+    fn chunk_length_setting_reaches_both_live_sources_on_the_next_tick() {
+        let saved_before: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            saved_before.live_chunk,
+            ChunkLength::Standard,
+            "settings saved before the option open as standard"
+        );
+        let mut app = App::inert();
+        app.settings.live_chunk = ChunkLength::Short;
+        app.document_tick();
+        for source in [&app.document.audio, &app.document.caption] {
+            assert_eq!(source.policy().max_paragraph_chars, 240);
+            assert_eq!(source.policy().max_paragraph_cjk_chars, 120);
+        }
+        app.settings.live_chunk = ChunkLength::Long;
+        app.document_tick();
+        assert_eq!(
+            app.document.caption.policy().max_paragraph_chars,
+            Policy::default().max_paragraph_chars,
+            "long keeps the previous paragraph length"
+        );
+    }
+    #[test]
+    fn subtitle_window_keeps_every_fixed_part_as_its_own_message() {
+        let mut app = audio_app();
+        feed(
+            &mut app,
+            "The library is preparing a public exhibition for local families.",
+            0,
+            2_000,
+        );
+        app.document_close(SourceKind::Audio);
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 2_000);
+        let fixed = "図書館は地域の家族向けの公開展示を準備しています。";
+        app.document_done(id, request, options, Ok(fixed.into()), 0.1);
+        feed(
+            &mut app,
+            "Visitors can compare the original documents and translated descriptions",
+            3_000,
+            5_000,
+        );
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 5_000);
+        let forming = "来場者は原本の資料と翻訳された説明を比べられます";
+        app.document_done(id, request, options, Ok(forming.into()), 0.1);
+        app.document_update_subtitle_window();
+        let history = app.subtitle_window.history();
+        assert_eq!(history.len(), 1, "{history:?}");
+        assert_eq!(history[0].target, fixed);
+        assert_eq!(app.subtitle_window.view().unwrap().target, forming);
+    }
     #[test]
     fn tagged_split_keeps_raw_text_and_rejects_the_old_whole_paragraph_job() {
         let mut app = audio_app();

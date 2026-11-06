@@ -222,16 +222,20 @@ pub struct Accumulator {
     next_id: u64,
 }
 
+fn normalized(mut policy: Policy) -> Policy {
+    policy.max_paragraph_chars = policy.max_paragraph_chars.max(1);
+    policy.max_pending_closed = policy.max_pending_closed.max(1);
+    policy.max_fragment_chars = policy.max_fragment_chars.max(policy.max_paragraph_chars);
+    policy.audio_dedupe_entries = policy.audio_dedupe_entries.max(1);
+    policy.absolute_max_chars = policy.absolute_max_chars.clamp(1, 3_000);
+    policy
+}
+
 impl Accumulator {
-    pub fn new(stamp: SourceStamp, mut policy: Policy) -> Self {
-        policy.max_paragraph_chars = policy.max_paragraph_chars.max(1);
-        policy.max_pending_closed = policy.max_pending_closed.max(1);
-        policy.max_fragment_chars = policy.max_fragment_chars.max(policy.max_paragraph_chars);
-        policy.audio_dedupe_entries = policy.audio_dedupe_entries.max(1);
-        policy.absolute_max_chars = policy.absolute_max_chars.clamp(1, 3_000);
+    pub fn new(stamp: SourceStamp, policy: Policy) -> Self {
         Self {
             stamp,
-            policy,
+            policy: normalized(policy),
             current: None,
             pending: VecDeque::new(),
             previous: VecDeque::new(),
@@ -250,6 +254,12 @@ impl Accumulator {
 
     pub fn policy(&self) -> &Policy {
         &self.policy
+    }
+
+    /// Text already gathered keeps its paragraphs; only later boundary
+    /// decisions follow the new limits.
+    pub fn set_policy(&mut self, policy: Policy) {
+        self.policy = normalized(policy);
     }
 
     /// Reset on seek, source stop, generation or video changes. Identifiers are
@@ -1348,6 +1358,26 @@ mod tests {
             now,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_shorter_policy_splits_the_text_that_arrives_after_it() {
+        let mut a = Accumulator::new(stamp(SourceKind::Audio), roomy());
+        let sentence = "This sentence is long enough to count as one part of the talk. ";
+        audio(&mut a, 1, &sentence.repeat(4), 0);
+        assert!(
+            a.pending_snapshots().is_empty(),
+            "the roomy policy keeps one open paragraph"
+        );
+        a.set_policy(Policy {
+            min_boundary_chars: 60,
+            max_paragraph_chars: 120,
+            ..Policy::default()
+        });
+        audio(&mut a, 2, &sentence.repeat(2), 100);
+        let closed = a.pending_snapshots();
+        assert!(!closed.is_empty(), "the shorter policy closes a part");
+        assert!(closed.iter().all(|p| p.text.ends_with('.')), "{closed:?}");
     }
 
     fn roomy() -> Policy {

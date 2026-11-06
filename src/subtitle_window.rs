@@ -66,6 +66,9 @@ pub struct State {
     pub follow_latest: bool,
     scope: Option<SourceStamp>,
     view: Option<View>,
+    /// Parts whose translation is final, oldest first. They are drawn as
+    /// separate messages that never change, above the part still forming.
+    history: Vec<View>,
     playback: Playback,
     waiting_for_update: bool,
     scroll_offset: f32,
@@ -83,9 +86,10 @@ impl Default for State {
             always_on_top: true,
             show_source: false,
             font_size: 25.0,
-            follow_latest: false,
+            follow_latest: true,
             scope: None,
             view: None,
+            history: Vec::new(),
             playback: Playback::Running,
             waiting_for_update: false,
             scroll_offset: 0.0,
@@ -114,6 +118,16 @@ impl State {
     }
 
     #[cfg(test)]
+    pub fn history(&self) -> &[View] {
+        &self.history
+    }
+
+    /// The caller passes the fixed parts of the current source only.
+    pub fn set_history(&mut self, history: Vec<View>) {
+        self.history = history;
+    }
+
+    #[cfg(test)]
     pub fn scroll_offset(&self) -> f32 {
         self.scroll_offset
     }
@@ -138,6 +152,7 @@ impl State {
         if changed_scope {
             self.scope = expected_scope.cloned();
             self.view = None;
+            self.history.clear();
             self.waiting_for_update = false;
             self.scroll_offset = 0.0;
             self.jump_to_end = false;
@@ -307,46 +322,18 @@ impl State {
         }
         let output = area.show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            if let Some(view) = &self.view {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(&view.target)
-                            .size(
-                                self.font_size
-                                    .clamp(theme::READING_MIN, theme::SUBTITLE_READING_MAX),
-                            )
-                            .color(TEXT)
-                            .line_height(Some(
-                                (self
-                                    .font_size
-                                    .clamp(theme::READING_MIN, theme::SUBTITLE_READING_MAX)
-                                    * 1.55)
-                                    .ceil(),
-                            )),
-                    )
-                    .wrap()
-                    .selectable(true),
-                );
-                if self.show_source && !view.source.is_empty() {
-                    ui.add_space(16.0);
-                    egui::Frame::new()
-                        .fill(SURFACE)
-                        .corner_radius(8)
-                        .inner_margin(10)
-                        .show(ui, |ui| {
-                            ui.label(RichText::new("原文").size(theme::SIZE_CAPTION).color(MUTED));
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&view.source)
-                                        .size(theme::SIZE_BODY)
-                                        .color(MUTED),
-                                )
-                                .wrap()
-                                .selectable(true),
-                            );
-                        });
-                }
-            } else {
+            let forming = self.view.as_ref().filter(|view| {
+                !self
+                    .history
+                    .iter()
+                    .any(|done| done.paragraph_key == view.paragraph_key)
+            });
+            for view in &self.history {
+                self.message(ui, view, false);
+            }
+            if let Some(view) = forming {
+                self.message(ui, view, view.phase != Phase::Final);
+            } else if self.history.is_empty() {
                 ui.add_space(12.0);
                 ui.label(
                     RichText::new("まとまった訳文を待っています。")
@@ -371,6 +358,49 @@ impl State {
         } else {
             WindowResponse::default()
         }
+    }
+
+    /// One part of the talk, drawn like a chat message. Only the part still
+    /// forming carries an outline, so fixed messages read as settled.
+    fn message(&self, ui: &mut egui::Ui, view: &View, forming: bool) {
+        let size = self
+            .font_size
+            .clamp(theme::READING_MIN, theme::SUBTITLE_READING_MAX);
+        egui::Frame::new()
+            .fill(SURFACE)
+            .stroke(if forming {
+                egui::Stroke::new(1.0_f32, theme::BORDER_STRONG)
+            } else {
+                egui::Stroke::NONE
+            })
+            .corner_radius(12)
+            .inner_margin(egui::Margin::symmetric(14, 10))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&view.target)
+                            .size(size)
+                            .color(TEXT)
+                            .line_height(Some((size * 1.55).ceil())),
+                    )
+                    .wrap()
+                    .selectable(true),
+                );
+                if self.show_source && !view.source.is_empty() {
+                    ui.add_space(theme::SPACE_1);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&view.source)
+                                .size(theme::SIZE_LABEL)
+                                .color(MUTED),
+                        )
+                        .wrap()
+                        .selectable(true),
+                    );
+                }
+            });
+        ui.add_space(theme::SPACE_3);
     }
 
     fn status(&self) -> (String, Color32) {
@@ -596,7 +626,10 @@ mod tests {
     #[test]
     fn long_text_is_scrollable_and_read_position_survives_revision() {
         let ctx = egui::Context::default();
-        let mut state = State::default();
+        let mut state = State {
+            follow_latest: false,
+            ..State::default()
+        };
         let mut original = view(1, 1, Phase::Updating);
         original.target =
             "A long readable translated paragraph stays here while additional words arrive. "
@@ -646,5 +679,60 @@ mod tests {
         let reopened = state.builder();
         assert_eq!(reopened.inner_size, Some(egui::vec2(732.0, 360.0)));
         assert_eq!(reopened.position, Some(egui::pos2(112.0, 80.0)));
+    }
+    #[test]
+    fn fixed_parts_stay_as_separate_messages_while_the_next_part_updates() {
+        let ctx = egui::Context::default();
+        let mut state = State::default();
+        let first = View {
+            target: "最初に確定した部分です。".into(),
+            ..view(1, 2, Phase::Final)
+        };
+        let second = View {
+            target: "次に確定した部分です。".into(),
+            ..view(2, 1, Phase::Final)
+        };
+        let mut forming = View {
+            target: "いま話している途中".into(),
+            ..view(3, 1, Phase::Updating)
+        };
+        state.update(Some(&forming.stamp), Some(&forming), Playback::Running);
+        state.set_history(vec![first.clone(), second.clone()]);
+        let drawn = painted_text(&paint(&mut state, &ctx, egui::vec2(720.0, 360.0)));
+        let at = |text: &str| {
+            drawn
+                .find(text)
+                .unwrap_or_else(|| panic!("{text} is not drawn"))
+        };
+        assert!(
+            at(&first.target) < at(&second.target) && at(&second.target) < at(&forming.target),
+            "the oldest part comes first and the part still forming comes last"
+        );
+
+        forming.revision = 2;
+        forming.target = "いま話している途中の続きです".into();
+        state.update(None, Some(&forming), Playback::Running);
+        let drawn = painted_text(&paint(&mut state, &ctx, egui::vec2(720.0, 360.0)));
+        assert!(
+            drawn.contains(&first.target) && drawn.contains(&second.target),
+            "fixed parts do not change while the next part updates"
+        );
+        assert!(
+            drawn.contains(&forming.target),
+            "the forming part updates in place"
+        );
+
+        let done = View {
+            phase: Phase::Final,
+            ..forming.clone()
+        };
+        state.update(None, Some(&done), Playback::Running);
+        state.set_history(vec![first, second, done.clone()]);
+        let drawn = painted_text(&paint(&mut state, &ctx, egui::vec2(720.0, 360.0)));
+        assert_eq!(
+            drawn.matches(done.target.as_str()).count(),
+            1,
+            "a part that becomes fixed is drawn once"
+        );
     }
 }

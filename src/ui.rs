@@ -3065,4 +3065,95 @@ mod live_layout_tests {
         assert!(row_is_unfinished(&app.rows[1]));
         assert!(!row_is_unfinished(&app.rows[0]));
     }
+    /// Clicks the one control drawn with exactly `label`, the way a pointer
+    /// would: hover, press and release over the centre of its text.
+    fn click_label(app: &mut App, label: &str, width: f32, height: f32) {
+        fn centres(shape: &egui::epaint::Shape, label: &str, out: &mut Vec<egui::Pos2>) {
+            match shape {
+                egui::epaint::Shape::Text(text) if text.galley.job.text == label => {
+                    out.push(text.visual_bounding_rect().center())
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().for_each(|s| centres(s, label, out))
+                }
+                _ => {}
+            }
+        }
+        let context = egui::Context::default();
+        configure_theme(&context);
+        let frame = |app: &mut App, number: u32, events: Vec<egui::Event>| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, height),
+                    )),
+                    time: Some(f64::from(number) / 60.0),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.render_ui(context),
+            )
+        };
+        let mut found = Vec::new();
+        for number in 0..3 {
+            found.clear();
+            for clipped in frame(app, number, vec![]).shapes {
+                centres(&clipped.shape, label, &mut found);
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "expected one {label} control, found {found:?}"
+        );
+        let centre = found[0];
+        let press = |pressed| egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(app, 3, vec![egui::Event::PointerMoved(centre)]);
+        frame(app, 4, vec![press(true)]);
+        frame(app, 5, vec![press(false)]);
+    }
+
+    #[test]
+    fn readout_switch_is_on_every_page_and_turning_it_off_stops_the_voice() {
+        let voice = || plamo_translate::speech_setup::SpeechInstallation {
+            executable: Default::default(),
+            model: Default::default(),
+            backend: String::new(),
+            voice: String::new(),
+        };
+        for (tab, page, _) in TAB_ORDER {
+            let mut app = App::inert();
+            app.tab = tab;
+            app.readout.ready = Some(voice());
+            app.settings.auto_read = true;
+            click_label(&mut app, "自動読み上げ", 860.0, 620.0);
+            assert!(
+                !app.settings.auto_read,
+                "{page}: one click turns readout off"
+            );
+            assert_eq!(
+                app.readout.status, "読み上げを停止しました。",
+                "{page}: turning it off also stops the sentence being read"
+            );
+            click_label(&mut app, "自動読み上げ", 860.0, 620.0);
+            assert!(app.settings.auto_read, "{page}: the next click turns it on");
+        }
+        let mut app = App::inert();
+        app.tab = Tab::Text;
+        click_label(&mut app, "自動読み上げ", 860.0, 620.0);
+        assert!(
+            !app.settings.auto_read,
+            "a voice that is not ready stays off"
+        );
+        assert!(
+            app.tab == Tab::Settings && app.readout.confirm,
+            "and the click opens the voice preparation instead"
+        );
+    }
 }

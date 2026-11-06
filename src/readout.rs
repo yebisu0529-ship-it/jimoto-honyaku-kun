@@ -99,8 +99,13 @@ impl App {
     pub(super) fn read_translation(&mut self, text: String) {
         self.read_translation_mode(text, false);
     }
-    pub(super) fn read_live_translation(&mut self, text: String) {
-        self.read_translation_mode(text, true);
+    /// Reads a finished translation because 自動読み上げ is on. Only a click
+    /// offers to prepare a missing voice; asking after every translation
+    /// would bring the dialog back each time it is declined.
+    pub(super) fn auto_read_translation(&mut self, text: String, live: bool) {
+        if self.readout.ready.is_some() {
+            self.read_translation_mode(text, live);
+        }
     }
     fn read_translation_mode(&mut self, text: String, live: bool) {
         if text.trim().is_empty() {

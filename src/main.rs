@@ -1224,12 +1224,9 @@ impl App {
                         self.mini.manual_failed();
                     }
                     if let Some(text) = read_text {
-                        match lane {
-                            Lane::Manual => self.read_translation(text),
-                            // read_text is populated for Live only after the
-                            // existing generation/freshness gate show_overlay.
-                            Lane::Live => self.read_live_translation(text),
-                        }
+                        // read_text is populated for Live only after the
+                        // existing generation/freshness gate show_overlay.
+                        self.auto_read_translation(text, lane == Lane::Live);
                     }
                     self.archive_completed_audio_for_draft();
                 }

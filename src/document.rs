@@ -931,7 +931,7 @@ impl App {
                 self.overlay_time = Some(Instant::now());
                 self.overlay_kind = LiveKind::from_record(name);
                 if self.settings.auto_read {
-                    self.read_live_translation(target);
+                    self.auto_read_translation(target, true);
                 }
             }
         }

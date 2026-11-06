@@ -63,6 +63,14 @@ fn metadata() -> Result<Metadata> {
 fn metadata_hash() -> String {
     format!("{:x}", Sha256::digest(METADATA))
 }
+/// A record keeps the SHA-256 of the metadata bytes it was installed with.
+/// Line endings in those bytes vary between builds without changing any
+/// pinned artifact, so the parsed content decides whether it is this model.
+fn installed_metadata_matches(recorded_sha256: &str, installed: &[u8]) -> bool {
+    let parse = |bytes: &[u8]| serde_json::from_slice::<serde_json::Value>(bytes).ok();
+    format!("{:x}", Sha256::digest(installed)) == recorded_sha256
+        && parse(installed).is_some_and(|content| parse(METADATA) == Some(content))
+}
 fn read_small(path: &Path) -> Result<Vec<u8>> {
     installer::safe_file(path)?;
     ensure!(
@@ -150,9 +158,10 @@ pub fn load(root: &Path) -> Result<Option<SpeechInstallation>> {
     let manifest: Manifest = serde_json::from_slice(&read_small(&path)?)?;
     let metadata = metadata()?;
     validate_backend(&manifest.installation.backend)?;
+    let installed_metadata = read_small(&root.join("metadata.json"))?;
     ensure!(
         manifest.version == 1
-            && manifest.metadata_sha256 == metadata_hash()
+            && installed_metadata_matches(&manifest.metadata_sha256, &installed_metadata)
             && manifest.installation == expected(&root, &manifest.installation.backend, &metadata),
         "読み上げのインストール記録が選択されたモデルと一致しません。"
     );
@@ -170,10 +179,6 @@ pub fn load(root: &Path) -> Result<Option<SpeechInstallation>> {
     for notice in &metadata.notices {
         installer::verify_file(&root.join("notices").join(&notice.name), notice, &cancel)?;
     }
-    ensure!(
-        read_small(&root.join("metadata.json"))? == METADATA,
-        "保存済みの読み上げモデル情報が一致しません。"
-    );
     Ok(Some(manifest.installation))
 }
 /// Download and verify the optional runtime/model without changing PATH, browser,

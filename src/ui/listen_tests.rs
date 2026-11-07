@@ -1,16 +1,18 @@
 //! 「聞く」 turns on the input that was chosen, 「止める」 turns off every input,
 //! and Ctrl+Alt+L is the same button.
-use super::home_tests::Window;
+use super::home_tests::{Window, hardware};
 use super::*;
 use crate::chat::testing::{filled, find_text, texts};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 
 /// The chat with the translation model ready and speech recognition not on
-/// this PC: Whisper, with no Python to run it. Nothing is installed, no file of
-/// this PC is read and no audio is captured.
+/// this PC: Whisper, with no Python to run it. Nothing is installed, no audio
+/// is captured, and the PC's capacity is already known, so opening the model
+/// screen measures nothing.
 fn chat_without_speech() -> App {
     let mut app = App::inert();
     app.backend_ready = true;
+    app.setup.hardware = Some(hardware());
     app.settings.asr_backend = "whisper".into();
     app.settings.python = std::env::temp_dir()
         .join(format!("missing-python-{}", uuid::Uuid::new_v4()))

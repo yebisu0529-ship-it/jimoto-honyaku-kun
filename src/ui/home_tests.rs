@@ -113,7 +113,7 @@ impl Window {
     }
 }
 
-fn hardware() -> Hardware {
+pub(super) fn hardware() -> Hardware {
     Hardware {
         os_arch: "windows-x86_64".into(),
         cpu_logical: 16,

@@ -410,6 +410,8 @@ struct App {
     backend_loading: bool,
     asr_ready: bool,
     audio_start_requested: bool,
+    /// What 「聞く」 turns on. It is not saved: every start of the app begins with 自動.
+    listen_input: ui::LiveSourceMode,
     service_error: String,
     health_check_running: bool,
     last_health_check: Instant,
@@ -510,6 +512,7 @@ impl App {
             backend_loading: false,
             asr_ready: false,
             audio_start_requested: false,
+            listen_input: ui::LiveSourceMode::default(),
             service_error: String::new(),
             health_check_running: false,
             last_health_check: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
@@ -666,6 +669,7 @@ impl App {
             backend_loading: false,
             asr_ready: false,
             audio_start_requested: false,
+            listen_input: ui::LiveSourceMode::default(),
             service_error: String::new(),
             health_check_running: false,
             last_health_check: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
@@ -1462,22 +1466,24 @@ impl App {
         {
             self.clear_overlay(None);
         }
-        use global_hotkey::hotkey::{Code, HotKey, Modifiers};
         while let Ok(event) = global_hotkey::GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
-                if event.id
-                    == HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT).id()
-                {
-                    self.capture(ctx);
-                }
-                if event.id
-                    == HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyL).id()
-                {
-                    self.toggle_audio();
-                }
+                self.press_hotkey(ctx, event.id);
             }
         }
         self.document_tick();
+    }
+    /// A global shortcut was pressed: Ctrl+Alt+T reads a range, and
+    /// Ctrl+Alt+L is the 聞く and 止める button.
+    fn press_hotkey(&mut self, ctx: &egui::Context, id: u32) {
+        use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+        let ctrl_alt = |code| HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), code).id();
+        if id == ctrl_alt(Code::KeyT) {
+            self.capture(ctx);
+        }
+        if id == ctrl_alt(Code::KeyL) {
+            self.toggle_listening(ctx);
+        }
     }
     fn open_dropped_file(&mut self, ctx: &egui::Context) {
         let files = ctx.input(|i| i.raw.dropped_files.clone());

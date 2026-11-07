@@ -408,14 +408,14 @@ fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
         });
 }
 
-/// Three explicit live-input modes. Captions and PC audio can run together,
-/// but the choice is a single control instead of two independent checkboxes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LiveSourceMode {
-    Off,
+/// What 「聞く」 listens to. Captions and PC audio can run together: 自動 is both,
+/// and the PC audio is used while no captions arrive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum LiveSourceMode {
+    #[default]
+    Auto,
     Captions,
     Audio,
-    Both,
     Screen,
 }
 
@@ -424,27 +424,26 @@ impl LiveSourceMode {
         match (captions, audio) {
             (true, false) => Some(Self::Captions),
             (false, true) => Some(Self::Audio),
-            (true, true) => Some(Self::Both),
+            (true, true) => Some(Self::Auto),
             (false, false) => None,
         }
     }
 
+    /// The captions and the PC audio this input turns on. The screen feed is a
+    /// caption source of its own.
     fn flags(self) -> (bool, bool) {
         match self {
-            Self::Off => (false, false),
-            Self::Captions => (true, false),
+            Self::Auto => (true, true),
+            Self::Captions | Self::Screen => (true, false),
             Self::Audio => (false, true),
-            Self::Both => (true, true),
-            Self::Screen => (true, false),
         }
     }
 
     fn hint(self) -> &'static str {
         match self {
-            Self::Off => "入力を止めます。保存済みの訳文はそのまま残ります",
+            Self::Auto => "字幕を優先し、字幕が止まっている間はPC音声を使います",
             Self::Captions => "YouTubeの字幕だけを翻訳します",
             Self::Audio => "PCで再生中の音声だけを翻訳します",
-            Self::Both => "字幕を優先し、字幕が止まっている間はPC音声を使います",
             Self::Screen => "選んだ画面の範囲を読み続け、文字が変わったときに翻訳します",
         }
     }
@@ -883,8 +882,61 @@ impl App {
         self.subtitle_window.set_moments(moments);
     }
 
-    /// Apply one of the three explicit input modes. Audio start is deferred
-    /// through the existing preparation path when the engine is not ready.
+    /// The input that is on, from what the captions, the PC audio and the
+    /// screen feed add up to. None while nothing listens.
+    fn current_input(&self) -> Option<LiveSourceMode> {
+        if self.screen_feed.is_some() {
+            Some(LiveSourceMode::Screen)
+        } else {
+            LiveSourceMode::from_flags(
+                self.caption_enabled,
+                self.audio_enabled || self.audio_start_requested,
+            )
+        }
+    }
+
+    /// 「聞く」: turns on the chosen input.
+    fn start_listening(&mut self, ctx: &egui::Context) {
+        if !self.backend_ready {
+            self.status = "モデルの準備ができると、聞けます。".into();
+            return;
+        }
+        self.apply_input(ctx, self.listen_input);
+    }
+
+    /// 「止める」: turns off every live input. The saved translations stay.
+    fn stop_listening(&mut self) {
+        self.set_caption_enabled(false);
+        self.audio_start_requested = false;
+        if self.audio_enabled {
+            self.stop_audio();
+        }
+    }
+
+    /// 聞く and 止める on one key.
+    pub(super) fn toggle_listening(&mut self, ctx: &egui::Context) {
+        if self.current_input().is_some() {
+            self.stop_listening();
+        } else {
+            self.start_listening(ctx);
+        }
+    }
+
+    /// Turns on `mode` in place of the input that is on now.
+    fn apply_input(&mut self, ctx: &egui::Context, mode: LiveSourceMode) {
+        if mode == LiveSourceMode::Screen {
+            self.begin_screen_feed(ctx);
+            return;
+        }
+        if self.screen_feed.is_some() {
+            self.set_caption_enabled(false);
+        }
+        self.apply_live_sources(mode);
+    }
+
+    /// Turns the captions and the PC audio on or off as `mode` asks. Audio
+    /// start is deferred through the existing preparation path when the engine
+    /// is not ready.
     fn apply_live_sources(&mut self, mode: LiveSourceMode) {
         let (captions, audio) = mode.flags();
         self.set_caption_enabled(captions);
@@ -914,18 +966,13 @@ impl App {
                         .last_caption
                         .is_some_and(|time| time.elapsed() < Duration::from_secs(8));
                 let audio_wanted = self.audio_enabled || self.audio_start_requested;
-                let current = if self.screen_feed.is_some() {
-                    Some(LiveSourceMode::Screen)
-                } else {
-                    LiveSourceMode::from_flags(self.caption_enabled, audio_wanted)
-                };
+                let current = self.current_input();
                 let selected = match current {
                     None => 0,
                     Some(LiveSourceMode::Captions) => 1,
                     Some(LiveSourceMode::Audio) => 2,
-                    Some(LiveSourceMode::Both) => 3,
+                    Some(LiveSourceMode::Auto) => 3,
                     Some(LiveSourceMode::Screen) => 4,
-                    Some(LiveSourceMode::Off) => 0,
                 };
                 let chosen = segmented(
                     ui,
@@ -934,21 +981,19 @@ impl App {
                 );
                 if let Some(index) = chosen {
                     let mode = match index {
-                        1 => LiveSourceMode::Captions,
-                        2 => LiveSourceMode::Audio,
-                        3 => LiveSourceMode::Both,
-                        4 => LiveSourceMode::Screen,
-                        _ => LiveSourceMode::Off,
+                        1 => Some(LiveSourceMode::Captions),
+                        2 => Some(LiveSourceMode::Audio),
+                        3 => Some(LiveSourceMode::Auto),
+                        4 => Some(LiveSourceMode::Screen),
+                        _ => None,
                     };
-                    if current != Some(mode) {
-                        if mode == LiveSourceMode::Screen {
-                            self.begin_screen_feed(ui.ctx());
-                        } else {
-                            if self.screen_feed.is_some() {
-                                self.set_caption_enabled(false);
-                            }
-                            self.apply_live_sources(mode);
+                    match mode {
+                        None => self.stop_listening(),
+                        Some(mode) if current != Some(mode) => {
+                            self.listen_input = mode;
+                            self.apply_input(ui.ctx(), mode);
                         }
+                        Some(_) => {}
                     }
                 }
                 let state = if self.screen_feed.is_some() {
@@ -2063,6 +2108,8 @@ impl App {
 }
 #[cfg(test)]
 mod home_tests;
+#[cfg(test)]
+mod listen_tests;
 #[cfg(test)]
 mod live_layout_tests {
     use super::*;

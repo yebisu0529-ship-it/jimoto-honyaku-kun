@@ -1034,9 +1034,8 @@ impl App {
     fn accept_ocr(&mut self, text: String) {
         // Keep a single latest request while a manual translation is running.
         self.pending_ocr = Some(text);
-        if self.tab != Tab::Live {
-            self.tab = Tab::Text;
-        }
+        // The chat does not show the reading, so it opens the screen that does.
+        self.tab = Tab::Text;
     }
     fn take_ready_ocr(&mut self) -> Option<String> {
         if self.manual_busy.is_none() {
@@ -1476,6 +1475,25 @@ impl App {
         }
         self.document_tick();
     }
+    /// A dropped image is read, and a dropped text file fills the input. Both
+    /// end on the 文章 screen, wherever the window was.
+    fn open_dropped_file(&mut self, ctx: &egui::Context) {
+        let files = ctx.input(|i| i.raw.dropped_files.clone());
+        let Some(path) = files.first().and_then(|f| f.path.clone()) else {
+            return;
+        };
+        match image::open(&path) {
+            Ok(image) => self.do_ocr(image.to_rgba8()),
+            Err(_) => match fs::read_to_string(&path) {
+                Ok(text) => {
+                    self.input = text;
+                    self.tab = Tab::Text;
+                    self.restore_normal_view(ctx);
+                }
+                Err(e) => self.status = e.to_string(),
+            },
+        }
+    }
     fn open_image(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("画像", &["png", "jpg", "jpeg", "webp", "bmp"])
@@ -1774,20 +1792,7 @@ impl eframe::App for App {
             self.request_app_close(ctx);
         }
         if ctx.input(|i| !i.raw.dropped_files.is_empty()) {
-            let files = ctx.input(|i| i.raw.dropped_files.clone());
-            if let Some(path) = files.first().and_then(|f| f.path.clone()) {
-                match image::open(&path) {
-                    Ok(image) => self.do_ocr(image.to_rgba8()),
-                    Err(_) => match fs::read_to_string(&path) {
-                        Ok(text) => {
-                            self.input = text;
-                            self.tab = Tab::Text;
-                            self.restore_normal_view(ctx);
-                        }
-                        Err(e) => self.status = e.to_string(),
-                    },
-                }
-            }
+            self.open_dropped_file(ctx);
         }
         self.children.retain_mut(|child| match child.try_wait() {
             Ok(Some(status)) => {
@@ -3296,15 +3301,70 @@ mod tests {
         assert!(a.pending_caption.is_none());
     }
     #[test]
-    fn ocr_keeps_live_tab_and_latest_request_until_manual_lane_is_free() {
+    fn ocr_opens_text_screen_and_latest_request_waits_until_manual_lane_is_free() {
         let mut a = app();
+        assert!(a.tab == Tab::Live);
+        a.caption_enabled = true;
+        let generation = a.caption_generation;
         a.manual_busy = Some(1);
         a.accept_ocr("first".into());
         a.accept_ocr("latest".into());
-        assert!(a.tab == Tab::Live);
+        assert!(a.tab == Tab::Text, "the chat does not show a reading");
+        assert!(
+            a.caption_enabled && a.caption_generation == generation,
+            "the live input runs on behind the other screen"
+        );
         assert!(a.take_ready_ocr().is_none());
         a.manual_busy = None;
         assert_eq!(a.take_ready_ocr().as_deref(), Some("latest"));
+    }
+    #[test]
+    fn a_file_dropped_on_the_chat_ends_on_the_text_screen_and_the_live_input_runs_on() {
+        let folder = tempfile::tempdir().unwrap();
+        let note = folder.path().join("note.txt");
+        fs::write(&note, "A dropped note.").unwrap();
+        let picture = folder.path().join("picture.png");
+        image::RgbaImage::new(2, 2).save(&picture).unwrap();
+        let drop = |a: &mut App, path: &Path| {
+            let input = egui::RawInput {
+                dropped_files: vec![egui::DroppedFile {
+                    path: Some(path.to_path_buf()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let _ = egui::Context::default().run(input, |ctx| a.open_dropped_file(ctx));
+        };
+        let chat = || {
+            let mut a = app();
+            assert!(a.tab == Tab::Live);
+            a.caption_enabled = true;
+            a
+        };
+
+        let mut a = chat();
+        drop(&mut a, &note);
+        assert!(a.tab == Tab::Text);
+        assert_eq!(a.input, "A dropped note.");
+        assert!(a.caption_enabled);
+
+        // A picture is read first. An unprepared recogniser keeps it waiting,
+        // and the manual lane is busy, so nothing runs in this test.
+        let mut a = chat();
+        a.settings.ocr_backend = "indra".into();
+        a.manual_busy = Some(1);
+        let before = a.ocr.generation;
+        drop(&mut a, &picture);
+        assert_ne!(a.ocr.generation, before, "the picture is sent to be read");
+        a.tx.send(Event::Ocr {
+            generation: a.ocr.generation,
+            result: Ok("読み取った文字".into()),
+        })
+        .unwrap();
+        a.process(&egui::Context::default());
+        assert!(a.tab == Tab::Text);
+        assert_eq!(a.pending_ocr.as_deref(), Some("読み取った文字"));
+        assert!(a.caption_enabled);
     }
     #[test]
     fn unfinished_paragraphs_recover_and_export_as_unfinished_until_final_commit() {

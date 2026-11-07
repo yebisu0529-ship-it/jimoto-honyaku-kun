@@ -2247,7 +2247,8 @@ fn demo_subtitle(youtube: bool, fixed: usize, forming: (&str, &str)) -> subtitle
                 let clock = if key > fixed as u64 {
                     "21:49:52".to_owned()
                 } else {
-                    format!("21:46:{:02}", 10 + key * 12)
+                    // The seconds stay under 60, or the clock is not a time.
+                    format!("21:46:{:02}", 10 + key * 5)
                 };
                 (
                     key,

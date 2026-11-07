@@ -188,6 +188,26 @@ pub fn load(root: &Path) -> Result<Option<SpeechInstallation>> {
     }
     Ok(Some(manifest.installation))
 }
+/// What `install` would download now: the runtime archive unless it is already
+/// unpacked, the model unless the whole file is saved, and the unsaved notices.
+pub fn pending_download_bytes(root: &Path) -> u64 {
+    let Ok(metadata) = metadata() else { return 0 };
+    let installation = expected(root, "vulkan", &metadata);
+    let mut files = vec![(&metadata.model.artifact, installation.model)];
+    if !installation.executable.parent().unwrap().exists() {
+        files.push((
+            &metadata.runtime.artifact,
+            root.join("downloads").join(&metadata.runtime.artifact.name),
+        ));
+    }
+    files.extend(
+        metadata
+            .notices
+            .iter()
+            .map(|notice| (notice, root.join("notices").join(&notice.name))),
+    );
+    installer::remaining_total(&files)
+}
 /// Download and verify the optional runtime/model without changing PATH, browser,
 /// translation settings, or any existing installation until the final commit.
 pub fn install(
@@ -420,5 +440,33 @@ mod tests {
         assert_ne!(other_model, text);
         assert!(record(other_model.as_bytes()).contains(mismatch));
         fs::remove_dir_all(&created).unwrap();
+    }
+    #[test]
+    fn pending_bytes_are_the_runtime_model_and_notices_that_are_not_saved() {
+        let data = metadata().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let notices: u64 = data.notices.iter().map(|n| n.bytes).sum();
+        let runtime = data.runtime.artifact.bytes;
+        let model = data.model.artifact.bytes;
+        assert_eq!(pending_download_bytes(root), runtime + model + notices);
+        let installation = expected(root, "vulkan", &data);
+        fs::create_dir_all(installation.model.parent().unwrap()).unwrap();
+        fs::File::create(&installation.model)
+            .unwrap()
+            .set_len(model)
+            .unwrap();
+        assert_eq!(pending_download_bytes(root), runtime + notices);
+        fs::create_dir_all(installation.executable.parent().unwrap()).unwrap();
+        assert_eq!(pending_download_bytes(root), notices);
+        let folder = root.join("notices");
+        fs::create_dir_all(&folder).unwrap();
+        for notice in &data.notices {
+            fs::File::create(folder.join(&notice.name))
+                .unwrap()
+                .set_len(notice.bytes)
+                .unwrap();
+        }
+        assert_eq!(pending_download_bytes(root), 0);
     }
 }

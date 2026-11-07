@@ -161,6 +161,28 @@ pub fn load(root: &Path) -> Result<Option<NemotronInstallation>> {
     );
     Ok(Some(manifest.installation))
 }
+/// What `install` would download for this backend now: the runtime archive
+/// unless it is already unpacked, and the model unless the whole file is saved.
+pub fn pending_download_bytes(root: &Path, backend: &str) -> u64 {
+    let Ok(data) = metadata() else { return 0 };
+    let Ok(spec) = backend_spec(&data, backend) else {
+        return 0;
+    };
+    let mut files = vec![(
+        &data.model,
+        root.join("models")
+            .join(&data.model_revision)
+            .join(&data.model.name),
+    )];
+    if !root
+        .join("runtime")
+        .join(runtime_directory(&data, backend))
+        .exists()
+    {
+        files.push((spec, root.join("downloads").join(&spec.name)));
+    }
+    installer::remaining_total(&files)
+}
 /// Resumable SHA-verified downloads; commit only after both model/runtime pass.
 pub fn install(
     root: &Path,
@@ -317,5 +339,41 @@ mod tests {
             b"existing"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn pending_bytes_are_the_runtime_archive_and_the_model_that_are_not_saved() {
+        let data = metadata().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let archive = |backend| backend_spec(&data, backend).unwrap().bytes;
+        assert_eq!(
+            pending_download_bytes(root, "vulkan"),
+            archive("vulkan") + data.model.bytes
+        );
+        assert_eq!(
+            pending_download_bytes(root, "cpu"),
+            archive("cpu") + data.model.bytes
+        );
+        let model = root
+            .join("models")
+            .join(&data.model_revision)
+            .join(&data.model.name);
+        fs::create_dir_all(model.parent().unwrap()).unwrap();
+        fs::File::create(&model)
+            .unwrap()
+            .set_len(data.model.bytes)
+            .unwrap();
+        assert_eq!(pending_download_bytes(root, "vulkan"), archive("vulkan"));
+        fs::create_dir_all(
+            root.join("runtime")
+                .join(runtime_directory(&data, "vulkan")),
+        )
+        .unwrap();
+        assert_eq!(pending_download_bytes(root, "vulkan"), 0);
+        assert_eq!(
+            pending_download_bytes(root, "cpu"),
+            archive("cpu"),
+            "the CPU runtime is another folder"
+        );
     }
 }

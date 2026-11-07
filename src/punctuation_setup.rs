@@ -268,6 +268,24 @@ fn install_package(
     verify_package(&destination, spec, cancel, wanted)
 }
 
+/// What `install` would download now: each package unless it is already
+/// unpacked, and the license notices that are not saved.
+pub fn pending_download_bytes(root: &Path) -> u64 {
+    let Ok(data) = metadata() else { return 0 };
+    let mut files = Vec::new();
+    for (kind, spec) in [("runtime", &data.runtime), ("models", &data.model)] {
+        if !package_root(root, kind, spec).exists() {
+            files.push((spec, root.join("downloads").join(&spec.name)));
+        }
+    }
+    files.extend(
+        data.notices
+            .iter()
+            .map(|notice| (notice, root.join("licenses").join(&notice.name))),
+    );
+    installer::remaining_total(&files)
+}
+
 pub fn install(
     root: &Path,
     cancel: Arc<AtomicBool>,
@@ -400,5 +418,29 @@ mod tests {
         fs::create_dir(&destination).unwrap();
         assert!(unpack(&archive, &destination, &AtomicBool::new(false)).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn pending_bytes_are_the_packages_and_notices_that_are_not_saved() {
+        let data = metadata().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let notices: u64 = data.notices.iter().map(|n| n.bytes).sum();
+        assert_eq!(
+            pending_download_bytes(root),
+            data.runtime.bytes + data.model.bytes + notices
+        );
+        for (kind, spec) in [("runtime", &data.runtime), ("models", &data.model)] {
+            fs::create_dir_all(package_root(root, kind, spec)).unwrap();
+        }
+        assert_eq!(pending_download_bytes(root), notices);
+        let licenses = root.join("licenses");
+        fs::create_dir_all(&licenses).unwrap();
+        for notice in &data.notices {
+            File::create(licenses.join(&notice.name))
+                .unwrap()
+                .set_len(notice.bytes)
+                .unwrap();
+        }
+        assert_eq!(pending_download_bytes(root), 0);
     }
 }

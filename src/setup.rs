@@ -1,8 +1,9 @@
 //! First-run preparation uses local capacity measurements and a pinned catalog.
+use super::setup_chain::{Chain, Outcome, Plan, PlanKey, Step};
 use super::*;
 use plamo_translate::{
     hardware::{self, Gpu, Hardware},
-    installer::{self, InstallRequest, InstallResult, Progress},
+    installer::{self, InstallResult, Progress},
     model_catalog::{self, Model, Policy, Recommendation},
 };
 use std::collections::HashSet;
@@ -17,12 +18,14 @@ pub(super) struct SetupState {
     pub recommendation: Option<Recommendation>,
     pub selected_id: String,
     pub detecting: bool,
-    pub installing: bool,
+    /// The translation step's progress and cancel flag. The other steps keep their own.
     pub progress: Option<Progress>,
-    pub error: String,
-    pub completed: bool,
-    pub cancelled: bool,
     pub cancel: Arc<AtomicBool>,
+    /// A failure to measure the PC.
+    pub error: String,
+    /// The run started by 「はじめる」, until it finishes.
+    pub chain: Option<Chain>,
+    pub plan: Option<(PlanKey, Plan)>,
     pub force_cpu: bool,
     /// Catalog models whose file is already in the model store.
     pub saved: HashSet<String>,
@@ -38,18 +41,22 @@ impl Default for SetupState {
             recommendation: None,
             selected_id: String::new(),
             detecting: false,
-            installing: false,
             progress: None,
-            error: String::new(),
-            completed: false,
-            cancelled: false,
             cancel: Arc::new(AtomicBool::new(false)),
+            error: String::new(),
+            chain: None,
+            plan: None,
             force_cpu: false,
             saved: HashSet::new(),
             in_use: None,
             gpu_polling: false,
             gpu_polled_at: Instant::now(),
         }
+    }
+}
+impl SetupState {
+    pub(super) fn installing(&self) -> bool {
+        self.chain.as_ref().is_some_and(Chain::is_running)
     }
 }
 
@@ -187,7 +194,7 @@ impl App {
         self.refresh_recommendation();
     }
     pub(super) fn detect_capacity(&mut self) {
-        if self.setup.installing || self.setup.detecting {
+        if self.setup.installing() || self.setup.detecting {
             return;
         }
         self.setup.detecting = true;
@@ -224,7 +231,7 @@ impl App {
                 &self.setup.saved,
             );
             self.setup.selected_id = picker.default_choice(self.setup.in_use.as_ref()).to_owned();
-            self.setup.cancelled = false;
+            self.forget_stopped_chain();
         }
     }
     pub(super) fn setup_model(&self) -> Option<Model> {
@@ -238,7 +245,7 @@ impl App {
             })
             .map(|a| a.model.clone())
     }
-    fn setup_model_fits(&self) -> bool {
+    pub(super) fn setup_model_fits(&self) -> bool {
         self.setup
             .recommendation
             .as_ref()
@@ -249,31 +256,18 @@ impl App {
             })
             .is_some_and(|a| a.fits)
     }
-    fn begin_install(&mut self) {
-        if self.setup.installing || !self.setup_model_fits() {
-            return;
-        }
-        let Some(model) = self.setup_model() else {
+    /// The chain's first step: the chosen model and its runtime, on a worker.
+    pub(super) fn begin_install(&mut self) {
+        let Some(request) = self.install_request().filter(|_| self.setup_model_fits()) else {
+            self.stop_step(
+                Step::Translation,
+                false,
+                "選んだモデルが、いまのGPUメモリまたは空き容量に収まりません。別のモデルを選んでください。".into(),
+            );
             return;
         };
-        let Some(recommendation) = &self.setup.recommendation else {
-            return;
-        };
-        self.setup.installing = true;
-        self.setup.completed = false;
-        self.setup.cancelled = false;
-        self.setup.error.clear();
         self.setup.progress = None;
         self.setup.cancel = Arc::new(AtomicBool::new(false));
-        let request = InstallRequest {
-            repo: model.repo,
-            revision: model.revision,
-            filename: model.filename,
-            bytes: model.bytes,
-            sha256: model.sha256,
-            backend: recommendation.backend.as_str().into(),
-            install_root: self.model_store_root(),
-        };
         let tx = self.tx.clone();
         let cancel = self.setup.cancel.clone();
         thread::spawn(move || {
@@ -284,29 +278,39 @@ impl App {
             let _ = tx.send(Event::Installed(result));
         });
     }
+    /// The translation model is installed and verified. Cancelling or failing adopts nothing.
+    pub(super) fn translation_installed(
+        &mut self,
+        result: std::result::Result<InstallResult, String>,
+    ) {
+        match result {
+            Ok(result) => {
+                self.adopt_installation(result);
+                self.finish_step(Step::Translation);
+            }
+            Err(error) => {
+                let cancelled = self.setup.cancel.load(Ordering::Relaxed);
+                self.setup.progress = None;
+                self.stop_step(Step::Translation, cancelled, error);
+            }
+        }
+    }
     pub(super) fn adopt_installation(&mut self, result: InstallResult) {
+        self.apply_installation(&result);
+        self.commit_installation();
+    }
+    /// The settings name the installed model and runtime. Whatever speech
+    /// recognition the user chose stays; a new installation starts on Nemotron.
+    pub(super) fn apply_installation(&mut self, result: &InstallResult) {
         self.settings.model = result.model_path.to_string_lossy().into();
         self.settings.llama_server = result.llama_server.to_string_lossy().into();
         self.settings.template = result.template_path.to_string_lossy().into();
         self.settings.backend = result.backend.clone();
         self.settings.gpu_layers = if result.backend == "cpu" { 0 } else { 99 };
-        if let Some(rec) = &self.setup.recommendation
-            && self.settings.asr_backend != "nemotron"
-        {
-            self.settings.asr_backend = rec.asr_backend.clone();
-            self.settings.asr_device = rec.asr_device.clone();
-            self.settings.asr_model = if rec.asr_backend == "whisper" {
-                "base".into()
-            } else {
-                "Qwen/Qwen3-ASR-0.6B-hf".into()
-            };
-        }
-        self.setup.installing = false;
-        self.setup.completed = true;
+    }
+    /// Save the choice, then load the model, which replaces one that is running.
+    fn commit_installation(&mut self) {
         self.refresh_store_state();
-        if self.settings.english_punctuation {
-            self.prepare_paragraph_tools();
-        }
         self.setup.progress = None;
         self.asr_ready = false;
         self.asr_started_at = None;
@@ -355,7 +359,7 @@ impl App {
             "準備完了"
         } else if self.backend_loading {
             "モデルを読み込み中"
-        } else if self.setup.installing {
+        } else if self.setup.installing() {
             "ダウンロード中"
         } else {
             "準備が必要"
@@ -367,28 +371,18 @@ impl App {
     pub(super) fn setup_ui(&mut self, ui: &mut egui::Ui) {
         // The step that moves the user forward stays in view under the form,
         // whatever the window height.
-        let chosen = self.setup_model().or_else(|| {
-            self.setup
-                .recommendation
-                .as_ref()
-                .map(|r| r.selected.clone())
-        });
-        if let Some(model) = chosen {
+        if self.setup.recommendation.is_some() {
             egui::TopBottomPanel::bottom("setup-actions")
                 .frame(egui::Frame::new().inner_margin(egui::Margin {
                     top: theme::SPACE_3 as i8,
                     ..Default::default()
                 }))
-                .show_inside(ui, |ui| self.setup_actions(ui, &model));
+                .show_inside(ui, |ui| self.setup_actions(ui));
         }
         egui::ScrollArea::vertical()
             .id_salt("model-setup-scroll")
             .show(ui, |ui| {
-                ui.label(theme::title(if self.setup.completed {
-                    "翻訳の準備ができました"
-                } else {
-                    "このPCに合うモデルを準備"
-                }));
+                ui.label(theme::title("このPCに合うモデルを準備"));
                 ui.label(theme::caption(
                     "大きいモデルほど自然に訳せますが、GPUのメモリを多く使います。",
                 ));
@@ -414,31 +408,42 @@ impl App {
                     ui.add_space(theme::SPACE_3);
                     self.setup_pc_details(ui);
                     ui.add_space(theme::SPACE_4);
-                    ui.add_enabled_ui(!self.setup.installing, |ui| {
-                        ui.checkbox(
-                            &mut self.settings.english_punctuation,
-                            "英語の文章区切り補助も準備する（追加で約86MB）",
-                        );
+                    ui.add_enabled_ui(!self.setup.installing(), |ui| {
+                        if ui
+                            .checkbox(
+                                &mut self.settings.english_punctuation,
+                                "英語の文章区切り補助も準備する（追加で約86MB）",
+                            )
+                            .changed()
+                        {
+                            self.forget_stopped_chain();
+                        }
                     });
                     ui.label(theme::caption(
                         "原文を段落につなぎ、意味の区切りで訳文をまとめます。補助モデルはApache 2.0です。",
                     ));
-                    if self.paragraph_tools.preparing || self.paragraph_tools.loading {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("英語の文章区切り補助を準備しています。翻訳は先に始められます。");
-                        });
-                        if let Some(p) = &self.paragraph_tools.progress {
-                            ui.label(&p.message);
-                        }
+                    let plan = self.download_plan().unwrap_or_default();
+                    let also = also_prepared(&plan);
+                    if !also.is_empty() {
+                        ui.add_space(theme::SPACE_2);
+                        ui.label(theme::label(format!("続けて、{also}も準備します。")));
                     }
                     ui.add_space(theme::SPACE_3);
-                    ui.hyperlink_to(
-                        "PLaMoのモデル利用条件",
-                        "https://plamo.preferredai.jp/info/plamo-community-license-ja",
-                    );
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = theme::SPACE_4;
+                        ui.hyperlink_to(
+                            "PLaMoのモデル利用条件",
+                            "https://plamo.preferredai.jp/info/plamo-community-license-ja",
+                        );
+                        if plan.includes(Step::Speech) {
+                            ui.hyperlink_to(
+                                "Nemotronのモデル利用条件",
+                                "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+                            );
+                        }
+                    });
                     ui.label(theme::caption(
-                        "モデルはPFN公式、実行環境はllama.cpp公式から取得します。音声認識の追加準備はライブ画面から行えます。",
+                        "モデルはPFN公式、実行環境はllama.cpp公式から取得します。",
                     ));
                     self.setup_error_details(ui);
                 } else {
@@ -487,7 +492,7 @@ impl App {
             ));
             ui.horizontal_wrapped(|ui| {
                 if ui
-                    .add_enabled(!self.setup.installing, egui::Button::new("保存先を変更"))
+                    .add_enabled(!self.setup.installing(), egui::Button::new("保存先を変更"))
                     .clicked()
                     && let Some(folder) = rfd::FileDialog::new().pick_folder()
                 {
@@ -496,14 +501,14 @@ impl App {
                     self.detect_capacity();
                 }
                 if ui
-                    .add_enabled(!self.setup.installing, egui::Button::new("再確認"))
+                    .add_enabled(!self.setup.installing(), egui::Button::new("再確認"))
                     .clicked()
                 {
                     self.detect_capacity();
                 }
             });
             let old = self.setup.force_cpu;
-            ui.add_enabled_ui(!self.setup.installing, |ui| {
+            ui.add_enabled_ui(!self.setup.installing(), |ui| {
                 ui::toggle(ui, &mut self.setup.force_cpu, "GPUを使わずCPUで実行する");
             });
             if old != self.setup.force_cpu {
@@ -517,16 +522,17 @@ impl App {
     }
 
     /// Current step in the accent colour, finished steps readable, later ones muted.
+    /// Unnumbered, so it is not mistaken for the n/m of the steps being prepared.
     fn setup_steps(&self, ui: &mut egui::Ui) {
         let checked = self.setup.hardware.is_some();
-        let downloading = self.setup.installing || self.setup.completed;
+        let downloading = self.setup.installing();
         let steps = [
-            ("1", "PCを確認", !checked, checked),
-            ("2", "モデルを選択", checked && !downloading, downloading),
-            ("3", "ダウンロード", downloading, false),
+            ("PCを確認", !checked, checked),
+            ("モデルを選択", checked && !downloading, downloading),
+            ("ダウンロード", downloading, false),
         ];
         ui.horizontal_wrapped(|ui| {
-            for (index, (number, label, current, done)) in steps.into_iter().enumerate() {
+            for (index, (label, current, done)) in steps.into_iter().enumerate() {
                 if index > 0 {
                     ui.label(RichText::new("→").color(theme::TEXT_MUTED));
                 }
@@ -537,100 +543,100 @@ impl App {
                 } else {
                     theme::TEXT_MUTED
                 };
-                ui.label(
-                    RichText::new(format!("{number}  {label}"))
-                        .color(color)
-                        .strong(),
-                );
+                ui.label(RichText::new(label).color(color).strong());
             }
         });
     }
 
-    /// Download, progress or the way into the app, then a one-line failure.
-    fn setup_actions(&mut self, ui: &mut egui::Ui, model: &Model) {
-        if self.setup.installing {
-            if let Some(p) = &self.setup.progress {
-                ui.label(&p.message);
-                if let Some(total) = p.total_bytes.filter(|t| *t > 0) {
-                    ui.add(
-                        egui::ProgressBar::new(
-                            (p.downloaded_bytes as f64 / total as f64).clamp(0.0, 1.0) as f32,
-                        )
-                        .text(format!(
-                            "{} / {}",
-                            bytes(p.downloaded_bytes),
-                            bytes(total)
-                        )),
-                    );
+    /// Start, progress, or what to do after a stop, then a one-line service error.
+    fn setup_actions(&mut self, ui: &mut egui::Ui) {
+        let stage = self
+            .setup
+            .chain
+            .as_ref()
+            .map(|chain| (chain.outcome().clone(), chain.active(), chain.position()));
+        match stage {
+            Some((Outcome::Running, Some(step), (number, total))) => {
+                self.chain_progress(ui, step, number, total);
+            }
+            Some((Outcome::Failed(_), Some(step), (number, total))) => {
+                // The first step has no step before it to keep, only what it fetched.
+                let kept = if number == 1 {
+                    "取得済みのデータは保持しています。"
                 } else {
-                    ui.spinner();
-                }
-            } else {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("準備を始めています…");
-                });
-            }
-            if self.setup.cancel.load(Ordering::Relaxed) {
-                ui.label("中止しています。取得途中のデータは残ります。");
-            } else if ui.button("中止").clicked() {
-                self.setup.cancel.store(true, Ordering::Relaxed);
-            }
-        } else if self.setup.completed {
-            ui.colored_label(ACCENT, "整合性の確認と保存が完了しました。");
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        self.backend_ready,
-                        ui::primary("翻訳を始める")
-                            .min_size(Vec2::new(200.0, theme::CONTROL_H_LARGE)),
-                    )
-                    .clicked()
-                {
-                    self.tab = Tab::Text;
-                }
-                if self.backend_loading {
-                    ui.spinner();
-                    ui.label("モデルを読み込み中…");
-                }
-            });
-        } else {
-            if self.setup.cancelled {
-                ui.label("中止しました。続きから再開するか、別のモデルを選べます。");
-            }
-            let label = if self.setup.saved.contains(&model.id) {
-                "このモデルに切り替える".to_owned()
-            } else if self.setup.error.is_empty() && !self.setup.cancelled {
-                format!("ダウンロードして準備（{}）", bytes(model.bytes))
-            } else {
-                format!("続きから再開（{}）", bytes(model.bytes))
-            };
-            if ui
-                .add_enabled(
-                    self.setup_model_fits(),
-                    ui::primary(&label).min_size(Vec2::new(260.0, theme::CONTROL_H_LARGE)),
-                )
-                .clicked()
-            {
-                self.begin_install();
-            }
-            if !self.setup_model_fits() {
+                    "ここまでの準備は保持しています。"
+                };
                 ui.colored_label(
-                    theme::WARNING,
-                    "容量の条件を確認できません。空き容量を増やすか、別のモデルを選んでください。",
+                    theme::ERROR,
+                    format!(
+                        "{number}/{total} {}を準備できませんでした。{kept}",
+                        step.name()
+                    ),
                 );
+                if ui.add(action_button("もう一度")).clicked() {
+                    self.retry_chain();
+                }
+            }
+            Some((Outcome::Cancelled, ..)) => {
+                ui.label("中止しました。続きから再開するか、別のモデルを選べます。");
+                let label = start_label("続きから再開", self.download_plan());
+                if ui.add(action_button(&label)).clicked() {
+                    self.retry_chain();
+                }
+            }
+            _ => {
+                let label = start_label("はじめる", self.download_plan());
+                let fits = self.setup_model_fits();
+                if ui.add_enabled(fits, action_button(&label)).clicked() {
+                    self.start_chain();
+                }
+                if !fits {
+                    ui.colored_label(
+                        theme::WARNING,
+                        "容量の条件を確認できません。空き容量を増やすか、別のモデルを選んでください。",
+                    );
+                }
             }
         }
         self.setup_error_summary(ui);
     }
 
+    /// The step that runs, with the installer's own byte progress under it.
+    fn chain_progress(&mut self, ui: &mut egui::Ui, step: Step, number: usize, total: usize) {
+        ui.label(theme::body(format!("{number}/{total} {}を準備中", step.name())).strong());
+        if let Some(p) = self.step_progress(step) {
+            ui.label(theme::label(&p.message));
+            if let Some(total) = p.total_bytes.filter(|t| *t > 0) {
+                ui.add(
+                    egui::ProgressBar::new(
+                        (p.downloaded_bytes as f64 / total as f64).clamp(0.0, 1.0) as f32,
+                    )
+                    .text(format!(
+                        "{} / {}",
+                        bytes(p.downloaded_bytes),
+                        bytes(total)
+                    )),
+                );
+            } else {
+                ui.spinner();
+            }
+        } else {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("準備を始めています…");
+            });
+        }
+        if self.step_cancel(step).load(Ordering::Relaxed) {
+            ui.label("中止しています。取得途中のデータは残ります。");
+        } else if ui.button("中止").clicked() {
+            self.cancel_chain();
+        }
+    }
+
     /// One line per failure, so the fixed bar never pushes its button away.
     fn setup_error_summary(&self, ui: &mut egui::Ui) {
         if !self.setup.error.is_empty() {
-            ui.colored_label(
-                theme::ERROR,
-                "準備を完了できませんでした。取得済みのデータは保持しています。",
-            );
+            ui.colored_label(theme::ERROR, "PCの情報を確認できませんでした。");
         }
         if !self.service_error.is_empty() {
             ui.add(
@@ -642,20 +648,57 @@ impl App {
 
     /// The full failure text can be long, so it scrolls with the form.
     fn setup_error_details(&self, ui: &mut egui::Ui) {
-        if !self.setup.error.is_empty() {
+        let detail = self
+            .setup
+            .chain
+            .as_ref()
+            .and_then(Chain::failure)
+            .unwrap_or(&self.setup.error);
+        if !detail.is_empty() {
             egui::CollapsingHeader::new("エラーの詳細").show(ui, |ui| {
-                ui.label(&self.setup.error);
+                ui.label(detail);
             });
         }
     }
 }
 
+fn action_button(label: &str) -> egui::Button<'_> {
+    ui::primary(label).min_size(Vec2::new(260.0, theme::CONTROL_H_LARGE))
+}
+
+/// The button's words: what it does, and what it still has to download.
+/// Rounded up, so a small remainder never reads as "0 MB".
+pub(super) fn start_label(action: &str, plan: Option<Plan>) -> String {
+    match plan.map(|plan| plan.total()) {
+        Some(total) if total > 0 => {
+            format!(
+                "{action}（合計 {}）",
+                bytes(total.next_multiple_of(1_048_576))
+            )
+        }
+        _ => action.to_owned(),
+    }
+}
+
+/// What the chain prepares after the translation model, for the line under the checkbox.
+fn also_prepared(plan: &Plan) -> String {
+    [
+        (Step::Speech, "英語の音声認識（Nemotron）"),
+        (Step::Voice, "読み上げの声"),
+    ]
+    .into_iter()
+    .filter(|(step, _)| plan.includes(*step))
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>()
+    .join("と")
+}
+
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     const GIB: u64 = 1_073_741_824;
     /// A PC whose one GPU no real adapter shares a name with, so a real reading leaves it alone.
-    fn app_with_fixture_gpu(total: u64, used: u64) -> App {
+    pub(crate) fn app_with_fixture_gpu(total: u64, used: u64) -> App {
         let mut app = App::inert();
         app.tab = Tab::Setup;
         app.setup.hardware = Some(Hardware {
@@ -857,117 +900,5 @@ mod tests {
             in_use_model(&folder.path().join("other.gguf"), models).is_none(),
             "a file the catalog does not know is not a catalog model in use"
         );
-    }
-    #[test]
-    fn long_failures_never_push_the_resume_button_out_of_the_window() {
-        fn visit(
-            shape: &egui::epaint::Shape,
-            clip: egui::Rect,
-            out: &mut Vec<(egui::Rect, egui::Rect, String)>,
-        ) {
-            match shape {
-                egui::epaint::Shape::Text(text) => out.push((
-                    clip,
-                    egui::Rect::from_min_size(text.pos, text.galley.size()),
-                    text.galley.job.text.clone(),
-                )),
-                egui::epaint::Shape::Vec(shapes) => {
-                    shapes.iter().for_each(|s| visit(s, clip, out));
-                }
-                _ => {}
-            }
-        }
-        let mut app = App::inert();
-        app.tab = Tab::Setup;
-        app.setup.hardware = Some(Hardware {
-            os_arch: "windows-x86_64".into(),
-            cpu_logical: 16,
-            ram_total_bytes: Some(32 * 1_073_741_824),
-            ram_available_bytes: Some(20 * 1_073_741_824),
-            disk_free_bytes: Some(120 * 1_073_741_824),
-            disk_target: "fixture".into(),
-            gpus: vec![],
-            warnings: vec![],
-        });
-        app.recalculate_recommendation();
-        app.setup.error = "checksum mismatch in a long log line. ".repeat(200);
-        app.service_error = "翻訳サービスの長いエラーです。".repeat(80);
-        let context = egui::Context::default();
-        ui::configure_theme(&context);
-        let mut output = None;
-        for frame in 0..3 {
-            output = Some(context.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(860.0, 620.0),
-                    )),
-                    time: Some(frame as f64 / 60.0),
-                    ..Default::default()
-                },
-                |ctx| app.render_ui(ctx),
-            ));
-        }
-        let mut texts = Vec::new();
-        for shape in &output.unwrap().shapes {
-            visit(&shape.shape, shape.clip_rect, &mut texts);
-        }
-        let (clip, rect, _) = texts
-            .iter()
-            .find(|(_, _, text)| text.starts_with("続きから再開"))
-            .expect("resume button drawn");
-        assert!(
-            clip.contains_rect(*rect) && rect.bottom() <= 620.0,
-            "resume button cut off: {rect:?} in {clip:?}"
-        );
-    }
-    #[test]
-    fn low_capacity_cannot_start_a_download_or_replace_existing_preferences() {
-        let mut app = App::inert();
-        let original = app.settings.model.clone();
-        app.setup.hardware = Some(Hardware {
-            os_arch: "windows-x86_64".into(),
-            cpu_logical: 2,
-            ram_total_bytes: Some(1_073_741_824),
-            ram_available_bytes: Some(256 * 1_048_576),
-            disk_free_bytes: Some(1_073_741_824),
-            disk_target: "fixture".into(),
-            gpus: vec![],
-            warnings: vec![],
-        });
-        app.recalculate_recommendation();
-        app.begin_install();
-        assert!(!app.setup.installing);
-        assert!(!app.setup.recommendation.as_ref().unwrap().feasible);
-        assert_eq!(app.settings.model, original);
-        assert!(app.rx.try_recv().is_err());
-    }
-    #[test]
-    fn failed_preparation_preserves_the_previous_working_selection() {
-        let mut app = App::inert();
-        let original = app.settings.model.clone();
-        app.setup.installing = true;
-        app.tx
-            .send(Event::Installed(Err("checksum mismatch".into())))
-            .unwrap();
-        app.process(&egui::Context::default());
-        assert_eq!(app.settings.model, original);
-        assert!(!app.setup.installing);
-        assert!(app.setup.error.contains("checksum"));
-    }
-    #[test]
-    fn user_cancellation_is_recoverable_without_an_error_or_model_switch() {
-        let mut app = App::inert();
-        let original = app.settings.model.clone();
-        app.setup.installing = true;
-        app.setup.cancel.store(true, Ordering::Relaxed);
-        app.tx
-            .send(Event::Installed(Err("cancelled".into())))
-            .unwrap();
-        app.process(&egui::Context::default());
-        assert!(app.setup.cancelled);
-        assert!(!app.setup.installing && !app.setup.completed);
-        assert!(app.setup.error.is_empty());
-        assert_eq!(app.settings.model, original);
     }
 }

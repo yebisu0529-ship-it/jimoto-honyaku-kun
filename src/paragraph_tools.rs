@@ -1,4 +1,5 @@
 //! Local sentence support, independent of source scopes and translation jobs.
+use super::setup_chain::Step;
 use super::*;
 use plamo_translate::{
     installer::Progress,
@@ -185,6 +186,7 @@ impl App {
                 if cancelled || self.paragraph_tools.cancel.load(Ordering::Acquire) {
                     self.paragraph_tools.error.clear();
                     self.paragraph_tools.download_requested = false;
+                    self.stop_step(Step::Punctuation, true, String::new());
                     self.initialize_paragraph_tools();
                     return;
                 }
@@ -208,7 +210,18 @@ impl App {
                 {
                     self.prepare_paragraph_tools();
                 }
+                self.punctuation_settled();
             }
+        }
+    }
+    /// The helper is ready, or the attempt failed: either settles the chain's step.
+    /// A run still going, or started again just now, leaves it waiting.
+    fn punctuation_settled(&mut self) {
+        if self.paragraph_tools.engine.is_some() {
+            self.finish_step(Step::Punctuation);
+        } else if !self.paragraph_tools.error.is_empty() {
+            let error = self.paragraph_tools.error.clone();
+            self.stop_step(Step::Punctuation, false, error);
         }
     }
     pub(super) fn paragraph_tools_settings_ui(&mut self, ui: &mut egui::Ui) {

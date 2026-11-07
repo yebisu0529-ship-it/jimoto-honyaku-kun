@@ -2129,10 +2129,19 @@ fn demo_talk(rows: usize) -> Vec<Row> {
     talk
 }
 
+/// The part still forming in the subtitle window previews, with its original:
+/// long, two lines at the smallest window, and one line at the largest text.
+const FORMING_LONG: (&str, &str) = (
+    "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
+    "Feedback cards ask three questions about memorable details, confusing passages",
+);
+const FORMING_SHORT: (&str, &str) = ("お名前は必要ありません。", "No name is required.");
+const FORMING_TINY: (&str, &str) = ("はい、どうぞ。", "Yes, go ahead.");
+
 /// A subtitle window holding `fixed` parts and one still forming, filled the
 /// way the app fills it. A YouTube window gets a change of speaker and video
 /// times.
-fn demo_subtitle(youtube: bool, fixed: usize) -> subtitle_window::State {
+fn demo_subtitle(youtube: bool, fixed: usize, forming: (&str, &str)) -> subtitle_window::State {
     use plamo_translate::live_text::{SourceKind, SourceStamp};
     use subtitle_window::{Phase, Playback, View};
     const PARTS: [(&str, &str); 6] = [
@@ -2195,12 +2204,7 @@ fn demo_subtitle(youtube: bool, fixed: usize) -> subtitle_window::State {
         second.target = "戻ったあとも、続きから読めますか。>> はい、続きから読めます。".into();
         second.source = "Can I keep reading afterwards? >> Yes, you can.".into();
     }
-    let forming = view(
-        fixed as u64 + 1,
-        "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
-        "Feedback cards ask three questions about memorable details, confusing passages",
-        Phase::Updating,
-    );
+    let forming = view(fixed as u64 + 1, forming.0, forming.1, Phase::Updating);
     let mut state = subtitle_window::State::default();
     state.update(Some(&stamp), Some(&forming), Playback::Running);
     state.set_history(history);
@@ -2530,15 +2534,31 @@ fn render_demo_views(folder: &Path) -> Result<()> {
     }
     // Independent subtitle window, drawn with its real paint path.
     for (name, size, mut state) in [
-        ("16-subtitle-updating", [720, 360], demo_subtitle(false, 3)),
-        ("17-subtitle-source", [720, 360], demo_subtitle(false, 2)),
-        ("19-subtitle-minimum", [360, 220], demo_subtitle(false, 2)),
+        (
+            "16-subtitle-updating",
+            [720, 360],
+            demo_subtitle(false, 3, FORMING_LONG),
+        ),
+        (
+            "17-subtitle-source",
+            [720, 360],
+            demo_subtitle(false, 2, FORMING_LONG),
+        ),
+        (
+            "19-subtitle-minimum",
+            [360, 220],
+            demo_subtitle(false, 2, FORMING_SHORT),
+        ),
         (
             "23-subtitle-new-messages",
             [720, 360],
-            demo_subtitle(false, 6),
+            demo_subtitle(false, 6, FORMING_LONG),
         ),
-        ("24-subtitle-youtube", [720, 600], demo_subtitle(true, 2)),
+        (
+            "24-subtitle-youtube",
+            [720, 600],
+            demo_subtitle(true, 2, FORMING_LONG),
+        ),
         (
             "25-subtitle-empty",
             [720, 360],
@@ -2547,7 +2567,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
         (
             "26-subtitle-large-text",
             [360, 220],
-            demo_subtitle(false, 1),
+            demo_subtitle(false, 1, FORMING_TINY),
         ),
     ] {
         state.open = true;

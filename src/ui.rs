@@ -79,6 +79,23 @@ impl Readiness {
     fn needs_action(self) -> bool {
         self == Self::Missing
     }
+
+    /// What the chat says about all the models together.
+    fn headline(self) -> &'static str {
+        match self {
+            Self::Ready => "準備完了",
+            Self::Preparing => "準備中…",
+            Self::Missing => "準備が必要です",
+        }
+    }
+
+    fn headline_color(self) -> Color32 {
+        match self {
+            Self::Ready => TEXT_SECONDARY,
+            Self::Preparing => WARNING,
+            Self::Missing => TEXT,
+        }
+    }
 }
 
 struct ModelStatus {
@@ -86,6 +103,27 @@ struct ModelStatus {
     readiness: Readiness,
     detail: String,
     opens: Tab,
+    /// The chat cannot work without it. The others are prepared when they are
+    /// first used.
+    required: bool,
+}
+
+/// The one state the chat shows for all the models. A missing model that is
+/// required decides it; otherwise any model still being prepared does.
+fn overall(statuses: &[ModelStatus]) -> Readiness {
+    if statuses
+        .iter()
+        .any(|status| status.required && status.readiness == Readiness::Missing)
+    {
+        Readiness::Missing
+    } else if statuses
+        .iter()
+        .any(|status| status.readiness == Readiness::Preparing)
+    {
+        Readiness::Preparing
+    } else {
+        Readiness::Ready
+    }
 }
 
 impl ModelStatus {
@@ -104,9 +142,74 @@ impl ModelStatus {
     }
 }
 
+const DOT: f32 = 8.0;
+
+/// A filled dot for a model that is ready, a ring for one that is not.
+fn paint_dot(painter: &egui::Painter, center: egui::Pos2, readiness: Readiness) {
+    match readiness {
+        Readiness::Ready => {
+            painter.circle_filled(center, DOT / 2.0, readiness.color());
+        }
+        Readiness::Preparing | Readiness::Missing => {
+            painter.circle_stroke(
+                center,
+                DOT / 2.0 - 0.75,
+                egui::Stroke::new(1.5_f32, readiness.color()),
+            );
+        }
+    }
+}
+
+/// A button for a row that is exactly one control tall. Its face is shorter
+/// than its hit area, so it keeps clear of the row's edges.
+fn row_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let font = egui::FontId::proportional(theme::SIZE_LABEL);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, TEXT);
+    let size = Vec2::new(galley.size().x + 2.0 * theme::SPACE_3, theme::CONTROL_H);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let face = rect.shrink2(Vec2::new(0.0, theme::SPACE_1));
+    let fill = if response.hovered() {
+        SURFACE_RAISED
+    } else {
+        INPUT
+    };
+    ui.painter().rect(
+        face,
+        theme::RADIUS_CONTROL,
+        fill,
+        egui::Stroke::new(1.0_f32, BORDER_STRONG),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(face.center() - galley.size() / 2.0, galley, TEXT);
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            face,
+            theme::RADIUS_CONTROL,
+            egui::Stroke::new(2.0_f32, ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response
+}
+
+/// The one state the chat shows: a dot and a few words and, while a required
+/// model is missing, the button to the screen that prepares it. True when that
+/// button is clicked.
+fn headline(ui: &mut egui::Ui, readiness: Readiness) -> bool {
+    let (dot, _) = ui.allocate_exact_size(Vec2::splat(DOT), egui::Sense::hover());
+    paint_dot(ui.painter(), dot.center(), readiness);
+    ui.label(
+        RichText::new(readiness.headline())
+            .size(theme::SIZE_CAPTION)
+            .color(readiness.headline_color()),
+    );
+    readiness.needs_action() && row_button(ui, "モデルの準備").clicked()
+}
+
 /// A dot, the model name and, unless ready, its state in words.
 fn status_chip(ui: &mut egui::Ui, status: &ModelStatus) -> egui::Response {
-    const DOT: f32 = 8.0;
     let readiness = status.readiness;
     let font = egui::FontId::proportional(theme::SIZE_CAPTION);
     let mut job = egui::text::LayoutJob::default();
@@ -136,19 +239,7 @@ fn status_chip(ui: &mut egui::Ui, status: &ModelStatus) -> egui::Response {
             .rect_filled(face, theme::RADIUS_CONTROL, SURFACE_RAISED);
     }
     let center = egui::pos2(rect.left() + theme::SPACE_1 + DOT / 2.0, rect.center().y);
-    match readiness {
-        Readiness::Ready => {
-            ui.painter()
-                .circle_filled(center, DOT / 2.0, readiness.color());
-        }
-        Readiness::Preparing | Readiness::Missing => {
-            ui.painter().circle_stroke(
-                center,
-                DOT / 2.0 - 0.75,
-                egui::Stroke::new(1.5_f32, readiness.color()),
-            );
-        }
-    }
+    paint_dot(ui.painter(), center, readiness);
     let text = egui::pos2(
         center.x + DOT / 2.0 + theme::SPACE_1,
         rect.center().y - galley.size().y / 2.0,
@@ -395,7 +486,7 @@ fn segmented(ui: &mut egui::Ui, labels: &[&str], selected: Option<usize>) -> Opt
 
 /// What one choice in the その他 menu asks for. The menu is drawn inside the
 /// page header, so the choice is carried out once the header is done.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum MenuChoice {
     SubtitleWindow,
     Mini,
@@ -406,6 +497,7 @@ enum MenuChoice {
     History,
     Models,
     Settings,
+    Details,
     NewSession,
     Export,
 }
@@ -693,6 +785,14 @@ impl App {
                 "",
                 true,
             );
+            row(
+                ui,
+                MenuChoice::Details,
+                "状態の詳細",
+                "",
+                "翻訳・文字認識・音声認識の準備の状態を見ます",
+                true,
+            );
             if chat {
                 ui.separator();
                 row(ui, MenuChoice::NewSession, "新しく始める", "", "", true);
@@ -722,6 +822,7 @@ impl App {
 
     /// Carries out a choice from the その他 menu.
     fn follow(&mut self, ctx: &egui::Context, choice: MenuChoice) {
+        self.details_open = false;
         match choice {
             MenuChoice::SubtitleWindow => self.subtitle_window.open = true,
             MenuChoice::Mini => self.enter_mini_view(ctx),
@@ -743,6 +844,7 @@ impl App {
             MenuChoice::History => self.tab = Tab::Files,
             MenuChoice::Models => self.open_setup(),
             MenuChoice::Settings => self.tab = Tab::Settings,
+            MenuChoice::Details => self.details_open = true,
             MenuChoice::NewSession => match Journal::new(&data_root().join("sessions")) {
                 Ok(journal) => {
                     self.document_shutdown();
@@ -876,8 +978,9 @@ impl App {
         });
     }
 
-    /// One reserved line: errors first, then what is happening now, then
-    /// whether the timeline is being saved.
+    /// One reserved line: a failure to save first, then what is happening now,
+    /// then whether the timeline is being saved. Service errors are in the
+    /// status row at the bottom.
     fn live_status_line(&mut self, ui: &mut egui::Ui) {
         live_region(ui, "live-status", STATUS_LINE_HEIGHT, |ui| {
             // The journal error is the storage layer's own wording, so the
@@ -910,7 +1013,6 @@ impl App {
                 status_message(
                     ui,
                     &[
-                        (self.service_error.as_str(), ERROR),
                         (unsaved.as_str(), ERROR),
                         (activity, ACCENT),
                         saved,
@@ -1044,7 +1146,7 @@ impl App {
                 });
         });
     }
-    /// The local models in use, in the order the status row shows them.
+    /// The local models in use, in the order the details list them.
     fn model_statuses(&self) -> Vec<ModelStatus> {
         // `service_error` also carries speech-recognition failures, so the
         // translation state follows the translation engine alone.
@@ -1093,18 +1195,21 @@ impl App {
                 readiness: translation,
                 detail: translation_detail,
                 opens: Tab::Setup,
+                required: true,
             },
             ModelStatus {
                 name: "文字認識",
                 readiness: ocr,
                 detail: ocr_detail.into(),
                 opens: Tab::Settings,
+                required: false,
             },
             ModelStatus {
                 name: "音声認識",
                 readiness: speech,
                 detail: speech_detail.into(),
                 opens: Tab::Settings,
+                required: false,
             },
         ];
         if self.settings.readout_enabled {
@@ -1119,6 +1224,7 @@ impl App {
                 },
                 detail: "Irodori-TTS".into(),
                 opens: Tab::Settings,
+                required: false,
             });
         }
         statuses
@@ -1826,8 +1932,10 @@ impl App {
                 self.tab = tab;
             }
         }
-        let statuses = self.model_statuses();
-        let mut open_from_status = None;
+        // The chat says one thing about the models; an error stands in its place.
+        let readiness = (self.tab == Tab::Live && self.service_error.is_empty())
+            .then(|| overall(&self.model_statuses()));
+        let mut open_models = false;
         // One fixed row: a long message is truncated instead of growing the
         // panel and pushing the page up.
         egui::TopBottomPanel::bottom("status")
@@ -1847,30 +1955,19 @@ impl App {
                     ui.add_space(theme::SPACE_3);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = theme::SPACE_1;
-                        for status in &statuses {
-                            if status_chip(ui, status)
-                                .on_hover_text(status.hover())
-                                .clicked()
-                            {
-                                open_from_status = Some(status.opens);
-                            }
+                        if let Some(readiness) = readiness {
+                            open_models = headline(ui, readiness);
+                            ui.add_space(theme::SPACE_3);
                         }
-                        ui.add_space(theme::SPACE_3);
                         let readout = if self.readout.error.is_empty() {
                             (self.readout.status.as_str(), TEXT_SECONDARY)
                         } else {
                             (self.readout.error.as_str(), ERROR)
                         };
-                        // The live page shows service errors in its own status line.
-                        let service_error = if self.tab == Tab::Live {
-                            ""
-                        } else {
-                            self.service_error.as_str()
-                        };
                         status_message(
                             ui,
                             &[
-                                (service_error, ERROR),
+                                (self.service_error.as_str(), ERROR),
                                 (self.status.as_str(), TEXT_SECONDARY),
                                 readout,
                             ],
@@ -1878,10 +1975,8 @@ impl App {
                     });
                 });
             });
-        match open_from_status {
-            Some(Tab::Setup) => self.open_setup(),
-            Some(tab) => self.tab = tab,
-            None => {}
+        if open_models {
+            self.open_setup();
         }
         egui::CentralPanel::default()
             .frame(
@@ -1899,6 +1994,7 @@ impl App {
                 Tab::Settings => self.settings_ui(ui),
                 Tab::Setup => self.model_ui(ui),
             });
+        self.status_details_ui(ctx);
     }
 
     /// The model screen draws its own title; the header above it is the way
@@ -1908,6 +2004,57 @@ impl App {
             self.page_header(ui, "", "", |_| {});
             self.setup_ui(ui);
         });
+    }
+
+    /// The state of every model, one per line. A model that is not prepared
+    /// leads to the screen that prepares it.
+    fn status_details_ui(&mut self, ctx: &egui::Context) {
+        if !self.details_open {
+            return;
+        }
+        let statuses = self.model_statuses();
+        let width = (ctx.content_rect().width() - 48.0).clamp(260.0, 420.0);
+        let mut opens = None;
+        let mut close = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+        egui::Window::new("状態の詳細")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(width);
+                if !self.service_error.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&self.service_error)
+                                .size(theme::SIZE_LABEL)
+                                .color(ERROR),
+                        )
+                        .wrap(),
+                    );
+                }
+                for status in &statuses {
+                    ui.horizontal(|ui| {
+                        if status_chip(ui, status)
+                            .on_hover_text(status.hover())
+                            .clicked()
+                        {
+                            opens = Some(status.opens);
+                        }
+                        ui.add(egui::Label::new(theme::caption(&status.detail)).truncate());
+                    });
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    close |= ui.add(standard("閉じる")).clicked();
+                });
+            });
+        match opens {
+            Some(Tab::Setup) => self.open_setup(),
+            Some(tab) => self.tab = tab,
+            None => {}
+        }
+        if close || opens.is_some() {
+            self.details_open = false;
+        }
     }
 }
 #[cfg(test)]
@@ -2372,39 +2519,33 @@ mod live_layout_tests {
     }
 
     #[test]
-    fn status_row_names_each_model_in_words_and_stays_one_row() {
-        for (width, message) in [
-            (860.0, String::new()),
-            (860.0, "とても長い状態の説明が続きます。".repeat(40)),
-            (1280.0, "設定を保存しました。".to_owned()),
-        ] {
-            let mut app = readout_app(Tab::Text);
-            app.backend_ready = true;
-            app.status = message;
-            app.readout.error = "読み上げに失敗しました。".repeat(8);
-            let galleys = drawn_galleys(&mut app, width, 620.0);
-            // A chip paints its name and state as one text.
-            for chip in ["翻訳", "文字認識", "音声認識未準備", "読み上げ未準備"]
-            {
+    fn the_status_row_stays_one_row_with_the_credit_and_no_jargon() {
+        for tab in [Tab::Text, Tab::Live] {
+            for (width, message) in [
+                (860.0, String::new()),
+                (860.0, "とても長い状態の説明が続きます。".repeat(40)),
+                (1280.0, "設定を保存しました。".to_owned()),
+            ] {
+                let mut app = readout_app(tab);
+                app.backend_ready = true;
+                app.status = message;
+                app.readout.error = "読み上げに失敗しました。".repeat(8);
+                let galleys = drawn_galleys(&mut app, width, 620.0);
                 assert!(
-                    galleys.iter().any(|(text, _)| text == chip),
-                    "chip {chip} missing at {width}"
+                    galleys.iter().any(|(text, _)| text == credit::LABEL),
+                    "credit missing at {width}"
                 );
-            }
-            assert!(
-                galleys.iter().any(|(text, _)| text == credit::LABEL),
-                "credit missing at {width}"
-            );
-            for (text, _) in &galleys {
-                for jargon in ["OCR", "STT", "TTS"] {
-                    assert!(!text.contains(jargon), "{jargon} still shown at {width}");
+                for (text, _) in &galleys {
+                    for jargon in ["OCR", "STT", "TTS"] {
+                        assert!(!text.contains(jargon), "{jargon} still shown at {width}");
+                    }
                 }
+                let (_, rows) = galleys
+                    .iter()
+                    .find(|(text, _)| text.contains("読み上げに失敗しました"))
+                    .expect("status message drawn");
+                assert_eq!(*rows, 1, "status message wrapped at {width}");
             }
-            let (_, rows) = galleys
-                .iter()
-                .find(|(text, _)| text.contains("読み上げに失敗しました"))
-                .expect("status message drawn");
-            assert_eq!(*rows, 1, "status message wrapped at {width}");
         }
     }
 

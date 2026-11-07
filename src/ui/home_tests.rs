@@ -1,6 +1,6 @@
 //! The chat is the home screen and every other screen is behind one menu.
 use super::*;
-use crate::chat::testing::{press, texts};
+use crate::chat::testing::{find_text, press, texts};
 use plamo_translate::hardware::Hardware;
 
 /// One window whose egui state lasts from frame to frame, so a menu that has
@@ -159,6 +159,7 @@ fn the_app_opens_on_the_chat_with_its_name_and_one_menu_and_nothing_else() {
             "モデル",
             "字幕ウィンドウ",
             "ミニ表示",
+            "状態の詳細",
             "表示",
             "その他",
             "新しく始める",
@@ -207,6 +208,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
         "履歴",
         "モデル",
         "設定",
+        "状態の詳細",
     ];
     let tops: Vec<f32> = items.iter().map(|item| window.at(item).top()).collect();
     assert!(
@@ -231,6 +233,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
         ("画面の文字を翻訳", "Ctrl"),
         ("ファイルを翻訳", "Ctrl"),
         ("モデル", "Ctrl"),
+        ("状態の詳細", "Ctrl"),
     ] {
         let row = window.at(item);
         assert!(
@@ -240,7 +243,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
             "{item} has no shortcut to show"
         );
     }
-    let last = window.at("設定").bottom();
+    let last = window.at("状態の詳細").bottom();
     for item in ["新しく始める", "書き出し", "表示"] {
         assert!(
             window.at(item).top() > last,
@@ -347,6 +350,7 @@ fn items_that_need_the_model_are_faded_until_it_is_ready_and_the_others_never_ar
             "履歴",
             "モデル",
             "設定",
+            "状態の詳細",
             "新しく始める",
             "表示",
         ]
@@ -522,4 +526,206 @@ fn ctrl_number_still_opens_its_screen_from_every_screen() {
             );
         }
     }
+}
+
+/// What the status row painted before the chat took one state in its place:
+/// the name of a model and, unless it is ready, its state as one text.
+const CHIPS: [&str; 4] = ["翻訳", "文字認識", "音声認識未準備", "読み上げ未準備"];
+
+const LOAD_FAILED: &str =
+    "モデルを読み込めませんでした。「モデルの準備」で小さいモデルやCPU実行を試してください。";
+
+#[test]
+fn the_chat_shows_one_state_where_the_four_models_were() {
+    let draw = |setup: fn(&mut App)| {
+        let mut app = chat();
+        app.settings.readout_enabled = true;
+        setup(&mut app);
+        let mut window = Window::new(860.0, 620.0);
+        window.settle(&mut app);
+        window
+    };
+    let only = |window: &Window, state: &str| {
+        for other in ["準備完了", "準備中…", "準備が必要です"] {
+            assert_eq!(
+                window.has(other),
+                other == state,
+                "{other}, expecting {state}"
+            );
+        }
+        for chip in CHIPS {
+            assert!(!window.has(chip), "{chip} is still in the status row");
+        }
+    };
+
+    // Speech recognition and readout have not been started, and that is fine.
+    let window = draw(|_| {});
+    only(&window, "準備完了");
+    assert!(window.at("準備完了").top() > 620.0 - theme::CONTROL_H);
+
+    let window = draw(|app| {
+        app.backend_ready = false;
+        app.backend_loading = true;
+    });
+    only(&window, "準備中…");
+    assert!(!window.has("モデルの準備"));
+
+    let window = draw(|app| app.backend_ready = false);
+    only(&window, "準備が必要です");
+    assert!(window.has("モデルの準備"));
+
+    // An error stands in the state's place, in red and in its own words.
+    let window = draw(|app| app.service_error = LOAD_FAILED.into());
+    only(&window, "");
+    assert_eq!(find_text(&window.output, LOAD_FAILED).1, theme::ERROR);
+    assert_eq!(
+        texts(&window.output)
+            .iter()
+            .filter(|(text, _, _)| text.contains(LOAD_FAILED))
+            .count(),
+        1,
+        "the error is drawn twice"
+    );
+}
+
+#[test]
+fn the_button_beside_the_missing_state_opens_the_model_screen() {
+    let mut app = chat();
+    app.backend_ready = false;
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    window.click(&mut app, "モデルの準備");
+    assert!(app.tab == Tab::Setup);
+    window.settle(&mut app);
+    assert!(
+        !window.has("モデルの準備"),
+        "the model screen has no use for a button to itself"
+    );
+}
+
+#[test]
+fn the_state_belongs_to_the_chat_and_the_other_screens_leave_the_row_to_the_messages() {
+    for (tab, _, _) in PAGE_KEYS {
+        let mut app = chat();
+        app.tab = tab;
+        app.status = "設定を保存しました。".into();
+        let mut window = Window::new(860.0, 620.0);
+        window.settle(&mut app);
+        let in_the_row = |label: &str| {
+            texts(&window.output)
+                .iter()
+                .any(|(text, rect, _)| text == label && rect.top() > 620.0 - theme::CONTROL_H)
+        };
+        assert_eq!(in_the_row("準備完了"), tab == Tab::Live);
+        assert!(in_the_row("設定を保存しました。"));
+    }
+}
+
+#[test]
+fn only_the_translation_model_can_make_the_chat_need_preparation() {
+    let mut app = chat();
+    // Speech recognition starts with the first audio, and readout is off.
+    assert!(!app.asr_ready);
+    assert_eq!(overall(&app.model_statuses()), Readiness::Ready);
+
+    app.audio_installing = true;
+    assert_eq!(overall(&app.model_statuses()), Readiness::Preparing);
+    app.audio_installing = false;
+
+    app.settings.readout_enabled = true;
+    app.readout.preparing = true;
+    assert_eq!(overall(&app.model_statuses()), Readiness::Preparing);
+    app.readout.preparing = false;
+    assert_eq!(overall(&app.model_statuses()), Readiness::Ready);
+
+    app.backend_ready = false;
+    assert_eq!(overall(&app.model_statuses()), Readiness::Missing);
+    app.audio_installing = true;
+    assert_eq!(
+        overall(&app.model_statuses()),
+        Readiness::Missing,
+        "a model that is being prepared does not hide the one that is missing"
+    );
+    app.backend_loading = true;
+    assert_eq!(overall(&app.model_statuses()), Readiness::Preparing);
+}
+
+#[test]
+fn the_details_list_every_model_with_the_words_the_status_row_used() {
+    let mut app = chat();
+    app.settings.readout_enabled = true;
+    let mut window = Window::new(860.0, 620.0);
+    window.open_menu(&mut app);
+    window.click(&mut app, "状態の詳細");
+    assert!(app.details_open);
+    assert!(window.has("状態の詳細"));
+    let tops: Vec<f32> = CHIPS.iter().map(|chip| window.at(chip).top()).collect();
+    assert!(
+        tops.windows(2).all(|pair| pair[0] < pair[1]),
+        "the models are out of order: {tops:?}"
+    );
+    for detail in ["Windows OCR", "Nemotron Speech", "Irodori-TTS"] {
+        assert!(window.has(detail), "{detail} is not drawn");
+    }
+    assert!(
+        texts(&window.output)
+            .iter()
+            .any(|(text, _, _)| text.ends_with("· 準備完了")),
+        "the translation model's own state is not drawn"
+    );
+    assert!(window.has(credit::LABEL), "the credit is covered");
+
+    window.click(&mut app, "閉じる");
+    assert!(!app.details_open);
+    assert!(!window.has("状態の詳細"));
+
+    app.settings.readout_enabled = false;
+    app.details_open = true;
+    window.settle(&mut app);
+    assert!(window.has("音声認識未準備") && !window.has("読み上げ未準備"));
+}
+
+#[test]
+fn the_details_show_a_long_error_in_full_and_a_model_that_is_not_ready_leads_to_its_screen() {
+    let mut app = chat();
+    app.service_error = LOAD_FAILED.repeat(4);
+    app.details_open = true;
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    assert!(
+        texts(&window.output)
+            .iter()
+            .any(|(text, _, _)| text == &LOAD_FAILED.repeat(4)),
+        "the error is cut short"
+    );
+    window.click(&mut app, "音声認識未準備");
+    assert!(app.tab == Tab::Settings);
+    assert!(
+        !app.details_open,
+        "the details stay over the screen they led to"
+    );
+}
+
+#[test]
+fn the_details_close_on_escape_and_when_another_item_is_chosen() {
+    let mut app = chat();
+    app.details_open = true;
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    window.draw(
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(!app.details_open);
+
+    app.details_open = true;
+    window.open_menu(&mut app);
+    window.click(&mut app, "設定");
+    assert!(!app.details_open);
 }

@@ -181,6 +181,9 @@ pub struct State {
     body: Option<Rect>,
     #[cfg(test)]
     offset: f32,
+    /// What the reader copied. Tests read it instead of the system clipboard.
+    #[cfg(test)]
+    copied: Option<String>,
 }
 
 impl Default for State {
@@ -200,6 +203,8 @@ impl Default for State {
             body: None,
             #[cfg(test)]
             offset: 0.0,
+            #[cfg(test)]
+            copied: None,
         }
     }
 }
@@ -566,7 +571,7 @@ impl State {
         action
     }
 
-    fn menu(&self, ui: &mut egui::Ui, bubble: &Bubble<'_>, options: Options) -> Option<Action> {
+    fn menu(&mut self, ui: &mut egui::Ui, bubble: &Bubble<'_>, options: Options) -> Option<Action> {
         let text = bubble.text;
         let readable = bubble.message.status == Status::Fixed && !text.is_empty();
         let mut action = None;
@@ -575,9 +580,7 @@ impl State {
             .on_hover_text("PLaMoのクレジットを付けてコピーします")
             .clicked()
         {
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(credit::published(text));
-            }
+            self.copy(text);
             ui.close();
         }
         if let Some(speaking) = options.readout {
@@ -594,6 +597,18 @@ impl State {
             }
         }
         action
+    }
+
+    fn copy(&mut self, text: &str) {
+        let text = credit::published(text);
+        #[cfg(test)]
+        {
+            self.copied = Some(text);
+        }
+        #[cfg(not(test))]
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(text);
+        }
     }
 }
 
@@ -1792,6 +1807,23 @@ mod tests {
             matches!(action, Some(Action::Read(text)) if text == "やあ。"),
             "the text of the bubble itself is read, without the marker"
         );
+    }
+
+    #[test]
+    fn copying_a_bubble_takes_its_translation_with_the_credit() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let messages = [message(1, Source::PcAudio, "はじめまして。", at(21, 48, 0))];
+        let output = chat.settle(&messages);
+        let bubble = bubble_of(&output, "はじめまして。");
+        let (menu, _) = chat.click(&messages, bubble.center(), PointerButton::Secondary);
+        let (copy, _) = find_text(&menu, "コピー");
+        assert!(
+            chat.state.copied.is_none(),
+            "nothing is copied by opening the menu"
+        );
+        chat.click(&messages, copy.center(), PointerButton::Primary);
+        let copied = chat.state.copied.as_deref().expect("コピー was clicked");
+        assert!(copied.starts_with("はじめまして。") && copied.contains(credit::CREDIT));
     }
 
     #[test]

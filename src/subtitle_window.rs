@@ -284,6 +284,8 @@ impl State {
     /// Headless-previewable content; emits no native close/focus commands.
     pub fn paint(&mut self, ui: &mut egui::Ui) -> WindowResponse {
         let mut closed = false;
+        // The chat is what the window is for, so the rows above it sit close.
+        ui.spacing_mut().item_spacing.y = theme::SPACE_1;
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.always_on_top, "最前面");
             ui.menu_button("表示", |ui| {
@@ -312,23 +314,24 @@ impl State {
                     .clicked();
             });
         });
-        ui.add_space(6.0);
         let (label, color) = self.status();
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(label).size(theme::SIZE_LABEL).color(color));
-            if let Some(view) = &self.view {
-                ui.label(
-                    RichText::new(match source_of(&view.stamp) {
-                        chat::Source::PcAudio => "PC音声",
-                        chat::Source::Screen => "画面",
-                        chat::Source::YouTube => "YouTube字幕",
-                    })
-                    .size(theme::SIZE_CAPTION)
-                    .color(MUTED),
-                );
-            }
+        ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = 0.0;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(label).size(theme::SIZE_LABEL).color(color));
+                if let Some(view) = &self.view {
+                    ui.label(
+                        RichText::new(match source_of(&view.stamp) {
+                            chat::Source::PcAudio => "PC音声",
+                            chat::Source::Screen => "画面",
+                            chat::Source::YouTube => "YouTube字幕",
+                        })
+                        .size(theme::SIZE_CAPTION)
+                        .color(MUTED),
+                    );
+                }
+            });
         });
-        ui.add_space(8.0);
         let messages = messages(&self.history, self.view.as_ref(), &self.moments);
         self.chat.show(
             ui,
@@ -643,7 +646,10 @@ mod tests {
         let text = painted_text(&output);
         assert!(text.contains("未確定"));
         assert!(text.contains("一時停止中"));
-        assert!(state.chat.body().unwrap().height() > 80.0);
+        assert!(
+            state.chat.body().unwrap().height() > 120.0,
+            "room for a message of two lines at the default size"
+        );
         assert!(
             output
                 .viewport_output
@@ -677,6 +683,33 @@ mod tests {
         }
         assert!((state.scroll_offset() - before).abs() < 1.0);
     }
+    #[test]
+    fn a_message_of_two_lines_is_drawn_whole_in_the_minimum_window() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(360.0, 220.0);
+        let mut state = State::default();
+        let forming = View {
+            target: "お名前は必要ありません。".into(),
+            ..view(1, 1, Phase::Updating)
+        };
+        state.update(Some(&forming.stamp), Some(&forming), Playback::Running);
+        let mut output = paint(&mut state, &ctx, size);
+        for _ in 0..3 {
+            output = paint(&mut state, &ctx, size);
+        }
+        assert!(
+            !cut_at_the_top(&state, &output),
+            "nothing of the message is cut at the top"
+        );
+        let drawn = painted_text(&output);
+        assert!(drawn.contains("お名前は必要ありません。"));
+        assert_eq!(
+            drawn.matches("YouTube").count(),
+            2,
+            "the status line and the name above the message: {drawn}"
+        );
+    }
+
     #[test]
     fn a_dragged_window_is_never_moved_back_and_reopens_where_it_was_left() {
         let ctx = egui::Context::default();

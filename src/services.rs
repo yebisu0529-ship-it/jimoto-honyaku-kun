@@ -1,4 +1,5 @@
 //! Owned model processes and first-run readiness. No capture starts during setup.
+use super::setup_chain::Step;
 use super::*;
 use plamo_translate::installer;
 use std::process::Stdio;
@@ -460,7 +461,51 @@ impl App {
             self.audio_confirmation = true;
         }
     }
-    fn begin_audio_install(&mut self) {
+    /// CPU, or Vulkan on a PC with a GPU that supports it, unless the settings choose.
+    pub(super) fn nemotron_backend(&self) -> &'static str {
+        match self.settings.asr_device.as_str() {
+            "cpu" => "cpu",
+            "vulkan" => "vulkan",
+            _ if self
+                .setup
+                .hardware
+                .as_ref()
+                .is_some_and(|h| h.gpus.iter().any(|g| g.vulkan_eligible)) =>
+            {
+                "vulkan"
+            }
+            _ => "cpu",
+        }
+    }
+    /// The speech recognition installer answered. While the chain runs this step
+    /// a failure goes to the chain. Otherwise it stays in the dialog, as before.
+    pub(super) fn audio_prepared(
+        &mut self,
+        backend: String,
+        result: std::result::Result<(), String>,
+    ) {
+        self.audio_installing = false;
+        self.audio_progress = None;
+        if backend != self.settings.asr_backend {
+            return;
+        }
+        let cancelled = self.audio_cancel.load(Ordering::Relaxed);
+        match result.and_then(|()| self.load_audio_installation().map_err(|e| e.to_string())) {
+            Ok(()) => {
+                self.audio_confirmation = false;
+                self.start_asr();
+                self.finish_step(Step::Speech);
+            }
+            Err(error) if self.chain_drives(Step::Speech) => {
+                self.stop_step(Step::Speech, cancelled, error);
+            }
+            Err(error) => {
+                self.service_error = error;
+                self.audio_start_requested = false;
+            }
+        }
+    }
+    pub(super) fn begin_audio_install(&mut self) {
         if self.audio_installing {
             return;
         }
@@ -470,19 +515,7 @@ impl App {
             self.audio_cancel = Arc::new(AtomicBool::new(false));
             self.service_error.clear();
             let root = data_root().join("nemotron");
-            let backend = match self.settings.asr_device.as_str() {
-                "cpu" => "cpu",
-                "vulkan" => "vulkan",
-                _ if self
-                    .setup
-                    .hardware
-                    .as_ref()
-                    .is_some_and(|h| h.gpus.iter().any(|g| g.vulkan_eligible)) =>
-                {
-                    "vulkan"
-                }
-                _ => "cpu",
-            };
+            let backend = self.nemotron_backend();
             self.settings.asr_device = backend.into();
             let cancel = self.audio_cancel.clone();
             let tx = self.tx.clone();
@@ -544,7 +577,7 @@ impl App {
         });
     }
     pub(super) fn audio_setup_ui(&mut self, ctx: &egui::Context) {
-        if !self.audio_confirmation && !self.audio_installing {
+        if self.chain_drives(Step::Speech) || (!self.audio_confirmation && !self.audio_installing) {
             return;
         }
         let width = (ctx.content_rect().width() - 48.0).clamp(260.0, 510.0);
@@ -636,5 +669,21 @@ mod tests {
         assert!(app.audio_confirmation);
         assert!(!app.audio_installing && !app.audio_enabled && !app.audio_start_requested);
         assert!(app.audio.is_none());
+    }
+    #[test]
+    fn a_failed_preparation_outside_the_chain_still_reports_in_its_own_dialog() {
+        let mut app = App::inert();
+        app.audio_installing = true;
+        app.audio_start_requested = true;
+        app.tx
+            .send(Event::AudioPrepared {
+                backend: "nemotron".into(),
+                result: Err("HTTP 503".into()),
+            })
+            .unwrap();
+        app.process(&egui::Context::default());
+        assert_eq!(app.service_error, "HTTP 503");
+        assert!(!app.audio_installing && !app.audio_start_requested);
+        assert!(app.setup.chain.is_none());
     }
 }

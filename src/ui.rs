@@ -918,7 +918,7 @@ impl App {
         // translation state follows the translation engine alone.
         let translation = if self.backend_ready {
             Readiness::Ready
-        } else if self.backend_loading || self.setup.installing {
+        } else if self.backend_loading || self.setup.installing() {
             Readiness::Preparing
         } else {
             Readiness::Missing

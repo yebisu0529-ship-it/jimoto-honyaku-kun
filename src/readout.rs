@@ -1,4 +1,5 @@
 //! Optional local reading of translated Japanese. Audio capture never starts here.
+use super::setup_chain::Step;
 use super::*;
 use plamo_translate::{
     installer::Progress,
@@ -250,7 +251,7 @@ impl App {
             .voices
             .sort_by_key(|(key, _)| (key != "default-v1", key.clone()));
     }
-    fn prepare_readout_voice(&mut self, reference: Option<PathBuf>) {
+    pub(super) fn prepare_readout_voice(&mut self, reference: Option<PathBuf>) {
         if self.readout.voice_preparing {
             return;
         }
@@ -289,7 +290,7 @@ impl App {
             }
         }));
     }
-    fn begin_readout_install(&mut self) {
+    pub(super) fn begin_readout_install(&mut self) {
         if self.readout.preparing {
             return;
         }
@@ -331,13 +332,20 @@ impl App {
                         self.readout.error.clear();
                         self.readout.status = "読み上げの準備ができました。".into();
                         self.refresh_readout_voices();
+                        if self.chain_drives(Step::Voice) {
+                            self.continue_voice();
+                        }
                     }
                     Err(_) if self.readout.cancel.load(Ordering::Relaxed) => {
                         self.readout.error.clear();
                         self.readout.status =
                             "準備を中止しました。取得済みデータから再開できます。".into();
+                        self.stop_step(Step::Voice, true, String::new());
                     }
-                    Err(error) => self.readout.error = error,
+                    Err(error) => {
+                        self.readout.error = error.clone();
+                        self.stop_step(Step::Voice, false, error);
+                    }
                 }
             }
             ReadoutEvent::VoicePrepared { key, result } => {
@@ -358,11 +366,16 @@ impl App {
                         {
                             self.read_japanese_text(text, live);
                         }
+                        self.finish_step(Step::Voice);
                     }
                     Err(_) if self.readout.voice_cancel.load(Ordering::Acquire) => {
-                        self.readout.status = "固定声の準備を中止しました。".into()
+                        self.readout.status = "固定声の準備を中止しました。".into();
+                        self.stop_step(Step::Voice, true, String::new());
                     }
-                    Err(error) => self.readout.error = error,
+                    Err(error) => {
+                        self.readout.error = error.clone();
+                        self.stop_step(Step::Voice, false, error);
+                    }
                 }
             }
         }
@@ -494,7 +507,7 @@ impl App {
         }
     }
     pub(super) fn readout_setup_ui(&mut self, ctx: &egui::Context) {
-        if !self.readout.confirm && !self.readout.preparing {
+        if self.chain_drives(Step::Voice) || (!self.readout.confirm && !self.readout.preparing) {
             return;
         }
         egui::Window::new("読み上げの準備")

@@ -496,7 +496,9 @@ fn a_disabled_row_cannot_be_clicked() {
 #[test]
 fn rows_are_locked_while_a_download_runs() {
     let mut app = app_on(Some((24 * GIB, 5 * GIB)));
-    app.setup.installing = true;
+    let mut chain = setup_chain::Chain::new([setup_chain::Step::Translation]);
+    chain.take_next();
+    app.setup.chain = Some(chain);
     let mut session = Session::new();
     let drawn = texts(&session.settle(&mut app, SMALL));
     session.click(&mut app, SMALL, row_point(&drawn, "2B"));
@@ -556,7 +558,7 @@ fn rows_and_meter_fit_without_clipping_or_overlap_at_both_window_sizes() {
             }
             let action = all
                 .iter()
-                .find(|(_, _, text)| text.starts_with("ダウンロードして準備"))
+                .find(|(_, _, text)| text.starts_with("はじめる"))
                 .unwrap_or_else(|| panic!("{name} {size:?}: no action"));
             assert!(action.0.contains_rect(action.1) && action.1.bottom() <= size.1);
         }

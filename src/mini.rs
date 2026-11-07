@@ -876,6 +876,7 @@ mod tests {
                 end_ms: id * 1000 + 500,
                 source: format!("source-{id}"),
                 translation: translation.into(),
+                standard_translation: None,
                 kind: kind.into(),
                 video_id: String::new(),
                 created_at: String::new(),

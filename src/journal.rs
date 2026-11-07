@@ -35,6 +35,10 @@ pub struct Record {
     pub end_ms: u64,
     pub source: String,
     pub translation: String,
+    /// The ordinary translation, kept when `translation` holds its
+    /// やさしい日本語 rewrite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_translation: Option<String>,
     pub kind: String,
     pub video_id: String,
     pub created_at: String,
@@ -256,6 +260,7 @@ mod tests {
             end_ms: id * 1000 + 900,
             source: "Hello\nworld".into(),
             translation: "こんにちは\n世界".into(),
+            standard_translation: None,
             kind: "youtube".into(),
             video_id: "example".into(),
             created_at: "2026-11-05T00:00:00Z".into(),
@@ -301,6 +306,33 @@ mod tests {
             ParagraphState::Closing
         );
         assert_eq!(rows[1].paragraph.as_ref().unwrap().revision, 2);
+    }
+
+    #[test]
+    fn the_ordinary_translation_is_optional_in_history() {
+        let temp = Temp::new();
+        let journal = Journal::new(&temp.0).unwrap();
+        let written_before_the_field = r#"{"id":1,"start_ms":1000,"end_ms":1900,"source":"Hello","translation":"こんにちは","kind":"youtube","video_id":"example","created_at":"2026-11-05T00:00:00Z"}"#;
+        fs::write(&journal.path, format!("{written_before_the_field}\n")).unwrap();
+
+        journal.append(&record(2)).unwrap();
+        let mut easy = record(3);
+        easy.translation = "委員会は報告書を見ます。みんなにも見せられます。".into();
+        easy.standard_translation = Some("委員会は報告書を確認し、一般にも共有できます。".into());
+        journal.append(&easy).unwrap();
+
+        let text = fs::read_to_string(&journal.path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(!lines[1].contains("standard_translation"), "{}", lines[1]);
+        assert!(lines[2].contains("standard_translation"), "{}", lines[2]);
+
+        let (_, rows) = Journal::open_latest(&temp.0).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].translation, "こんにちは");
+        assert_eq!(rows[0].standard_translation, None);
+        assert_eq!(rows[1].standard_translation, None);
+        assert_eq!(rows[2].translation, easy.translation);
+        assert_eq!(rows[2].standard_translation, easy.standard_translation);
     }
 
     #[test]

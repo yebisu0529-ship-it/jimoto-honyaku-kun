@@ -199,7 +199,7 @@ enum Event {
         row_id: u64,
         request: plamo_translate::live_text::Request,
         options: TranslationOptions,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<document::LiveTranslation, String>,
         elapsed: f32,
     },
     Partial {
@@ -716,6 +716,7 @@ impl App {
                     end_ms,
                     source: text.clone(),
                     translation: String::new(),
+                    standard_translation: None,
                     kind: kind.into(),
                     video_id: if kind == "YouTube" {
                         self.video_id.clone()
@@ -2087,6 +2088,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                             end_ms: index * 5000 + 4000,
                             source: source.into(),
                             translation: translation.into(),
+                            standard_translation: None,
                             kind: "YouTube".into(),
                             video_id: "preview".into(),
                             created_at: "2026-11-05T12:00:00+09:00".into(),
@@ -2143,6 +2145,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 end_ms: 16000,
                 source: "The translations stay on your computer, so you can read them again later.".into(),
                 translation: "翻訳はこのPCに保存されるので、あとから読み返せます。画面を小さくしても、翻訳と保存は続きます。".into(),
+                standard_translation: None,
                 kind: "YouTube".into(),
                 video_id: "preview".into(),
                 created_at: "2026-11-05T12:00:00+09:00".into(),
@@ -2161,6 +2164,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     end_ms: 20000,
                     source: "The next sentence is still being translated.".into(),
                     translation: "次の文は、まだ翻訳の".into(),
+                    standard_translation: None,
                     kind: "音声".into(),
                     video_id: String::new(),
                     created_at: String::new(),
@@ -2241,6 +2245,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     end_ms: end,
                     source: source.into(),
                     translation: target.into(),
+                    standard_translation: None,
                     kind: "音声".into(),
                     video_id: String::new(),
                     created_at: String::new(),
@@ -2414,6 +2419,7 @@ mod tests {
             end_ms: end,
             source: "source".into(),
             translation: "translation".into(),
+            standard_translation: None,
             created_at: String::new(),
             paragraph: None,
         }

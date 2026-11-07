@@ -2370,6 +2370,7 @@ mod live_layout_tests {
                 end_ms: 1000,
                 source: "Long source text. ".repeat(300),
                 translation: "Long translated text. ".repeat(300),
+                standard_translation: None,
                 kind: "音声".into(),
                 video_id: String::new(),
                 created_at: String::new(),

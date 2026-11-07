@@ -64,6 +64,10 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("vi", "ベトナム語"),
 ];
 
+/// PLaMo 3 Translate's やさしい日本語. It is only a destination: no source
+/// language, no entry in LANGUAGES and nothing the user can pick.
+pub const EASY_JAPANESE: &str = "ja(easy)";
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct TranslationOptions {
     pub endpoint: String,
@@ -81,6 +85,22 @@ impl Default for TranslationOptions {
             source_lang: "auto".into(),
             target_lang: "ja".into(),
             style: "plain".into(),
+            context: String::new(),
+            glossary: Vec::new(),
+        }
+    }
+}
+
+impl TranslationOptions {
+    /// The second pass of a Japanese live translation. It reads the first
+    /// pass's Japanese and rewrites it as やさしい日本語, so none of the user's
+    /// style, context or glossary applies.
+    pub fn easy_japanese(&self) -> Self {
+        Self {
+            endpoint: self.endpoint.clone(),
+            source_lang: "ja".into(),
+            target_lang: EASY_JAPANESE.into(),
+            style: String::new(),
             context: String::new(),
             glossary: Vec::new(),
         }
@@ -108,7 +128,10 @@ fn validate_options(options: &TranslationOptions) -> Result<()> {
         options.source_lang == "auto" || supported(&options.source_lang),
         "未対応の原文言語です。"
     );
-    ensure!(supported(&options.target_lang), "未対応の翻訳先言語です。");
+    ensure!(
+        supported(&options.target_lang) || options.target_lang == EASY_JAPANESE,
+        "未対応の翻訳先言語です。"
+    );
     ensure!(
         matches!(options.style.as_str(), "" | "default" | "plain" | "polite"),
         "文体には標準・常体・敬体のいずれかを指定してください。"
@@ -516,6 +539,49 @@ mod tests {
                 "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>plain<|plamo:msg|>"
             )
         );
+    }
+
+    #[test]
+    fn easy_japanese_rewrites_japanese_and_ignores_the_users_settings() {
+        let rewrite = concat!(
+            "<|plamo:tag|>dataset<|plamo:msg|>translation",
+            "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>管理画面を開いてください。",
+            "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja(easy)<|plamo:msg|>"
+        );
+        let direct = TranslationOptions {
+            source_lang: "ja".into(),
+            target_lang: EASY_JAPANESE.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_prompt("管理画面を開いてください。", &direct).unwrap(),
+            rewrite,
+            "no form, even with the plain style"
+        );
+
+        let user = TranslationOptions {
+            source_lang: "en".into(),
+            style: "polite".into(),
+            context: "説明書".into(),
+            glossary: vec![("dashboard".into(), "管理画面".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_prompt("管理画面を開いてください。", &user.easy_japanese()).unwrap(),
+            rewrite
+        );
+    }
+
+    #[test]
+    fn easy_japanese_is_only_a_target_and_is_not_a_listed_language() {
+        let options = |source: &str, target: &str| TranslationOptions {
+            source_lang: source.into(),
+            target_lang: target.into(),
+            ..Default::default()
+        };
+        assert!(build_prompt("こんにちは", &options("ja", EASY_JAPANESE)).is_ok());
+        assert!(build_prompt("こんにちは", &options(EASY_JAPANESE, "en")).is_err());
+        assert!(LANGUAGES.iter().all(|(code, _)| *code != EASY_JAPANESE));
     }
 
     #[test]

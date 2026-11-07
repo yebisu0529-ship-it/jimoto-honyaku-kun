@@ -1664,7 +1664,7 @@ impl App {
         for (number, text) in [
             (
                 1,
-                "上の「字幕を受け取る」を押します。ライブ翻訳の入力切替で「YouTube字幕」を選んでも同じです。",
+                "上の「字幕を受け取る」を押します。チャットの入力で「字幕」を選んでも同じです。",
             ),
             (
                 2,
@@ -1764,7 +1764,10 @@ impl App {
             .id_salt("shortcuts")
             .default_open(false)
             .show(ui, |ui| {
-                secondary(ui, "範囲翻訳: Ctrl + Alt + T　 音声翻訳: Ctrl + Alt + L");
+                secondary(
+                    ui,
+                    "範囲翻訳: Ctrl + Alt + T　 PC音声の翻訳: Ctrl + Alt + L",
+                );
                 if ui.add(standard("保存フォルダーを開く")).clicked() {
                     self.open_data_folder();
                 }

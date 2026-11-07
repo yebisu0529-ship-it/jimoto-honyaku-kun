@@ -346,7 +346,7 @@ impl App {
             ui.label(theme::label("Windowsに導入済みの文字認識を使います。"));
         }
         ui.add_space(theme::SPACE_2);
-        ui.label(theme::label("ライブ翻訳の「画面」で読み取る間隔"));
+        ui.label(theme::label("チャットの入力「画面」で読み取る間隔"));
         ui.horizontal_wrapped(|ui| {
             for (interval, name) in [
                 (1_000, "1秒"),

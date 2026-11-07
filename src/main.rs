@@ -2274,6 +2274,27 @@ fn render_setup_views(folder: &Path) -> Result<()> {
     let model = |id: &str| catalog.models.iter().find(|m| m.id == id).cloned().unwrap();
     let loaded = model("plamo3-8b-q3_k_m");
     let (big, small) = ("NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4060");
+    let fixture = |hardware: &Hardware, in_use: Option<&model_catalog::Model>, selected| {
+        let mut app = App::inert();
+        app.tab = Tab::Setup;
+        app.startup_decided = true;
+        app.status = "プレビュー · 接続や保存は行いません".into();
+        app.setup.hardware = Some(hardware.clone());
+        if let Some(model) = in_use {
+            app.settings.model = format!("models/{}", model.filename);
+            app.settings.gpu_layers = 99;
+            app.backend_ready = true;
+            app.setup.in_use = Some(model.clone());
+            app.setup.saved = ["plamo3-0.8b-q4_k_m", "plamo3-2b-q4_k_m", &model.id]
+                .map(String::from)
+                .into();
+        }
+        app.recalculate_recommendation();
+        if let Some(id) = selected {
+            app.setup.selected_id = id;
+        }
+        app
+    };
     for (name, hardware, in_use, selected) in [
         (
             "setup-a-24gb",
@@ -2314,24 +2335,47 @@ fn render_setup_views(folder: &Path) -> Result<()> {
         for (width, height) in [(860, 620), (2560, 1369)] {
             let ctx = egui::Context::default();
             ui::configure_theme(&ctx);
-            let mut app = App::inert();
-            app.tab = Tab::Setup;
-            app.startup_decided = true;
-            app.status = "プレビュー · 接続や保存は行いません".into();
-            app.setup.hardware = Some(hardware.clone());
-            if let Some(model) = in_use {
-                app.settings.model = format!("models/{}", model.filename);
-                app.settings.gpu_layers = 99;
-                app.backend_ready = true;
-                app.setup.in_use = Some(model.clone());
-                app.setup.saved = ["plamo3-0.8b-q4_k_m", "plamo3-2b-q4_k_m", &model.id]
-                    .map(String::from)
-                    .into();
-            }
-            app.recalculate_recommendation();
-            if let Some(id) = selected {
-                app.setup.selected_id = id.into();
-            }
+            let mut app = fixture(&hardware, in_use, selected.map(String::from));
+            preview::render(
+                &ctx,
+                &folder.join(format!("{name}-{width}x{height}.png")),
+                width,
+                height,
+                |ctx| app.render_ui(ctx),
+            )?;
+        }
+    }
+    let roomy = pc(Some((big, 24 * GIB, 5 * GIB)));
+    type Change = fn(&mut App);
+    let runs: [(&str, Change); 3] = [
+        ("setup-f-downloading", |app| {
+            let model = app.setup_model().unwrap();
+            app.setup.installing = true;
+            app.setup.progress = Some(plamo_translate::installer::Progress {
+                stage: "model_download".into(),
+                downloaded_bytes: model.bytes / 2,
+                total_bytes: Some(model.bytes),
+                message: format!("{}を取得中", model.filename),
+            });
+        }),
+        ("setup-g-failed", |app| {
+            let model = app.setup_model().unwrap();
+            app.setup.error = format!(
+                "{}の取得に失敗しました（HTTP 503 Service Unavailable）。",
+                model.filename
+            );
+        }),
+        ("setup-h-finished", |app| {
+            app.setup.completed = true;
+            app.backend_ready = true;
+        }),
+    ];
+    for (name, change) in runs {
+        for (width, height) in [(860, 620), (2560, 1369)] {
+            let ctx = egui::Context::default();
+            ui::configure_theme(&ctx);
+            let mut app = fixture(&roomy, None, None);
+            change(&mut app);
             preview::render(
                 &ctx,
                 &folder.join(format!("{name}-{width}x{height}.png")),

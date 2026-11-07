@@ -1479,8 +1479,6 @@ impl App {
         }
         self.document_tick();
     }
-    /// A dropped image is read, and a dropped text file fills the input. Both
-    /// end on the 文章 screen, wherever the window was.
     fn open_dropped_file(&mut self, ctx: &egui::Context) {
         let files = ctx.input(|i| i.raw.dropped_files.clone());
         let Some(path) = files.first().and_then(|f| f.path.clone()) else {

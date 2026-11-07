@@ -133,6 +133,15 @@ const SCREENS: [(Tab, &str); 4] = [
     (Tab::Setup, "モデル"),
 ];
 
+/// Every screen that has the page header: the chat and the four behind the menu.
+const HEADERED: [(Tab, &str); 5] = [
+    (Tab::Text, "文章"),
+    (Tab::Live, "チャット"),
+    (Tab::Files, "履歴"),
+    (Tab::Settings, "設定"),
+    (Tab::Setup, "モデル"),
+];
+
 #[test]
 fn the_app_opens_on_the_chat_with_its_name_and_one_menu_and_nothing_else() {
     assert!(Tab::default() == Tab::Live);
@@ -424,7 +433,7 @@ fn the_readout_switch_stays_beside_the_menu() {
 
 #[test]
 fn the_header_of_every_screen_fits_at_the_smallest_window_with_the_readout_switch_on() {
-    for (tab, page, _) in PAGE_KEYS {
+    for (tab, page) in HEADERED {
         let mut app = chat();
         app.tab = tab;
         app.settings.readout_enabled = true;
@@ -448,7 +457,7 @@ fn the_header_of_every_screen_fits_at_the_smallest_window_with_the_readout_switc
 
 #[test]
 fn the_buttons_of_the_header_are_32_points_tall_on_every_screen() {
-    for (tab, page, _) in PAGE_KEYS {
+    for (tab, page) in HEADERED {
         let mut app = chat();
         app.tab = tab;
         let mut window = Window::new(860.0, 620.0);
@@ -465,6 +474,34 @@ fn the_buttons_of_the_header_are_32_points_tall_on_every_screen() {
                 back.height() >= 32.0,
                 "{page}: the back button is {} tall",
                 back.height()
+            );
+        }
+    }
+}
+
+#[test]
+fn each_screen_behind_the_menu_has_its_title_on_the_row_of_the_back_button_and_the_menu() {
+    for (tab, title) in [
+        (Tab::Text, "文章翻訳"),
+        (Tab::Files, "履歴"),
+        (Tab::Settings, "設定"),
+        (Tab::Setup, "このPCに合うモデルを準備"),
+    ] {
+        let mut app = chat();
+        app.tab = tab;
+        let mut window = Window::new(860.0, 620.0);
+        window.settle(&mut app);
+        let back = app.ui_probe.back_button.expect("the back button is drawn");
+        let menu = app.ui_probe.menu_button.expect("the menu button is drawn");
+        let heading = window.at(title);
+        assert!(
+            back.right() <= heading.left() && heading.right() <= menu.left(),
+            "{title}: it is not between the back button and the menu"
+        );
+        for button in [back, menu] {
+            assert!(
+                (button.top()..=button.bottom()).contains(&heading.center().y),
+                "{title}: it is not on the row of the buttons: {heading:?} and {button:?}"
             );
         }
     }

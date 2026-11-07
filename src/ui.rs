@@ -643,20 +643,18 @@ impl App {
                             }
                             back = button.clicked();
                         }
-                        if !title.is_empty() {
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                ui.add(egui::Label::new(theme::title(title)).truncate());
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(subtitle)
-                                            .size(theme::SIZE_CAPTION)
-                                            .color(TEXT_MUTED),
-                                    )
-                                    .truncate(),
-                                );
-                            });
-                        }
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.add(egui::Label::new(theme::title(title)).truncate());
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(subtitle)
+                                        .size(theme::SIZE_CAPTION)
+                                        .color(TEXT_MUTED),
+                                )
+                                .truncate(),
+                            );
+                        });
                     });
                 });
             });
@@ -1997,11 +1995,14 @@ impl App {
         self.status_details_ui(ctx);
     }
 
-    /// The model screen draws its own title; the header above it is the way
-    /// back to the chat.
     fn model_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
-            self.page_header(ui, "", "", |_| {});
+            self.page_header(
+                ui,
+                "このPCに合うモデルを準備",
+                "大きいモデルほど自然に訳せますが、GPUのメモリを多く使います。",
+                |_| {},
+            );
             self.setup_ui(ui);
         });
     }

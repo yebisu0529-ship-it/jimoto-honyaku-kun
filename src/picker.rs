@@ -326,7 +326,6 @@ impl App {
                 });
             } else {
                 side(ui);
-                ui.add_space(theme::SPACE_3);
                 clicked = rows_ui(ui, &picker, selected_row, editable);
             }
         });

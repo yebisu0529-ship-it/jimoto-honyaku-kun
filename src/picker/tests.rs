@@ -566,6 +566,96 @@ fn rows_and_meter_fit_without_clipping_or_overlap_at_both_window_sizes() {
 }
 
 #[test]
+fn the_meter_the_rows_and_the_action_stay_whole_in_each_state_of_the_chain() {
+    use plamo_translate::installer::Progress;
+    use setup_chain::{Chain, Step};
+    // The chain after `done` of its three steps, with the next one started.
+    fn chain_after(done: usize) -> Chain {
+        let mut chain = Chain::new([Step::Translation, Step::Punctuation, Step::Speech]);
+        for _ in 0..done {
+            let step = chain.take_next().unwrap();
+            chain.complete(step);
+        }
+        chain.take_next();
+        chain
+    }
+    // Each state puts the chain where it is and answers with the words its action area shows.
+    type State = (&'static str, fn(&mut App) -> Vec<String>);
+    let states: [State; 3] = [
+        ("before starting", |app| {
+            vec![setup::start_label("はじめる", app.download_plan())]
+        }),
+        ("step 2 of 3", |app| {
+            let message = "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2を取得中";
+            app.setup.chain = Some(chain_after(1));
+            app.paragraph_tools.progress = Some(Progress {
+                stage: "punctuation_download".into(),
+                downloaded_bytes: 41_000_000,
+                total_bytes: Some(64_717_756),
+                message: message.into(),
+            });
+            [
+                "2/3 英語の文章区切り補助を準備中",
+                message,
+                "39 MB / 61 MB",
+                "中止",
+            ]
+            .map(String::from)
+            .to_vec()
+        }),
+        ("a failure at step 3", |app| {
+            let mut chain = chain_after(2);
+            chain.fail(Step::Speech, "HTTP 503".into());
+            app.setup.chain = Some(chain);
+            [
+                "3/3 音声認識を準備できませんでした。ここまでの準備は保持しています。",
+                "もう一度",
+            ]
+            .map(String::from)
+            .to_vec()
+        }),
+    ];
+    for size in [SMALL, LARGE] {
+        for (name, build) in states {
+            let nothing = tempfile::tempdir().unwrap();
+            let mut app = app_on(Some((24 * GIB, 5 * GIB)));
+            app.seed_plan(&setup_chain::Roots::under(nothing.path()));
+            let mut wanted = build(&mut app);
+            for row in &picker(&app).rows {
+                wanted.extend([row.size.clone(), row.blurb.to_owned(), bytes(row.bytes)]);
+                wanted.extend(row.status.text());
+            }
+            wanted.push("GPUメモリ".into());
+            let view = app.meter_view().expect("this PC has a GPU");
+            wanted.extend(view.items().into_iter().map(|item| item.text));
+            let mut pool = texts(&Session::new().settle(&mut app, size));
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0, size.1));
+            let mut found = Vec::new();
+            for want in &wanted {
+                let at = pool
+                    .iter()
+                    .position(|(_, _, text)| text == want || text.ends_with(&format!(" {want}")))
+                    .unwrap_or_else(|| panic!("{name} {size:?}: {want:?} is not drawn whole"));
+                let (clip, rect, _) = pool.remove(at);
+                assert!(
+                    clip.expand(0.5).contains_rect(rect) && screen.contains_rect(rect),
+                    "{name} {size:?}: {want:?} is cut off: {rect:?} in {clip:?}"
+                );
+                found.push((want, rect));
+            }
+            for (index, (first, a)) in found.iter().enumerate() {
+                for (second, b) in &found[index + 1..] {
+                    assert!(
+                        !a.shrink(0.5).intersects(b.shrink(0.5)),
+                        "{name} {size:?}: {first:?} overlaps {second:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn the_meter_sits_beside_the_list_when_wide_and_above_it_when_narrow() {
     let mut app = app_on(Some((24 * GIB, 5 * GIB)));
     let mut session = Session::new();

@@ -25,9 +25,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod chat;
 mod document;
 mod file_output;
-mod live_view;
 mod mini;
 mod paragraph_tools;
 mod preview;
@@ -382,7 +382,7 @@ struct App {
     last_live_text: String,
     last_live_id: Option<u64>,
     current_live_id: Option<u64>,
-    live_view: live_view::LiveViewState,
+    live_chat: chat::State,
     window_mode: window_mode::MiniWindowState,
     mini: mini::MiniState,
     close_after_restore: Option<Instant>,
@@ -480,7 +480,7 @@ impl App {
             last_live_text: String::new(),
             last_live_id: None,
             current_live_id: None,
-            live_view: live_view::LiveViewState::default(),
+            live_chat: chat::State::default(),
             window_mode: window_mode::MiniWindowState::default(),
             mini: mini::MiniState::default(),
             close_after_restore: None,
@@ -635,7 +635,7 @@ impl App {
             last_live_text: String::new(),
             last_live_id: None,
             current_live_id: None,
-            live_view: live_view::LiveViewState::default(),
+            live_chat: chat::State::default(),
             window_mode: window_mode::MiniWindowState::default(),
             mini: mini::MiniState::default(),
             close_after_restore: None,
@@ -1096,7 +1096,7 @@ impl App {
         self.caption_paused = true;
         self.clear_overlay(None);
         self.archive_current_live(None);
-        self.live_view = live_view::LiveViewState::default();
+        self.live_chat.clear();
         // A new timeline clears only the subtitle content, preserving the
         // independent window and its presentation preferences.
         let kind = self
@@ -1786,6 +1786,7 @@ impl eframe::App for App {
         self.readout_setup_ui(ctx);
         self.screen_ocr_setup_ui(ctx);
         self.document_update_subtitle_window();
+        self.sync_subtitle_moments();
         self.subtitle_window.show(ctx);
         self.selection_ui(ctx);
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q)) {

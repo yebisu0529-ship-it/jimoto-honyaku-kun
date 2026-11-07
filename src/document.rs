@@ -754,7 +754,7 @@ impl App {
                 }
                 // A punctuation tagger can preserve every word yet still place
                 // a comma/full stop badly. Use only guarded boundary hints;
-                // PLaMo always receives the original accumulated wording.
+                // PLaMo never reads the tagger's text.
             }
             other => {
                 self.paragraph_tools.error = other.err().unwrap_or_else(|| {

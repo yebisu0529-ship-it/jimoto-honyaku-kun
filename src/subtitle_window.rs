@@ -708,6 +708,30 @@ mod tests {
             2,
             "the status line and the name above the message: {drawn}"
         );
+
+        // A time under the bubble takes the room of the name, which is left
+        // out instead of being drawn half.
+        state.set_moments(
+            [(
+                1,
+                chat::Moment::from_record("2026-11-07T21:49:52+09:00", 0, chat::Source::YouTube),
+            )]
+            .into(),
+        );
+        for _ in 0..3 {
+            output = paint(&mut state, &ctx, size);
+        }
+        let drawn = painted_text(&output);
+        assert!(drawn.contains("お名前は必要ありません。") && drawn.contains("21:49"));
+        assert_eq!(
+            drawn.matches("YouTube").count(),
+            1,
+            "only the status line: {drawn}"
+        );
+        assert!(
+            !cut_at_the_top(&state, &output),
+            "no avatar is drawn cut at the top"
+        );
     }
 
     #[test]

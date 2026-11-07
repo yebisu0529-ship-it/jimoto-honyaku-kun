@@ -390,9 +390,9 @@ impl State {
         let visible_top = ui.max_rect().top() + viewport.top();
         // While the reader is at the end, a bubble that starts above the top
         // would show only its lower part. It keeps its space but is not drawn.
-        let shown = |ui: &egui::Ui, rect: Rect, newest: bool| {
-            ui.is_rect_visible(rect) && !(following && !newest && rect.top() < visible_top - 0.5)
-        };
+        // The newest message is drawn even when it is taller than the window,
+        // but without the avatar and name that would be cut.
+        let whole = |rect: Rect| !following || rect.top() >= visible_top - 0.5;
         let mut action = None;
         let mut after_day = false;
         ui.add_space(EDGE);
@@ -410,7 +410,7 @@ impl State {
                     );
                     let size = galley.size() + egui::vec2(2.0 * PILL_X, 2.0 * PILL_Y);
                     let (_, rect) = ui.allocate_space(egui::vec2(metrics.width, size.y));
-                    if shown(ui, rect, false) {
+                    if ui.is_rect_visible(rect) && whole(rect) {
                         let pill = Rect::from_center_size(rect.center(), size);
                         ui.painter()
                             .rect_filled(pill, pill_radius(size), theme::CHAT_PILL);
@@ -439,8 +439,9 @@ impl State {
                         metrics.width,
                         header + laid.size.y + laid.below,
                     ));
-                    if shown(ui, rect, bubble.newest) {
-                        let reply = self.paint_bubble(ui, rect, &bubble, &laid, options);
+                    if ui.is_rect_visible(rect) && (whole(rect) || bubble.newest) {
+                        let header = whole(rect);
+                        let reply = self.paint_bubble(ui, rect, (&bubble, header), &laid, options);
                         action = action.or(reply);
                     }
                 }
@@ -457,7 +458,7 @@ impl State {
         &mut self,
         ui: &egui::Ui,
         item: Rect,
-        bubble: &Bubble<'_>,
+        (bubble, with_header): (&Bubble<'_>, bool),
         laid: &Laid,
         options: Options,
     ) -> Option<Action> {
@@ -465,7 +466,8 @@ impl State {
         let top = item.top() + if bubble.first_in_group { NAME_H } else { 0.0 };
         let rect = Rect::from_min_size(egui::pos2(item.left() + BUBBLE_X, top), laid.size);
         let painter = ui.painter();
-        if bubble.first_in_group {
+        let leads = bubble.first_in_group && with_header;
+        if leads {
             let center = egui::pos2(item.left() + SIDE + AVATAR / 2.0, item.top() + AVATAR / 2.0);
             painter.circle_filled(center, AVATAR / 2.0, message.source.color());
             let glyph = plain(
@@ -493,11 +495,7 @@ impl State {
             ));
         }
         let radius = CornerRadius {
-            nw: if bubble.first_in_group {
-                TAIL_RADIUS
-            } else {
-                BUBBLE_RADIUS
-            },
+            nw: if leads { TAIL_RADIUS } else { BUBBLE_RADIUS },
             ..CornerRadius::same(BUBBLE_RADIUS)
         };
         painter.rect_filled(rect, radius, theme::CHAT_BUBBLE);

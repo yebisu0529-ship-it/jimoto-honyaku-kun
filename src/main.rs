@@ -199,7 +199,7 @@ enum Event {
         row_id: u64,
         request: plamo_translate::live_text::Request,
         options: TranslationOptions,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<document::LiveTranslation, String>,
         elapsed: f32,
     },
     Partial {

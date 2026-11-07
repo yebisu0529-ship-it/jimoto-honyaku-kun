@@ -425,6 +425,8 @@ struct App {
     audio_cancel: Arc<AtomicBool>,
     readout: readout::ReadoutState,
     ocr: screen_ocr::OcrState,
+    /// The 状態の詳細 window is open.
+    details_open: bool,
     native_window: Option<isize>,
     #[cfg(test)]
     ui_probe: ui::UiProbe,
@@ -523,6 +525,7 @@ impl App {
             audio_cancel: Arc::new(AtomicBool::new(false)),
             readout: readout::ReadoutState::default(),
             ocr: screen_ocr::OcrState::default(),
+            details_open: false,
             native_window: None,
             #[cfg(test)]
             ui_probe: ui::UiProbe::default(),
@@ -678,6 +681,7 @@ impl App {
             audio_cancel: Arc::new(AtomicBool::new(false)),
             readout: readout::ReadoutState::default(),
             ocr: screen_ocr::OcrState::default(),
+            details_open: false,
             native_window: None,
             #[cfg(test)]
             ui_probe: ui::UiProbe::default(),

@@ -30,6 +30,7 @@ mod file_output;
 mod live_view;
 mod mini;
 mod paragraph_tools;
+mod picker;
 mod preview;
 mod readout;
 mod screen_feed;
@@ -232,6 +233,7 @@ enum Event {
     FileDone(std::result::Result<String, String>),
     Info(String),
     Hardware(std::result::Result<plamo_translate::hardware::Hardware, String>),
+    GpuMemory(Vec<plamo_translate::hardware::Gpu>),
     InstallProgress(plamo_translate::installer::Progress),
     Installed(std::result::Result<plamo_translate::installer::InstallResult, String>),
     ServiceStatus {
@@ -1351,11 +1353,14 @@ impl App {
                     match result {
                         Ok(hardware) => {
                             self.setup.hardware = Some(hardware);
+                            self.setup.gpu_polled_at = Instant::now();
+                            self.refresh_store_state();
                             self.recalculate_recommendation();
                         }
                         Err(error) => self.setup.error = error,
                     }
                 }
+                Event::GpuMemory(gpus) => self.accept_gpu_memory(gpus),
                 Event::InstallProgress(progress) => self.setup.progress = Some(progress),
                 Event::Installed(result) => {
                     self.setup.installing = false;
@@ -1771,6 +1776,7 @@ impl eframe::App for App {
         self.sync_capture_protection(ctx);
         self.poll_services();
         self.poll_readout();
+        self.poll_gpu_memory(ctx);
         if self.window_mode.is_mini()
             && (self.tab == Tab::Setup
                 || self.audio_confirmation

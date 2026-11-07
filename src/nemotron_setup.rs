@@ -1,7 +1,7 @@
 //! Opt-in official NVIDIA NeMo-Speech.cpp, independent of Python ASR and TTS.
 use crate::{
     hardware,
-    installer::{self, Artifact, Progress, RuntimeFile},
+    installer::{self, Artifact, Progress, RuntimeFile, Saved},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use std::{
 };
 
 const METADATA: &[u8] = include_bytes!("../scripts/nemotron-runtime.json");
+const RECORD_MISMATCH: &str = "Nemotronのインストール記録が、固定された配布情報と一致しません。";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NemotronInstallation {
     pub version: u32,
@@ -23,6 +24,20 @@ pub struct NemotronInstallation {
     pub runtime_version: String,
     pub model_revision: String,
     pub model_sha256: String,
+}
+impl NemotronInstallation {
+    /// This record is `expected`, written while the folder was somewhere else.
+    /// Only the path fields are left out of the comparison.
+    fn moved_to(&self, root: &Path, expected: &Self) -> bool {
+        let pinned = Self {
+            executable: expected.executable.clone(),
+            model: expected.model.clone(),
+            ..self.clone()
+        };
+        pinned == *expected
+            && installer::relocated(root, &expected.executable, &self.executable)
+            && installer::relocated(root, &expected.model, &self.model)
+    }
 }
 #[derive(Deserialize)]
 struct Metadata {
@@ -44,7 +59,10 @@ struct RuntimeIndex {
     executable: String,
 }
 fn metadata() -> Result<Metadata> {
-    let data: Metadata = serde_json::from_slice(METADATA)?;
+    metadata_of(METADATA)
+}
+fn metadata_of(release: &[u8]) -> Result<Metadata> {
+    let data: Metadata = serde_json::from_slice(release)?;
     ensure!(
         data.schema_version == 1,
         "Nemotronの配布情報の形式が不正です。"
@@ -55,8 +73,8 @@ pub(crate) fn downloads() -> Result<Vec<Artifact>> {
     let data = metadata()?;
     Ok(data.runtimes.into_values().chain([data.model]).collect())
 }
-fn metadata_hash() -> String {
-    format!("{:x}", Sha256::digest(METADATA))
+fn metadata_hash(release: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(release))
 }
 fn backend_spec<'a>(data: &'a Metadata, backend: &str) -> Result<&'a Artifact> {
     data.runtimes
@@ -127,39 +145,49 @@ fn verify_runtime(directory: &Path, spec: &Artifact, cancel: &AtomicBool) -> Res
 }
 /// Read only committed, pinned and contained installation; no model load/network.
 pub fn load(root: &Path) -> Result<Option<NemotronInstallation>> {
+    read_saved(METADATA, root)?.current(RECORD_MISMATCH)
+}
+
+fn read_saved(release: &[u8], root: &Path) -> Result<Saved<NemotronInstallation>> {
     if !root.exists() {
-        return Ok(None);
+        return Ok(Saved::Absent);
     }
     installer::safe_components(root, false)?;
     let root = fs::canonicalize(root)?;
     let path = root.join("installation.json");
     installer::safe_file(&path)?;
     if !path.exists() {
-        return Ok(None);
+        return Ok(Saved::Absent);
     }
     let manifest: Manifest = serde_json::from_slice(&read_small(&path)?)?;
-    let data = metadata()?;
-    let spec = backend_spec(&data, &manifest.installation.backend)?;
+    let data = metadata_of(release)?;
+    let saved = manifest.installation;
+    let spec = backend_spec(&data, &saved.backend)?;
     let runtime = root
         .join("runtime")
-        .join(runtime_directory(&data, &manifest.installation.backend));
+        .join(runtime_directory(&data, &saved.backend));
     let exe = verify_runtime(&runtime, spec, &AtomicBool::new(false))?;
+    let wanted = expected(&root, &saved.backend, &data, &exe);
+    let current = saved == wanted;
     ensure!(
-        manifest.metadata_sha256 == metadata_hash()
-            && manifest.installation
-                == expected(&root, &manifest.installation.backend, &data, &exe),
-        "Nemotronのインストール記録が、固定された配布情報と一致しません。"
+        manifest.metadata_sha256 == metadata_hash(release)
+            && (current || saved.moved_to(&root, &wanted)),
+        RECORD_MISMATCH
     );
-    installer::safe_file(&manifest.installation.model)?;
+    installer::safe_file(&wanted.model)?;
     ensure!(
-        fs::metadata(&manifest.installation.model)?.len() == data.model.bytes,
+        fs::metadata(&wanted.model)?.len() == data.model.bytes,
         "Nemotronモデルのサイズが変わっています。再度準備してください。"
     );
     ensure!(
-        read_small(&root.join("metadata.json"))? == METADATA,
+        read_small(&root.join("metadata.json"))? == release,
         "Nemotronの保存済み配布情報が一致しません。"
     );
-    Ok(Some(manifest.installation))
+    Ok(if current {
+        Saved::Current(wanted)
+    } else {
+        Saved::Moved
+    })
 }
 /// What `install` would download for this backend now: the runtime archive
 /// unless it is already unpacked, and the model unless the whole file is saved.
@@ -188,9 +216,20 @@ pub fn install(
     root: &Path,
     backend: &str,
     cancel: Arc<AtomicBool>,
+    on_progress: impl FnMut(Progress),
+) -> Result<NemotronInstallation> {
+    install_release(METADATA, root, backend, cancel, on_progress)
+}
+
+/// `install` for the pinned `release`, which tests replace with a small one.
+fn install_release(
+    release: &[u8],
+    root: &Path,
+    backend: &str,
+    cancel: Arc<AtomicBool>,
     mut on_progress: impl FnMut(Progress),
 ) -> Result<NemotronInstallation> {
-    let data = metadata()?;
+    let data = metadata_of(release)?;
     let spec = backend_spec(&data, backend)?;
     installer::cancelled(&cancel)?;
     ensure!(
@@ -200,7 +239,9 @@ pub fn install(
     installer::safe_components(root, true)?;
     let root = fs::canonicalize(root)?;
     let _lock = installer::RootLock::acquire(&root)?;
-    load(&root).context("既存のNemotronのインストール記録を保持しました。")?;
+    // A record of a moved folder passes. The files are verified below at this
+    // folder's paths, and the record is written for them.
+    read_saved(release, &root).context("既存のNemotronのインストール記録を保持しました。")?;
     let downloads = root.join("downloads");
     let runtime = root.join("runtime").join(runtime_directory(&data, backend));
     let model = root
@@ -296,12 +337,12 @@ pub fn install(
         &mut on_progress,
     )?;
     let installation = expected(&root, backend, &data, &executable);
-    installer::atomic_write(&root.join("metadata.json"), METADATA)?;
+    installer::atomic_write(&root.join("metadata.json"), release)?;
     installer::cancelled(&cancel)?;
     installer::atomic_write(
         &root.join("installation.json"),
         &serde_json::to_vec_pretty(&Manifest {
-            metadata_sha256: metadata_hash(),
+            metadata_sha256: metadata_hash(release),
             installation: installation.clone(),
         })?,
     )?;
@@ -317,6 +358,215 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::installer::fixtures::{self, Folder};
+
+    const MODEL: &[u8] = b"test nemotron model";
+
+    fn release() -> Vec<u8> {
+        let runtime = |backend: &str| {
+            fixtures::artifact(
+                &format!("nemo-speech-9.9.9-windows-x86_64-{backend}.zip"),
+                backend.as_bytes(),
+            )
+        };
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "runtime_version": "9.9.9",
+            "runtimes": {"cpu": runtime("cpu"), "vulkan": runtime("vulkan")},
+            "model": fixtures::artifact("test-model.gguf", MODEL),
+            "model_revision": "0123456789abcdef",
+        }))
+        .unwrap()
+    }
+    fn runtime_folder(root: &Path, release: &[u8]) -> PathBuf {
+        let data = metadata_of(release).unwrap();
+        root.join("runtime").join(runtime_directory(&data, "cpu"))
+    }
+    fn model_file(root: &Path, release: &[u8]) -> PathBuf {
+        let data = metadata_of(release).unwrap();
+        root.join("models")
+            .join(&data.model_revision)
+            .join(&data.model.name)
+    }
+    /// What a real install leaves under `root`: the downloads unpacked, then the record.
+    fn installed(root: &Path, release: &[u8]) -> NemotronInstallation {
+        let data = metadata_of(release).unwrap();
+        let runtime = runtime_folder(root, release);
+        let index = RuntimeIndex {
+            artifact: backend_spec(&data, "cpu").unwrap().clone(),
+            files: vec![
+                fixtures::package_file(&runtime, "bin/nemo-speech.exe", b"executable"),
+                fixtures::package_file(&runtime, "bin/ggml.dll", b"library"),
+            ],
+            executable: "bin/nemo-speech.exe".into(),
+        };
+        fixtures::write(
+            &runtime.join("runtime.json"),
+            &serde_json::to_vec(&index).unwrap(),
+        );
+        fixtures::write(&model_file(root, release), MODEL);
+        install_at(release, root).0.unwrap()
+    }
+    /// The install, and the stages it reported.
+    fn install_at(release: &[u8], root: &Path) -> (Result<NemotronInstallation>, Vec<String>) {
+        let mut stages = Vec::new();
+        let result = install_release(
+            release,
+            root,
+            "cpu",
+            Arc::new(AtomicBool::new(false)),
+            |progress| stages.push(progress.stage),
+        );
+        (result, stages)
+    }
+    fn edit_record(root: &Path, change: impl FnOnce(&mut Manifest)) {
+        let path = root.join("installation.json");
+        let mut record: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        change(&mut record);
+        fs::write(path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    }
+    /// An installation made in one folder and moved to another.
+    fn moved(folder: &Folder, release: &[u8]) -> (PathBuf, PathBuf, NemotronInstallation) {
+        let before = folder.path.join("before").join("nemotron");
+        let after = folder.path.join("after").join("nemotron");
+        let installation = installed(&before, release);
+        fs::create_dir_all(after.parent().unwrap()).unwrap();
+        fs::rename(&before, &after).unwrap();
+        (before, after, installation)
+    }
+    /// Moves an installation and lets `spoil` change it at its new place. The
+    /// install has to refuse it for `evidence` and change no file.
+    #[track_caller]
+    fn assert_refused(release: &[u8], evidence: &str, spoil: impl FnOnce(&Path)) {
+        let folder = Folder::new();
+        let (_, after, _) = moved(&folder, release);
+        spoil(&after);
+        let files = fixtures::snapshot(&after);
+        let error = format!("{:#}", install_at(release, &after).0.unwrap_err());
+        assert!(error.contains(evidence), "{error}");
+        assert_eq!(
+            fixtures::snapshot(&after),
+            files,
+            "a refused install changes no file"
+        );
+    }
+    #[track_caller]
+    fn assert_record_refused(
+        release: &[u8],
+        evidence: &str,
+        change: impl FnOnce(&Path, &mut Manifest),
+    ) {
+        assert_refused(release, evidence, |root| {
+            edit_record(root, |record| change(root, record))
+        });
+    }
+
+    #[test]
+    fn a_moved_installation_is_verified_where_it_now_is_and_its_record_rewritten() {
+        let release = release();
+        let folder = Folder::new();
+        let (before, after, was) = moved(&folder, &release);
+        assert!(
+            matches!(read_saved(&release, &after), Ok(Saved::Moved)),
+            "a reader still refuses the old paths"
+        );
+        let (result, stages) = install_at(&release, &after);
+        let installation = result.unwrap();
+        assert!(
+            stages.iter().all(|s| s == "verify" || s == "complete"),
+            "nothing is downloaded: {stages:?}"
+        );
+        let here = |path: &Path| after.join(path.strip_prefix(&before).unwrap());
+        assert_eq!(
+            installation,
+            NemotronInstallation {
+                executable: here(&was.executable),
+                model: here(&was.model),
+                ..was.clone()
+            }
+        );
+        let record: Manifest =
+            serde_json::from_slice(&fs::read(after.join("installation.json")).unwrap()).unwrap();
+        assert_eq!(record.installation, installation);
+        assert!(matches!(
+            read_saved(&release, &after),
+            Ok(Saved::Current(now)) if now == installation
+        ));
+        assert!(!before.exists(), "the old folder is neither read nor made");
+        let files = fixtures::snapshot(&after);
+        assert_eq!(install_at(&release, &after).0.unwrap(), installation);
+        assert_eq!(
+            fixtures::snapshot(&after),
+            files,
+            "installing again changes nothing"
+        );
+    }
+    #[test]
+    fn a_copied_installation_leaves_the_folder_it_was_copied_from_untouched() {
+        let release = release();
+        let folder = Folder::new();
+        let source = folder.path.join("source").join("nemotron");
+        let copy = folder.path.join("copy").join("nemotron");
+        installed(&source, &release);
+        fixtures::copy_tree(&source, &copy);
+        let files = fixtures::snapshot(&source);
+        assert!(matches!(read_saved(&release, &copy), Ok(Saved::Moved)));
+        install_at(&release, &copy).0.unwrap();
+        assert_eq!(fixtures::snapshot(&source), files);
+        assert!(matches!(
+            read_saved(&release, &copy),
+            Ok(Saved::Current(now)) if now.model.starts_with(&copy)
+        ));
+    }
+    #[test]
+    fn a_moved_record_of_another_pinned_release_still_blocks_the_install() {
+        let release = release();
+        let mismatch = RECORD_MISMATCH;
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.metadata_sha256 = "0".repeat(64)
+        });
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.installation.model_revision = "other".into()
+        });
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.installation.model_sha256 = "0".repeat(64)
+        });
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.installation.runtime_version = "0.0.1".into()
+        });
+        assert_record_refused(&release, mismatch, |_, m| m.installation.version = 2);
+    }
+    #[test]
+    fn a_record_that_names_other_files_than_the_folder_holds_is_not_a_moved_one() {
+        let release = release();
+        let mismatch = RECORD_MISMATCH;
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.installation.model.set_file_name("other.gguf")
+        });
+        assert_record_refused(&release, mismatch, |root, m| {
+            m.installation.model = root.join("test-model.gguf")
+        });
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.installation.executable = PathBuf::from("bin/nemo-speech.exe")
+        });
+    }
+    #[test]
+    fn a_moved_installation_with_a_damaged_file_is_refused_and_the_old_record_kept() {
+        let release = release();
+        assert_refused(
+            &release,
+            "SHA256が一致しません: bin/ggml.dll",
+            |root| fixtures::corrupt(&runtime_folder(root, &release).join("bin/ggml.dll")),
+        );
+        assert_refused(
+            &release,
+            "SHA256が一致しません: test-model.gguf",
+            |root| fixtures::corrupt(&model_file(root, &release)),
+        );
+        assert_refused(&release, "サイズ", |root| {
+            fs::write(model_file(root, &release), &MODEL[1..]).unwrap()
+        });
+    }
     #[test]
     fn pins_and_backends_are_fixed() {
         let data = metadata().unwrap();

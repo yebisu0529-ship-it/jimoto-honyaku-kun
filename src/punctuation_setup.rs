@@ -1,7 +1,7 @@
 //! Isolated, opt-in, SHA-pinned native punctuation installation.
 use crate::{
     hardware,
-    installer::{self, Artifact, Progress, RuntimeFile},
+    installer::{self, Artifact, Progress, RuntimeFile, Saved},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use std::{
 
 const METADATA: &[u8] = include_bytes!("../scripts/punctuation-runtime.json");
 const UNPACK_LIMIT: u64 = 512 * 1024 * 1024;
+const PATHS_MISMATCH: &str = "Punctuation paths do not match the isolated installation";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PunctuationInstallation {
@@ -23,6 +24,22 @@ pub struct PunctuationInstallation {
     pub library: PathBuf,
     pub model: PathBuf,
     pub runtime_version: String,
+}
+impl PunctuationInstallation {
+    /// This record is `expected`, written while the folder was somewhere else.
+    /// Only the path fields are left out of the comparison.
+    fn moved_to(&self, expected: &Self) -> bool {
+        let pinned = Self {
+            root: expected.root.clone(),
+            library: expected.library.clone(),
+            model: expected.model.clone(),
+            ..self.clone()
+        };
+        pinned == *expected
+            && self.root.is_absolute()
+            && installer::relocated(&expected.root, &expected.library, &self.library)
+            && installer::relocated(&expected.root, &expected.model, &self.model)
+    }
 }
 #[derive(Deserialize)]
 struct Metadata {
@@ -45,7 +62,10 @@ struct Manifest {
     installation: PunctuationInstallation,
 }
 fn metadata() -> Result<Metadata> {
-    let data: Metadata = serde_json::from_slice(METADATA)?;
+    metadata_of(METADATA)
+}
+fn metadata_of(release: &[u8]) -> Result<Metadata> {
+    let data: Metadata = serde_json::from_slice(release)?;
     ensure!(data.version == 1, "Unsupported punctuation metadata");
     Ok(data)
 }
@@ -56,8 +76,8 @@ pub(crate) fn downloads() -> Result<Vec<Artifact>> {
         .chain(data.notices)
         .collect())
 }
-fn digest() -> String {
-    format!("{:x}", Sha256::digest(METADATA))
+fn digest(release: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(release))
 }
 fn package_root(root: &Path, kind: &str, spec: &Artifact) -> PathBuf {
     root.join(kind).join(&spec.sha256[..16])
@@ -107,20 +127,24 @@ fn verify_package(
 
 /// Hash every installed model/DLL against the committed package inventory.
 pub fn load(root: &Path) -> Result<Option<PunctuationInstallation>> {
+    read_saved(METADATA, root)?.current(PATHS_MISMATCH)
+}
+
+fn read_saved(release: &[u8], root: &Path) -> Result<Saved<PunctuationInstallation>> {
     if !root.exists() {
-        return Ok(None);
+        return Ok(Saved::Absent);
     }
     installer::safe_components(root, false)?;
     let root = fs::canonicalize(root)?;
     let manifest = root.join("installation.json");
     installer::safe_file(&manifest)?;
     if !manifest.exists() {
-        return Ok(None);
+        return Ok(Saved::Absent);
     }
     let saved: Manifest = serde_json::from_slice(&read_small(&manifest)?)?;
-    let data = metadata()?;
+    let data = metadata_of(release)?;
     ensure!(
-        saved.version == 1 && saved.metadata_sha256 == digest(),
+        saved.version == 1 && saved.metadata_sha256 == digest(release),
         "Punctuation installation metadata mismatch"
     );
     let cancel = AtomicBool::new(false);
@@ -152,11 +176,16 @@ pub fn load(root: &Path) -> Result<Option<PunctuationInstallation>> {
         model,
         runtime_version: data.runtime_version,
     };
+    let current = saved.installation == expected;
     ensure!(
-        saved.installation == expected,
-        "Punctuation paths do not match the isolated installation"
+        current || saved.installation.moved_to(&expected),
+        PATHS_MISMATCH
     );
-    Ok(Some(expected))
+    Ok(if current {
+        Saved::Current(expected)
+    } else {
+        Saved::Moved
+    })
 }
 
 fn unpack(archive: &Path, destination: &Path, cancel: &AtomicBool) -> Result<Vec<RuntimeFile>> {
@@ -289,6 +318,16 @@ pub fn pending_download_bytes(root: &Path) -> u64 {
 pub fn install(
     root: &Path,
     cancel: Arc<AtomicBool>,
+    on_progress: impl FnMut(Progress),
+) -> Result<PunctuationInstallation> {
+    install_release(METADATA, root, cancel, on_progress)
+}
+
+/// `install` for the pinned `release`, which tests replace with a small one.
+fn install_release(
+    release: &[u8],
+    root: &Path,
+    cancel: Arc<AtomicBool>,
     mut on_progress: impl FnMut(Progress),
 ) -> Result<PunctuationInstallation> {
     installer::cancelled(&cancel)?;
@@ -303,10 +342,12 @@ pub fn install(
     installer::safe_components(root, true)?;
     let root = fs::canonicalize(root)?;
     let _lock = installer::RootLock::acquire(&root)?;
-    if let Some(existing) = load(&root)? {
+    // A record of a moved folder is not returned. The checks below run again
+    // at this folder's paths, and the record is written for them.
+    if let Saved::Current(existing) = read_saved(release, &root)? {
         return Ok(existing);
     }
-    let data = metadata()?;
+    let data = metadata_of(release)?;
     installer::safe_components(&root.join("downloads"), true)?;
     installer::safe_components(&root.join("licenses"), true)?;
     let free = hardware::detect(&root)?
@@ -345,7 +386,7 @@ pub fn install(
         &root.join("licenses/model-NOTICE.txt"),
         data.model_license_notice.as_bytes(),
     )?;
-    installer::atomic_write(&root.join("metadata.json"), METADATA)?;
+    installer::atomic_write(&root.join("metadata.json"), release)?;
     let installation = PunctuationInstallation {
         version: 1,
         root: root.clone(),
@@ -358,7 +399,7 @@ pub fn install(
         &root.join("installation.json"),
         &serde_json::to_vec_pretty(&Manifest {
             version: 1,
-            metadata_sha256: digest(),
+            metadata_sha256: digest(release),
             installation: installation.clone(),
         })?,
     )?;
@@ -374,6 +415,215 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::installer::fixtures::{self, Folder};
+
+    const LICENSE: &[u8] = b"test licence text";
+    const MODEL_NOTICE: &str = "test model notice";
+
+    fn release() -> Vec<u8> {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1,
+            "runtime_version": "9.9.9",
+            "runtime": fixtures::artifact("runtime.tar.bz2", b"runtime archive"),
+            "model": fixtures::artifact("model.tar.bz2", b"model archive"),
+            "notices": [fixtures::artifact("test-LICENSE.txt", LICENSE)],
+            "model_license_notice": MODEL_NOTICE,
+        }))
+        .unwrap()
+    }
+    /// What a real install leaves under `root`: the packages unpacked and the
+    /// notices saved, then the record.
+    fn installed(root: &Path, release: &[u8]) -> PunctuationInstallation {
+        let data = metadata_of(release).unwrap();
+        for (kind, spec, paths) in [
+            (
+                "runtime",
+                &data.runtime,
+                ["lib/sherpa-onnx-c-api.dll", "lib/onnxruntime.dll"],
+            ),
+            ("models", &data.model, ["model.int8.onnx", "tokens.txt"]),
+        ] {
+            let package = package_root(root, kind, spec);
+            let files = paths
+                .iter()
+                .map(|path| fixtures::package_file(&package, path, path.as_bytes()))
+                .collect();
+            let index = Package {
+                artifact: spec.clone(),
+                files,
+            };
+            fixtures::write(
+                &package.join("package.json"),
+                &serde_json::to_vec(&index).unwrap(),
+            );
+        }
+        for notice in &data.notices {
+            fixtures::write(&root.join("licenses").join(&notice.name), LICENSE);
+        }
+        install_at(release, root).0.unwrap()
+    }
+    /// The install, and the stages it reported.
+    fn install_at(release: &[u8], root: &Path) -> (Result<PunctuationInstallation>, Vec<String>) {
+        let mut stages = Vec::new();
+        let result = install_release(
+            release,
+            root,
+            Arc::new(AtomicBool::new(false)),
+            |progress| stages.push(progress.stage),
+        );
+        (result, stages)
+    }
+    fn edit_record(root: &Path, change: impl FnOnce(&mut Manifest)) {
+        let path = root.join("installation.json");
+        let mut record: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        change(&mut record);
+        fs::write(path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    }
+    /// An installation made in one folder and moved to another.
+    fn moved(folder: &Folder, release: &[u8]) -> (PathBuf, PathBuf, PunctuationInstallation) {
+        let before = folder.path.join("before").join("text-punctuation");
+        let after = folder.path.join("after").join("text-punctuation");
+        let installation = installed(&before, release);
+        fs::create_dir_all(after.parent().unwrap()).unwrap();
+        fs::rename(&before, &after).unwrap();
+        (before, after, installation)
+    }
+    /// Moves an installation and lets `spoil` change it at its new place. The
+    /// install has to refuse it for `evidence` and change no file.
+    #[track_caller]
+    fn assert_refused(release: &[u8], evidence: &str, spoil: impl FnOnce(&Path)) {
+        let folder = Folder::new();
+        let (_, after, _) = moved(&folder, release);
+        spoil(&after);
+        let files = fixtures::snapshot(&after);
+        let error = format!("{:#}", install_at(release, &after).0.unwrap_err());
+        assert!(error.contains(evidence), "{error}");
+        assert_eq!(
+            fixtures::snapshot(&after),
+            files,
+            "a refused install changes no file"
+        );
+    }
+    #[track_caller]
+    fn assert_record_refused(
+        release: &[u8],
+        evidence: &str,
+        change: impl FnOnce(&Path, &mut Manifest),
+    ) {
+        assert_refused(release, evidence, |root| {
+            edit_record(root, |record| change(root, record))
+        });
+    }
+
+    #[test]
+    fn a_moved_installation_is_verified_where_it_now_is_and_its_record_rewritten() {
+        let release = release();
+        let folder = Folder::new();
+        let (before, after, was) = moved(&folder, &release);
+        assert!(
+            matches!(read_saved(&release, &after), Ok(Saved::Moved)),
+            "a reader still refuses the old paths"
+        );
+        let (result, stages) = install_at(&release, &after);
+        let installation = result.unwrap();
+        assert!(
+            stages.iter().all(|s| s == "verify" || s == "complete"),
+            "nothing is downloaded: {stages:?}"
+        );
+        let here = |path: &Path| after.join(path.strip_prefix(&before).unwrap());
+        assert_eq!(
+            installation,
+            PunctuationInstallation {
+                root: after.clone(),
+                library: here(&was.library),
+                model: here(&was.model),
+                ..was.clone()
+            }
+        );
+        let record: Manifest =
+            serde_json::from_slice(&fs::read(after.join("installation.json")).unwrap()).unwrap();
+        assert_eq!(record.installation, installation);
+        assert!(matches!(
+            read_saved(&release, &after),
+            Ok(Saved::Current(now)) if now == installation
+        ));
+        assert!(!before.exists(), "the old folder is neither read nor made");
+        let files = fixtures::snapshot(&after);
+        assert_eq!(install_at(&release, &after).0.unwrap(), installation);
+        assert_eq!(
+            fixtures::snapshot(&after),
+            files,
+            "installing again changes nothing"
+        );
+    }
+    #[test]
+    fn a_copied_installation_leaves_the_folder_it_was_copied_from_untouched() {
+        let release = release();
+        let folder = Folder::new();
+        let source = folder.path.join("source").join("text-punctuation");
+        let copy = folder.path.join("copy").join("text-punctuation");
+        installed(&source, &release);
+        fixtures::copy_tree(&source, &copy);
+        let files = fixtures::snapshot(&source);
+        assert!(matches!(read_saved(&release, &copy), Ok(Saved::Moved)));
+        install_at(&release, &copy).0.unwrap();
+        assert_eq!(fixtures::snapshot(&source), files);
+        assert!(matches!(
+            read_saved(&release, &copy),
+            Ok(Saved::Current(now)) if now.root == copy
+        ));
+    }
+    #[test]
+    fn a_moved_record_of_another_pinned_release_still_blocks_the_install() {
+        let release = release();
+        let metadata = "Punctuation installation metadata mismatch";
+        assert_record_refused(&release, metadata, |_, m| {
+            m.metadata_sha256 = "0".repeat(64)
+        });
+        assert_record_refused(&release, metadata, |_, m| m.version = 2);
+        assert_record_refused(&release, PATHS_MISMATCH, |_, m| {
+            m.installation.runtime_version = "0.0.1".into()
+        });
+        assert_record_refused(&release, PATHS_MISMATCH, |_, m| m.installation.version = 2);
+    }
+    #[test]
+    fn a_record_that_names_other_files_than_the_folder_holds_is_not_a_moved_one() {
+        let release = release();
+        assert_record_refused(&release, PATHS_MISMATCH, |_, m| {
+            m.installation.model.set_file_name("other.onnx")
+        });
+        assert_record_refused(&release, PATHS_MISMATCH, |root, m| {
+            m.installation.library = root.join("sherpa-onnx-c-api.dll")
+        });
+        assert_record_refused(&release, PATHS_MISMATCH, |_, m| {
+            m.installation.root = PathBuf::from("text-punctuation")
+        });
+    }
+    #[test]
+    fn a_moved_installation_with_a_damaged_file_is_refused_and_the_old_record_kept() {
+        let release = release();
+        let data = metadata_of(&release).unwrap();
+        let runtime = |root: &Path| package_root(root, "runtime", &data.runtime);
+        let model = |root: &Path| package_root(root, "models", &data.model);
+        assert_refused(
+            &release,
+            "SHA256が一致しません: lib/onnxruntime.dll",
+            |root| fixtures::corrupt(&runtime(root).join("lib/onnxruntime.dll")),
+        );
+        assert_refused(
+            &release,
+            "SHA256が一致しません: model.int8.onnx",
+            |root| fixtures::corrupt(&model(root).join("model.int8.onnx")),
+        );
+        assert_refused(
+            &release,
+            "SHA256が一致しません: test-LICENSE.txt",
+            |root| fixtures::corrupt(&root.join("licenses/test-LICENSE.txt")),
+        );
+        assert_refused(&release, "Model license notice mismatch", |root| {
+            fs::write(root.join("licenses/model-NOTICE.txt"), "changed").unwrap()
+        });
+    }
     #[test]
     fn pinned_artifacts() {
         let data = metadata().unwrap();

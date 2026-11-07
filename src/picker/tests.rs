@@ -296,10 +296,7 @@ fn a_dxgi_reading_is_labelled_an_estimate() {
 fn a_full_gpu_says_the_model_runs_on_the_cpu() {
     let view = app_on(Some((8 * GIB, 13 * GIB / 2))).meter_view().unwrap();
     assert_eq!(view.used_line(), "使用中 6.5 GB / 8.0 GB");
-    assert_eq!(
-        view.model_line(),
-        "GPUの空きが足りないため、CPUで実行します"
-    );
+    assert_eq!(view.model_line(), "GPUの空きが足りず、CPUで実行します");
     assert!(!view.exceeds() && !view.draws_estimate());
     assert!(view.items().iter().all(|item| item.key != Some(ACCENT)));
 }
@@ -488,7 +485,7 @@ fn rows_and_meter_fit_without_clipping_or_overlap_at_both_window_sizes() {
                     wanted.push("GPUメモリ".into());
                     wanted.extend(view.items().into_iter().map(|item| item.text));
                 }
-                None => wanted.push("GPUが見つかりません。CPUで使える0.8Bだけを選べます。".into()),
+                None => wanted.extend(cpu_note_lines(false, size == LARGE)),
             }
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0, size.1));
             let all = pool.clone();

@@ -205,7 +205,7 @@ impl MeterView {
 
     pub(super) fn model_line(&self) -> String {
         if self.runs_on_cpu {
-            return "GPUの空きが足りないため、CPUで実行します".into();
+            return "GPUの空きが足りず、CPUで実行します".into();
         }
         match self.meter.change {
             MemoryChange::Loaded if self.loading => "読み込み中".into(),
@@ -316,7 +316,7 @@ impl App {
         let width = ui.available_width().min(PICKER_MAX_WIDTH);
         let side = |ui: &mut egui::Ui| match &meter {
             Some(view) => meter_ui(ui, view, wide),
-            None => cpu_note(ui, force_cpu),
+            None => cpu_note(ui, force_cpu, wide),
         };
         ui.scope(|ui| {
             ui.set_max_width(width);
@@ -499,14 +499,30 @@ fn paint_row(
     response
 }
 
-fn cpu_note(ui: &mut egui::Ui, force_cpu: bool) {
+/// Why there is no meter. Stacked, each sentence has its own line, so a narrow
+/// column never breaks one in the middle.
+fn cpu_note_lines(force_cpu: bool, stacked: bool) -> Vec<String> {
+    let sentences = [
+        if force_cpu {
+            "GPUを使わない設定です。"
+        } else {
+            "GPUが見つかりません。"
+        },
+        "CPUで使える0.8Bだけを選べます。",
+    ];
+    if stacked {
+        sentences.map(String::from).to_vec()
+    } else {
+        vec![sentences.concat()]
+    }
+}
+
+fn cpu_note(ui: &mut egui::Ui, force_cpu: bool, stacked: bool) {
     theme::card().show(ui, |ui| {
         ui.set_min_width(ui.available_width());
-        ui.label(theme::label(if force_cpu {
-            "GPUを使わない設定です。CPUで使える0.8Bだけを選べます。"
-        } else {
-            "GPUが見つかりません。CPUで使える0.8Bだけを選べます。"
-        }));
+        for line in cpu_note_lines(force_cpu, stacked) {
+            ui.label(theme::label(line));
+        }
     });
 }
 

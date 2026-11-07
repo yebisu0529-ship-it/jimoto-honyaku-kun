@@ -2136,7 +2136,7 @@ const FORMING_LONG: (&str, &str) = (
     "Feedback cards ask three questions about memorable details, confusing passages",
 );
 const FORMING_SHORT: (&str, &str) = ("お名前は必要ありません。", "No name is required.");
-const FORMING_TINY: (&str, &str) = ("はい、どうぞ。", "Yes, go ahead.");
+const FORMING_TINY: (&str, &str) = ("はい。", "Yes.");
 
 /// A subtitle window holding `fixed` parts and one still forming, filled the
 /// way the app fills it. A YouTube window gets a change of speaker and video

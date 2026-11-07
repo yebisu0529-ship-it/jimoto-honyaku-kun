@@ -16,6 +16,60 @@ struct Texture {
 
 const SETTLED_FRAME: u32 = 4;
 
+fn frame_input(frame: u32, width: u32, height: u32, pointer: Option<Pos2>) -> egui::RawInput {
+    let mut input = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(width as f32, height as f32),
+        )),
+        max_texture_side: Some(8192),
+        time: Some(frame as f64 / 60.0),
+        events: pointer
+            .filter(|_| frame > 0)
+            .map(egui::Event::PointerMoved)
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    input
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .native_pixels_per_point = Some(1.0);
+    input
+}
+
+/// Where the text `label` is drawn once `draw` has had the frames to settle,
+/// for a preview to rest the pointer on. Use a context of its own: this runs
+/// the same frames a preview does.
+pub fn locate(
+    ctx: &egui::Context,
+    width: u32,
+    height: u32,
+    label: &str,
+    mut draw: impl FnMut(&egui::Context),
+) -> Option<Pos2> {
+    fn centre_of(shape: &epaint::Shape, label: &str) -> Option<Pos2> {
+        match shape {
+            epaint::Shape::Text(text) if text.galley.text() == label => {
+                Some(text.visual_bounding_rect().center())
+            }
+            epaint::Shape::Vec(shapes) => shapes.iter().find_map(|shape| centre_of(shape, label)),
+            _ => None,
+        }
+    }
+    ctx.set_pixels_per_point(1.0);
+    let mut found = None;
+    for frame in 0..=SETTLED_FRAME {
+        let output = ctx.run(frame_input(frame, width, height, None), &mut draw);
+        found = output
+            .shapes
+            .iter()
+            .find_map(|clipped| centre_of(&clipped.shape, label));
+    }
+    found
+}
+
 /// Draw layout/font warm-up frames and save the final frame as a PNG. A scroll
 /// area that follows its end needs a few frames to settle there.
 pub fn render(
@@ -23,6 +77,19 @@ pub fn render(
     path: &Path,
     width: u32,
     height: u32,
+    draw: impl FnMut(&egui::Context),
+) -> Result<()> {
+    render_hovering(ctx, path, width, height, None, draw)
+}
+
+/// [`render`] with the pointer resting at `pointer` from the second frame on,
+/// as it rests on a menu item whose submenu is open.
+pub fn render_hovering(
+    ctx: &egui::Context,
+    path: &Path,
+    width: u32,
+    height: u32,
+    pointer: Option<Pos2>,
     mut draw: impl FnMut(&egui::Context),
 ) -> Result<()> {
     ensure!(
@@ -38,21 +105,7 @@ pub fn render(
     let mut image = image::RgbaImage::new(width, height);
 
     for frame in 0..=SETTLED_FRAME {
-        let mut input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(
-                Pos2::ZERO,
-                egui::vec2(width as f32, height as f32),
-            )),
-            max_texture_side: Some(8192),
-            time: Some(frame as f64 / 60.0),
-            ..Default::default()
-        };
-        input
-            .viewports
-            .entry(egui::ViewportId::ROOT)
-            .or_default()
-            .native_pixels_per_point = Some(1.0);
-        let output = ctx.run(input, &mut draw);
+        let output = ctx.run(frame_input(frame, width, height, pointer), &mut draw);
         for (id, delta) in &output.textures_delta.set {
             update_texture(&mut textures, *id, delta)?;
         }
@@ -268,6 +321,30 @@ fn paint_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_located_text_is_where_the_pointer_then_rests() {
+        let hovered = std::cell::Cell::new(false);
+        let draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("away");
+                hovered.set(ui.button("here").hovered());
+            });
+        };
+        let at = locate(&egui::Context::default(), 200, 100, "here", draw)
+            .expect("the text of the button is drawn");
+        assert!(!hovered.get(), "locating moves no pointer");
+        assert_eq!(
+            locate(&egui::Context::default(), 200, 100, "missing", draw),
+            None
+        );
+
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("hovering.png");
+        render_hovering(&egui::Context::default(), &path, 200, 100, Some(at), draw).unwrap();
+        assert!(hovered.get(), "the pointer rests on the button");
+        assert!(path.is_file());
+    }
 
     #[test]
     fn shared_triangle_edge_is_blended_once_and_clip_is_respected() {

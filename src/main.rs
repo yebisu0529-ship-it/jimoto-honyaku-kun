@@ -2392,12 +2392,25 @@ fn render_setup_views(folder: &Path) -> Result<()> {
     Ok(())
 }
 
-/// What a preview of the main window shows over its screen.
+/// What a preview of the main window shows over its screen, or changes on it.
 enum Overlay {
     Nothing,
     Menu,
+    /// The menu, with the submenu of the row 入力の切り替え open.
+    InputMenu,
     Details,
     NoModel,
+    Readout,
+    Error,
+}
+
+/// What the live inputs are doing in a preview.
+#[derive(Clone, Copy)]
+enum Listening {
+    Stopped,
+    PcAudio,
+    Captions,
+    Both,
 }
 
 fn render_demo_views(folder: &Path) -> Result<()> {
@@ -2405,16 +2418,106 @@ fn render_demo_views(folder: &Path) -> Result<()> {
     render_setup_views(folder)?;
     let nothing_saved = tempfile::tempdir()?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
-        for (name, tab, filled, overlay) in [
-            ("01-text-empty", Tab::Text, false, Overlay::Nothing),
-            ("02-text-filled", Tab::Text, true, Overlay::Nothing),
-            ("03-live", Tab::Live, true, Overlay::Nothing),
-            ("04-settings", Tab::Settings, false, Overlay::Nothing),
-            ("05-first-run", Tab::Setup, false, Overlay::Nothing),
-            ("18-history", Tab::Files, true, Overlay::Nothing),
-            ("27-menu", Tab::Live, true, Overlay::Menu),
-            ("28-details", Tab::Live, true, Overlay::Details),
-            ("29-no-model", Tab::Live, true, Overlay::NoModel),
+        for (name, tab, filled, overlay, listening) in [
+            (
+                "01-text-empty",
+                Tab::Text,
+                false,
+                Overlay::Nothing,
+                Listening::Stopped,
+            ),
+            (
+                "02-text-filled",
+                Tab::Text,
+                true,
+                Overlay::Nothing,
+                Listening::Stopped,
+            ),
+            (
+                "03-live",
+                Tab::Live,
+                true,
+                Overlay::Nothing,
+                Listening::Both,
+            ),
+            (
+                "04-settings",
+                Tab::Settings,
+                false,
+                Overlay::Nothing,
+                Listening::Stopped,
+            ),
+            (
+                "05-first-run",
+                Tab::Setup,
+                false,
+                Overlay::Nothing,
+                Listening::Stopped,
+            ),
+            (
+                "18-history",
+                Tab::Files,
+                true,
+                Overlay::Nothing,
+                Listening::Both,
+            ),
+            ("27-menu", Tab::Live, true, Overlay::Menu, Listening::Both),
+            (
+                "28-details",
+                Tab::Live,
+                true,
+                Overlay::Details,
+                Listening::Both,
+            ),
+            (
+                "29-no-model",
+                Tab::Live,
+                true,
+                Overlay::NoModel,
+                Listening::Stopped,
+            ),
+            (
+                "30-live-stopped",
+                Tab::Live,
+                true,
+                Overlay::Nothing,
+                Listening::Stopped,
+            ),
+            (
+                "31-live-pc-audio",
+                Tab::Live,
+                true,
+                Overlay::Nothing,
+                Listening::PcAudio,
+            ),
+            (
+                "32-live-captions",
+                Tab::Live,
+                true,
+                Overlay::Nothing,
+                Listening::Captions,
+            ),
+            (
+                "33-input-menu",
+                Tab::Live,
+                true,
+                Overlay::InputMenu,
+                Listening::PcAudio,
+            ),
+            (
+                "34-live-readout",
+                Tab::Live,
+                true,
+                Overlay::Readout,
+                Listening::PcAudio,
+            ),
+            (
+                "35-live-error",
+                Tab::Live,
+                true,
+                Overlay::Error,
+                Listening::Stopped,
+            ),
         ] {
             let ctx = egui::Context::default();
             ui::configure_theme(&ctx);
@@ -2458,9 +2561,18 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 "会議は来週の月曜日に変更になりました。\nプロジェクトの管理画面を開いてください。"
                     .into();
             }
-            if matches!(tab, Tab::Live | Tab::Files) {
-                app.caption_enabled = true;
-                app.audio_enabled = true;
+            match listening {
+                Listening::Stopped => {}
+                Listening::PcAudio => app.audio_enabled = true,
+                Listening::Captions => {
+                    app.caption_enabled = true;
+                    app.caption_paused = false;
+                    app.last_caption = Some(Instant::now());
+                }
+                Listening::Both => {
+                    app.caption_enabled = true;
+                    app.audio_enabled = true;
+                }
             }
             if tab == Tab::Files {
                 for (index, source, translation) in [
@@ -2505,9 +2617,29 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 app.current_live_id = Some(5);
                 app.live_chat.toggle_original(3, 0);
             }
+            let mut pointer = None;
             match overlay {
                 Overlay::Nothing => {}
                 Overlay::Menu => egui::Popup::open_id(&ctx, egui::Id::new(ui::MORE_MENU)),
+                Overlay::InputMenu => {
+                    let open_menu = |ctx: &egui::Context| {
+                        egui::Popup::open_id(ctx, egui::Id::new(ui::MORE_MENU))
+                    };
+                    // A context of its own finds the row, so that the pointer can
+                    // rest on it and open the submenu. Without the row, the menu
+                    // is drawn as it is.
+                    let probe = egui::Context::default();
+                    ui::configure_theme(&probe);
+                    open_menu(&probe);
+                    pointer = preview::locate(
+                        &probe,
+                        viewport_width,
+                        viewport_height,
+                        "入力の切り替え",
+                        |ctx| app.render_ui(ctx),
+                    );
+                    open_menu(&ctx);
+                }
                 Overlay::Details => {
                     // The window fades in; the picture shows it after it has.
                     ctx.style_mut(|style| style.animation_time = 0.0);
@@ -2515,8 +2647,15 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     app.details_open = true;
                 }
                 Overlay::NoModel => app.backend_ready = false,
+                Overlay::Readout => {
+                    app.settings.readout_enabled = true;
+                    app.settings.auto_read = true;
+                }
+                Overlay::Error => {
+                    app.service_error = "音声認識を読み込めませんでした。設定で音声認識の方式を確認し、準備し直してください。".into();
+                }
             }
-            preview::render(
+            preview::render_hovering(
                 &ctx,
                 &folder.join(if viewport_width == 1280 {
                     format!("{name}.png")
@@ -2525,6 +2664,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 }),
                 viewport_width,
                 viewport_height,
+                pointer,
                 |ctx| app.render_ui(ctx),
             )?;
         }

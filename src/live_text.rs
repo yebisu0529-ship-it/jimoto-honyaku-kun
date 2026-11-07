@@ -1381,6 +1381,40 @@ pub fn compose_context(
     ))
 }
 
+const FILLERS: [&str; 6] = ["um", "uh", "er", "erm", "hmm", "mm"];
+
+/// Leaves standalone English hesitation sounds out of the text sent to the
+/// translator, which would render them as 「えー」 or 「えーと」.
+pub fn without_fillers(text: &str) -> String {
+    let mut total = 0;
+    let mut previous = "";
+    let mut kept = Vec::new();
+    for token in text.split_whitespace() {
+        total += 1;
+        if !is_filler(token, previous) {
+            kept.push(token);
+        }
+        previous = token;
+    }
+    // A request made only of fillers still needs text to translate.
+    if kept.is_empty() || kept.len() == total {
+        return text.to_owned();
+    }
+    kept.join(" ")
+}
+
+fn is_filler(token: &str, previous: &str) -> bool {
+    let word = token.strip_suffix(',').unwrap_or(token);
+    // "5 mm" is a unit.
+    if word == "mm" && previous.ends_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    // Only the first letter may be uppercase; "ER" and "UM" are abbreviations.
+    FILLERS
+        .iter()
+        .any(|filler| word.eq_ignore_ascii_case(filler) && word[1..] == filler[1..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2472,5 +2506,58 @@ mod tests {
             all.iter().all(|p| !p.text.contains(SPEAKER_TURN)),
             "{all:?}"
         );
+    }
+
+    #[test]
+    fn standalone_fillers_are_left_out_and_every_other_word_stays() {
+        for (text, expected) in [
+            (
+                "them. Um now, some of the questions that I asked to kick off the reports, uh they want to answer those and answer a whole range of other questions, which might go to other task forces, but I'm impressed by what they're doing. Um I gave them, like I told you uh a year-end deadline.",
+                "them. now, some of the questions that I asked to kick off the reports, they want to answer those and answer a whole range of other questions, which might go to other task forces, but I'm impressed by what they're doing. I gave them, like I told you a year-end deadline.",
+            ),
+            (
+                "On November 16th, uh the productivity and jobs task force will be doing a field hearing um inviting a broad range of people who have strong views.",
+                "On November 16th, the productivity and jobs task force will be doing a field hearing inviting a broad range of people who have strong views.",
+            ),
+            (
+                "Um, I think, uh, we should go. Hmm, er, erm, mm, okay.",
+                "I think, we should go. okay.",
+            ),
+            (">> Well, um we've got to", ">> Well, we've got to"),
+        ] {
+            assert_eq!(without_fillers(text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn words_that_only_look_like_fillers_are_kept() {
+        for text in [
+            "Ah, I see.",
+            "Uh-huh, mm-hmm.",
+            "Yes, uh-huh, I agree. Mm-hmm, go on.",
+            "The ER and UM teams met.",
+            "An umbrella in summer for her.",
+            "Use a 5 mm screw.",
+            "Drill a 5 mm, then a 6 mm hole.",
+            ">> So the mandate was given to us by Congress.",
+            "So it was, um.",
+            "Is it, uh? (Er) no.",
+            "Well, um,, okay.",
+        ] {
+            assert_eq!(without_fillers(text), text);
+        }
+    }
+
+    #[test]
+    fn text_with_no_filler_or_nothing_else_comes_back_byte_for_byte() {
+        for text in [
+            "Um",
+            "uh, um,",
+            "Um  uh\nhmm",
+            "First line.\nSecond  line.",
+            "  padded  ",
+        ] {
+            assert_eq!(without_fillers(text), text);
+        }
     }
 }

@@ -172,6 +172,7 @@ pub struct State {
     at_end: bool,
     /// The newest message the reader has been shown.
     seen: u64,
+    content_height: f32,
     start_at_top: bool,
     jump_to_end: bool,
     #[cfg(test)]
@@ -190,6 +191,7 @@ impl Default for State {
             follow_was_on: true,
             at_end: true,
             seen: 0,
+            content_height: 0.0,
             start_at_top: false,
             jump_to_end: false,
             #[cfg(test)]
@@ -297,6 +299,12 @@ impl State {
         }
         self.at_end =
             output.state.offset.y + output.inner_rect.height() + 0.5 >= output.content_size.y;
+        // The scroll area moves to the new end after this frame has been laid
+        // out, so the next frame is wanted at once.
+        if following && (output.content_size.y - self.content_height).abs() > 0.5 {
+            ui.ctx().request_repaint();
+        }
+        self.content_height = output.content_size.y;
         let newest = messages
             .iter()
             .filter(|message| message.id != TYPING)
@@ -1643,6 +1651,29 @@ mod tests {
         );
         assert_eq!(count_text(&output, "10番目に確定した部分です。"), 1);
         assert!(!announces_new_messages(&output));
+    }
+
+    #[test]
+    fn a_message_that_makes_the_chat_taller_asks_for_the_next_frame_at_once() {
+        let mut chat = Chat::new(720.0, 300.0);
+        let spoken = lines(8);
+        chat.settle(&talk(&spoken[..6]));
+        let (output, _) = chat.frame(&talk(&spoken[..6]), vec![]);
+        assert!(
+            output
+                .viewport_output
+                .values()
+                .all(|viewport| !viewport.repaint_delay.is_zero()),
+            "nothing changed, nothing to redraw"
+        );
+        let (output, _) = chat.frame(&talk(&spoken[..7]), vec![]);
+        assert!(
+            output
+                .viewport_output
+                .values()
+                .any(|viewport| viewport.repaint_delay.is_zero()),
+            "the view moves to the new end on the next frame"
+        );
     }
 
     #[test]

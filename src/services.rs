@@ -449,8 +449,10 @@ impl App {
         self.settings.asr_device = data["device"].as_str().unwrap_or("cpu").into();
         Ok(())
     }
+    /// A model that is still loading is no reason to leave for the setup screen:
+    /// speech recognition does not need it, and listening starts once it is ready.
     pub(super) fn prepare_audio(&mut self) {
-        if !self.backend_ready {
+        if !self.backend_ready && !self.backend_loading {
             self.open_setup();
             self.status = "先に翻訳モデルを準備してください。".into();
             return;
@@ -669,6 +671,46 @@ mod tests {
         assert!(app.audio_confirmation);
         assert!(!app.audio_installing && !app.audio_enabled && !app.audio_start_requested);
         assert!(app.audio.is_none());
+    }
+    /// Whisper with no Python, so nothing is installed and no file of this PC is read.
+    fn app_without_whisper() -> App {
+        let mut app = App::inert();
+        app.tab = Tab::Live;
+        app.settings.asr_backend = "whisper".into();
+        app.settings.python = std::env::temp_dir()
+            .join(format!("missing-audio-{}", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into();
+        app.setup.hardware = Some(plamo_translate::hardware::Hardware {
+            os_arch: "windows-x86_64".into(),
+            cpu_logical: 8,
+            ram_total_bytes: None,
+            ram_available_bytes: None,
+            disk_free_bytes: None,
+            disk_target: "fixture".into(),
+            gpus: vec![],
+            warnings: vec![],
+        });
+        app
+    }
+    #[test]
+    fn a_model_that_is_still_loading_does_not_send_the_user_back_to_setup() {
+        let mut app = app_without_whisper();
+        app.backend_loading = true;
+        app.prepare_audio();
+        assert!(app.tab == Tab::Live);
+        assert!(
+            app.audio_confirmation,
+            "speech recognition goes on without the model"
+        );
+    }
+    #[test]
+    fn without_any_translation_model_audio_goes_to_setup_first() {
+        let mut app = app_without_whisper();
+        app.prepare_audio();
+        assert!(app.tab == Tab::Setup);
+        assert!(!app.audio_confirmation);
+        assert_eq!(app.status, "先に翻訳モデルを準備してください。");
     }
     #[test]
     fn a_failed_preparation_outside_the_chain_still_reports_in_its_own_dialog() {

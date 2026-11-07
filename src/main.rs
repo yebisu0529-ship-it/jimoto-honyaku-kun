@@ -176,9 +176,11 @@ fn command_hidden(command: &mut Command) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 enum Tab {
     Text,
+    /// The chat. It is the home screen, and the app opens on it.
+    #[default]
     Live,
     Files,
     Settings,
@@ -435,7 +437,7 @@ impl App {
         App {
             settings: Settings::default(),
             settings_load_failed: true,
-            tab: Tab::Live,
+            tab: Tab::default(),
             input: String::new(),
             output: String::new(),
             status: String::new(),
@@ -586,7 +588,7 @@ impl App {
         let mut app = Self {
             settings,
             settings_load_failed: !load_error.is_empty(),
-            tab: Tab::Text,
+            tab: Tab::default(),
             input: String::new(),
             output: String::new(),
             status: if load_error.is_empty() {

@@ -14,7 +14,10 @@ struct Texture {
     pixels: Vec<Color32>,
 }
 
-/// Draw three layout/font warm-up frames and save the final frame as a PNG.
+const SETTLED_FRAME: u32 = 4;
+
+/// Draw layout/font warm-up frames and save the final frame as a PNG. A scroll
+/// area that follows its end needs a few frames to settle there.
 pub fn render(
     ctx: &egui::Context,
     path: &Path,
@@ -34,7 +37,7 @@ pub fn render(
     let mut textures = HashMap::new();
     let mut image = image::RgbaImage::new(width, height);
 
-    for frame in 0..3 {
+    for frame in 0..=SETTLED_FRAME {
         let mut input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
                 Pos2::ZERO,
@@ -54,7 +57,7 @@ pub fn render(
             update_texture(&mut textures, *id, delta)?;
         }
         let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
-        if frame == 2 {
+        if frame == SETTLED_FRAME {
             let background = ctx.style().visuals.panel_fill;
             for pixel in image.pixels_mut() {
                 *pixel = image::Rgba(background.to_array());

@@ -383,6 +383,22 @@ impl Session {
         self.frame(app, size, vec![]);
         self.frame(app, size, vec![])
     }
+    fn press(&mut self, app: &mut App, size: (f32, f32), key: egui::Key) {
+        let event = |pressed| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.frame(app, size, vec![event(true)]);
+        self.frame(app, size, vec![event(false)]);
+    }
+    /// The rectangle of whatever has keyboard focus.
+    fn focused(&self) -> Option<egui::Rect> {
+        let id = self.context.memory(|memory| memory.focused())?;
+        self.context.read_response(id).map(|response| response.rect)
+    }
     fn click(&mut self, app: &mut App, size: (f32, f32), at: egui::Pos2) {
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
@@ -437,6 +453,33 @@ fn clicking_anywhere_on_a_row_chooses_it() {
     let drawn = texts(&session.settle(&mut app, SMALL));
     session.click(&mut app, SMALL, row_point(&drawn, "0.8B"));
     assert_eq!(app.setup.selected_id, "plamo3-0.8b-q4_k_m");
+}
+
+#[test]
+fn a_row_is_chosen_from_the_keyboard_with_tab_and_space() {
+    let mut app = app_on(Some((24 * GIB, 5 * GIB)));
+    let mut session = Session::new();
+    let drawn = texts(&session.settle(&mut app, SMALL));
+    let wanted = row_point(&drawn, "2B");
+    let mut reached = false;
+    for _ in 0..40 {
+        session.press(&mut app, SMALL, egui::Key::Tab);
+        // The scroll area around the rows can hold focus too, so ask for a row-sized target.
+        if session
+            .focused()
+            .is_some_and(|rect| rect.height() <= theme::CONTROL_H_LARGE && rect.contains(wanted))
+        {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "Tab never reached the 2B row");
+    assert_eq!(
+        app.setup.selected_id, "plamo3-8b-q4_k_m",
+        "focus alone chooses nothing"
+    );
+    session.press(&mut app, SMALL, egui::Key::Space);
+    assert_eq!(app.setup.selected_id, "plamo3-2b-q4_k_m");
 }
 
 #[test]

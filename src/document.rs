@@ -700,13 +700,7 @@ impl App {
             cancel: cancel.clone(),
         });
         self.live_busy = Some(row_id);
-        let kind = if request.snapshot.stamp.kind == SourceKind::Audio
-            && self.settings.asr_backend == "nemotron"
-        {
-            paragraph_tools::SourceKindForTools::EnglishAsr
-        } else {
-            paragraph_tools::SourceKindForTools::Other
-        };
+        let kind = self.document_tools_kind(request.snapshot.stamp.kind);
         if self.settings.english_punctuation
             && paragraph_tools::use_english_support(&options, kind, &request.snapshot.text)
             && let Some(engine) = self.paragraph_tools.engine.clone()
@@ -724,8 +718,7 @@ impl App {
                 });
             });
         } else {
-            let source = request.snapshot.text.clone();
-            self.document_translate(row_id, request, options, cancel, source);
+            self.document_translate(row_id, request, options, cancel);
         }
     }
     pub(super) fn document_punctuated(
@@ -745,7 +738,7 @@ impl App {
             return;
         }
         let cancel = flight.cancel.clone();
-        let source = match result {
+        match result {
             Ok(punctuation) if punctuation.original == request.snapshot.text => {
                 let now = self.document.now();
                 let kind = request.snapshot.stamp.kind;
@@ -762,7 +755,6 @@ impl App {
                 // A punctuation tagger can preserve every word yet still place
                 // a comma/full stop badly. Use only guarded boundary hints;
                 // PLaMo always receives the original accumulated wording.
-                request.snapshot.text.clone()
             }
             other => {
                 self.paragraph_tools.error = other.err().unwrap_or_else(|| {
@@ -770,10 +762,44 @@ impl App {
                 });
                 self.document.notice =
                     "区切り補助の結果を採用せず、原文をつないで翻訳しています。".into();
-                request.snapshot.text.clone()
             }
-        };
-        self.document_translate(row_id, request, options, cancel, source);
+        }
+        self.document_translate(row_id, request, options, cancel);
+    }
+    fn document_tools_kind(&self, kind: SourceKind) -> paragraph_tools::SourceKindForTools {
+        if kind == SourceKind::Audio && self.settings.asr_backend == "nemotron" {
+            paragraph_tools::SourceKindForTools::EnglishAsr
+        } else {
+            paragraph_tools::SourceKindForTools::Other
+        }
+    }
+    /// The source and previous source PLaMo reads: the accumulated wording
+    /// without the hesitation sounds of spoken English, which it would
+    /// translate as 「えー」. Screen text and other languages keep every word
+    /// ("um" is Portuguese for "a"). The previous source is language evidence
+    /// too, so a short first interim of a later part still counts as English.
+    fn document_translator_input(
+        &self,
+        request: &Request,
+        options: &TranslationOptions,
+    ) -> (String, String) {
+        let source = &request.snapshot.text;
+        let previous = &request.previous_source;
+        let screen = request
+            .snapshot
+            .stamp
+            .video_id
+            .starts_with(super::screen_feed::SCREEN_SOURCE);
+        let kind = self.document_tools_kind(request.snapshot.stamp.kind);
+        let evidence = format!("{previous} {source}");
+        if !screen && paragraph_tools::use_english_support(options, kind, &evidence) {
+            (
+                live_text::without_fillers(source),
+                live_text::without_fillers(previous),
+            )
+        } else {
+            (source.clone(), previous.clone())
+        }
     }
     fn document_translate(
         &self,
@@ -781,8 +807,8 @@ impl App {
         request: Request,
         options: TranslationOptions,
         cancel: Arc<AtomicBool>,
-        source: String,
     ) {
+        let (source, previous_source) = self.document_translator_input(&request, &options);
         let tx = self.tx.clone();
         thread::spawn(move || {
             let started = Instant::now();
@@ -790,7 +816,7 @@ impl App {
                 let mut live_options = options.clone();
                 live_options.context = live_text::compose_context(
                     &options.context,
-                    &request.previous_source,
+                    &previous_source,
                     &request.previous_target,
                     4_000,
                 )?;
@@ -1460,5 +1486,281 @@ mod tests {
             !app.readout.confirm,
             "with no voice, automatic readout stays quiet instead of asking again"
         );
+    }
+
+    fn live_request(
+        kind: SourceKind,
+        video_id: &str,
+        text: &str,
+        previous_source: &str,
+    ) -> Request {
+        Request {
+            id: 1,
+            snapshot: ParagraphSnapshot {
+                stamp: SourceStamp {
+                    kind,
+                    generation: 1,
+                    video_id: video_id.into(),
+                    epoch: 0,
+                },
+                key: 0,
+                revision: 0,
+                text: text.into(),
+                start_ms: 0,
+                end_ms: 0,
+                closed: false,
+                finalizable: false,
+            },
+            previous_source: previous_source.into(),
+            previous_target: String::new(),
+        }
+    }
+
+    /// Answers the three requests of one translation and hands back the prompt.
+    fn translation_stub() -> (String, mpsc::Receiver<String>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let (prompts_tx, prompts) = mpsc::channel();
+        thread::spawn(move || {
+            for mut request in server.incoming_requests().take(3) {
+                let reply = match request.url().to_owned().as_str() {
+                    "/health" => "ok".to_owned(),
+                    "/v1/models" => r#"{"data":[{"id":"plamo3"}]}"#.to_owned(),
+                    _ => {
+                        let mut body = String::new();
+                        request.as_reader().read_to_string(&mut body).unwrap();
+                        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+                        prompts_tx
+                            .send(body["prompt"].as_str().unwrap().to_owned())
+                            .unwrap();
+                        "data: {\"choices\":[{\"text\":\"訳\",\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                            .to_owned()
+                    }
+                };
+                let _ = request.respond(tiny_http::Response::from_string(reply));
+            }
+        });
+        (endpoint, prompts)
+    }
+
+    #[test]
+    fn spoken_fillers_stay_in_the_source_but_not_in_what_the_translator_reads() {
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        app.caption_paused = false;
+        let caption = |text: &str, position| bridge::Caption {
+            text: text.into(),
+            video_id: "video-a".into(),
+            position,
+            paused: false,
+            epoch: 2,
+        };
+        let first =
+            "Um, the committee will review the report and uh we can share it with the public.";
+        let second = "Well, um we should begin the second part of the meeting now.";
+        app.document_ingest_caption(caption(first, 1.0));
+        app.document_ingest_caption(caption(&format!("{first} >> {second}"), 2.0));
+        let (id, request, options) = take_job(&mut app, SourceKind::Caption, 3_000);
+        assert_eq!(
+            request.snapshot.text, first,
+            "the marker closed the first part"
+        );
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("委員会は報告書を確認し、一般にも共有できます。".into()),
+            0.1,
+        );
+
+        let (id, request, options) = take_job(&mut app, SourceKind::Caption, 9_000);
+        assert_eq!(request.snapshot.text, second);
+        assert_eq!(request.previous_source, first);
+        assert_eq!(
+            app.document_translator_input(&request, &options),
+            (
+                "Well, we should begin the second part of the meeting now.".to_owned(),
+                "the committee will review the report and we can share it with the public."
+                    .to_owned()
+            )
+        );
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("では、会議の後半を始めましょう。".into()),
+            0.1,
+        );
+        assert_eq!(app.rows[0].record.source, first);
+        assert_eq!(app.rows[1].record.source, second);
+        app.document_update_subtitle_window();
+        assert_eq!(app.subtitle_window.history()[0].source, first);
+        assert_eq!(app.subtitle_window.view().unwrap().source, second);
+    }
+
+    #[test]
+    fn fillers_stay_in_screen_text_and_in_text_that_may_not_be_english() {
+        let mut app = App::inert();
+        let auto = TranslationOptions::default();
+        let spoken = "Um, the museum will open at nine and uh we can see this";
+        let previous = "Uh, we can see the sign.";
+        let input = |app: &App, request: Request, options: &TranslationOptions| {
+            app.document_translator_input(&request, options)
+        };
+        let pair = |source: &str, previous: &str| (source.to_owned(), previous.to_owned());
+
+        assert_eq!(
+            input(
+                &app,
+                live_request(SourceKind::Caption, "video-a", spoken, previous),
+                &auto
+            ),
+            pair(
+                "the museum will open at nine and we can see this",
+                "we can see the sign."
+            ),
+            "spoken English loses its fillers"
+        );
+        assert_eq!(
+            input(
+                &app,
+                live_request(SourceKind::Caption, "screen:1", spoken, previous),
+                &auto
+            ),
+            pair(spoken, previous),
+            "screen text keeps what its author wrote"
+        );
+
+        let german = TranslationOptions {
+            source_lang: "de".into(),
+            ..auto.clone()
+        };
+        let er = "Er kommt um 5 Uhr.";
+        assert_eq!(
+            input(
+                &app,
+                live_request(SourceKind::Caption, "video-a", er, ""),
+                &german
+            ),
+            pair(er, ""),
+            "er and um are German words"
+        );
+        let portuguese = "Eu tenho um livro e um caderno para a aula de hoje.";
+        assert_eq!(
+            input(
+                &app,
+                live_request(SourceKind::Caption, "video-a", portuguese, ""),
+                &auto
+            ),
+            pair(portuguese, ""),
+            "um is a Portuguese word"
+        );
+
+        let short = "Well, um we should";
+        assert_eq!(
+            input(
+                &app,
+                live_request(SourceKind::Caption, "video-a", short, previous),
+                &auto
+            ),
+            pair("Well, we should", "we can see the sign."),
+            "the previous part shows the language"
+        );
+        assert_eq!(
+            input(
+                &app,
+                live_request(SourceKind::Caption, "video-a", short, ""),
+                &auto
+            ),
+            pair(short, ""),
+            "a short text alone is not known to be English"
+        );
+
+        let speech = live_request(SourceKind::Audio, "", short, "");
+        assert_eq!(
+            input(&app, speech.clone(), &auto),
+            pair("Well, we should", ""),
+            "the English recognizer shows the language"
+        );
+        app.settings.asr_backend = "whisper".into();
+        assert_eq!(
+            input(&app, speech, &auto),
+            pair(short, ""),
+            "another recognizer does not"
+        );
+    }
+
+    #[test]
+    fn a_live_caption_reaches_the_translation_server_without_its_fillers() {
+        let (endpoint, prompts) = translation_stub();
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        app.caption_paused = false;
+        app.backend_ready = true;
+        app.settings.translation.endpoint = endpoint;
+        let caption =
+            "Um, the committee will review the report and uh we can share it with the public.";
+        app.document_ingest_caption(bridge::Caption {
+            text: caption.into(),
+            video_id: "video-a".into(),
+            position: 1.0,
+            paused: false,
+            epoch: 2,
+        });
+        app.document_tick();
+        let prompt = prompts.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            prompt.contains(
+                "<|plamo:tag|>input<|plamo:msg|>the committee will review the report and we can share it with the public.<|plamo:tag|>output"
+            ),
+            "{prompt}"
+        );
+        assert_eq!(app.rows[0].record.source, caption);
+    }
+
+    #[test]
+    fn the_translation_server_never_reads_the_tagger_text_or_fillers() {
+        let source = "Well, um we should begin";
+        let previous =
+            "Um, the committee will review the report and uh we can share it with the public.";
+        for tagger in [
+            Ok(plamo_translate::punctuation::PunctuationResult {
+                original: source.into(),
+                restored: "Well, Um. We should begin.".into(),
+                boundaries: Vec::new(),
+            }),
+            Err("tagger failed".to_owned()),
+        ] {
+            let (endpoint, prompts) = translation_stub();
+            let mut app = App::inert();
+            app.settings.translation.endpoint = endpoint;
+            let options = app.settings.translation.clone();
+            let mut request = live_request(SourceKind::Caption, "video-a", source, previous);
+            request.previous_target = "委員会は報告書を確認し、一般にも共有できます。".into();
+            app.document.flight = Some(Flight {
+                row_id: 7,
+                request: request.clone(),
+                options: options.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+            });
+            app.document_punctuated(7, request, options, tagger);
+            let prompt = prompts.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(
+                prompt.contains(
+                    "<|plamo:tag|>input<|plamo:msg|>Well, we should begin<|plamo:tag|>output"
+                ),
+                "{prompt}"
+            );
+            assert!(
+                prompt.contains(
+                    "the committee will review the report and we can share it with the public."
+                ),
+                "{prompt}"
+            );
+            assert!(
+                !prompt.contains("Um") && !prompt.contains(" uh ") && !prompt.contains("We should"),
+                "{prompt}"
+            );
+        }
     }
 }

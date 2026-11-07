@@ -8,8 +8,10 @@ use plamo_translate::journal::ParagraphState;
 
 /// Height reserved for the page title and its actions.
 const HEADER_HEIGHT: f32 = 56.0;
-/// Height reserved for the live input/display controls.
-const SOURCES_HEIGHT: f32 = 40.0;
+/// Height of the bar under the chat: the large button and the room around it.
+const LISTEN_BAR_HEIGHT: f32 = theme::CONTROL_H_LARGE + 2.0 * theme::SPACE_2;
+/// The key that does what the button under the chat does.
+const LISTEN_SHORTCUT: &str = "Ctrl + Alt + L";
 /// The pages the Ctrl+number shortcuts open. The chat is the home screen; the
 /// others are reached from the その他 menu.
 const PAGE_KEYS: [(Tab, &str, egui::Key); 4] = [
@@ -45,6 +47,8 @@ fn text_area_height(ui: &egui::Ui) -> f32 {
 pub(super) struct UiProbe {
     pub menu_button: Option<egui::Rect>,
     pub back_button: Option<egui::Rect>,
+    pub listen_bar: Option<egui::Rect>,
+    pub listen_button: Option<egui::Rect>,
     pub reading_font: f32,
     pub status_rect: Option<egui::Rect>,
 }
@@ -94,6 +98,16 @@ impl Readiness {
             Self::Ready => TEXT_SECONDARY,
             Self::Preparing => WARNING,
             Self::Missing => TEXT,
+        }
+    }
+
+    /// What the bar under the chat says while the translation model cannot
+    /// translate yet.
+    fn needed(self) -> Option<&'static str> {
+        match self {
+            Self::Ready => None,
+            Self::Preparing => Some("翻訳モデルを準備しています"),
+            Self::Missing => Some("翻訳モデルの準備が必要です"),
         }
     }
 }
@@ -371,6 +385,15 @@ fn standard(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).size(theme::SIZE_LABEL).color(TEXT))
         .min_size(Vec2::new(0.0, theme::CONTROL_H))
 }
+/// The one large button under the chat: the accent colour to start listening,
+/// and red to stop.
+fn listen_button(listening: bool) -> egui::Button<'static> {
+    if listening {
+        primary("■ 止める").fill(ERROR)
+    } else {
+        primary("● 聞く")
+    }
+}
 pub(super) fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     ui.scope(|ui| {
         let checked = *value;
@@ -460,40 +483,6 @@ impl LiveSourceMode {
     }
 }
 
-/// Horizontal segmented switch. Returns the newly selected index.
-fn segmented(ui: &mut egui::Ui, labels: &[&str], selected: Option<usize>) -> Option<usize> {
-    let mut clicked = None;
-    egui::Frame::new()
-        .fill(INPUT)
-        .stroke(egui::Stroke::new(1.0_f32, BORDER_STRONG))
-        .corner_radius(theme::RADIUS_CONTROL)
-        .inner_margin(egui::Margin::same(2))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.spacing_mut().button_padding.x = theme::SPACE_2;
-            ui.horizontal(|ui| {
-                for (index, label) in labels.iter().enumerate() {
-                    let active = selected == Some(index);
-                    let response = ui.add(
-                        egui::Button::new(
-                            RichText::new(*label)
-                                .size(theme::SIZE_LABEL)
-                                .color(if active { ON_ACCENT } else { TEXT_SECONDARY }),
-                        )
-                        .fill(if active { ACCENT } else { INPUT })
-                        .stroke(egui::Stroke::NONE)
-                        .min_size(Vec2::new(0.0, theme::CONTROL_H)),
-                    );
-                    theme::focus_ring(ui, &response);
-                    if response.clicked() {
-                        clicked = Some(index);
-                    }
-                }
-            });
-        });
-    clicked
-}
-
 /// What one choice in the その他 menu asks for. The menu is drawn inside the
 /// page header, so the choice is carried out once the header is done.
 #[derive(Clone, Copy)]
@@ -538,6 +527,12 @@ fn choice_button(ui: &mut egui::Ui, label: &str, chosen: bool) -> egui::Response
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, chosen, label));
     response
+}
+
+/// The 自動読み上げ switch: in the header of the other screens, and in the bar
+/// under the chat.
+fn auto_read_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
+    choice_button(ui, "自動読み上げ", on).on_hover_text(readout::AUTO_READ_HINT)
 }
 
 fn parse_glossary(input: &str) -> std::result::Result<Vec<(String, String)>, String> {
@@ -630,25 +625,13 @@ impl App {
             let mut switch_readout = false;
             let mut choice = None;
             let auto_read = self.settings.auto_read;
-            let readout_used = self.settings.readout_enabled;
+            // The chat has the switch in the bar under it.
+            let readout_here = self.settings.readout_enabled && !home;
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     choice = self.more_menu(ui);
-                    if readout_used {
-                        let readout = ui
-                            .add(standard("自動読み上げ").selected(auto_read))
-                            .on_hover_text(readout::AUTO_READ_HINT);
-                        // The fill alone shows the state; screen readers get it
-                        // as the button's selected state.
-                        readout.widget_info(|| {
-                            egui::WidgetInfo::selected(
-                                egui::WidgetType::Button,
-                                true,
-                                auto_read,
-                                "自動読み上げ",
-                            )
-                        });
-                        switch_readout = readout.clicked();
+                    if readout_here {
+                        switch_readout = auto_read_switch(ui, auto_read).clicked();
                     }
                     actions(ui);
                     // The title takes whatever the actions leave, so a narrow
@@ -709,6 +692,7 @@ impl App {
             self.ui_probe.menu_button = Some(button.rect);
         }
         let mut choice = None;
+        let mut input = None;
         egui::Popup::menu(&button).id(id).show(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.spacing_mut().button_padding.x = theme::SPACE_2;
@@ -815,18 +799,25 @@ impl App {
             );
             if chat {
                 ui.separator();
+                // Its choices open down the menu, so it comes before the rest
+                // to keep them clear of the row at the bottom of the window.
+                input = ui
+                    .menu_button(RichText::new("入力の切り替え").size(theme::SIZE_LABEL), |ui| {
+                        let mut picked = None;
+                        for mode in LiveSourceMode::ALL {
+                            if choice_button(ui, mode.label(), mode == shown)
+                                .on_hover_text(mode.hint())
+                                .clicked()
+                            {
+                                picked = Some(mode);
+                            }
+                        }
+                        picked
+                    })
+                    .inner
+                    .flatten();
                 row(ui, MenuChoice::NewSession, "新しく始める", "", "", true);
                 row(ui, MenuChoice::Export, "書き出し", "", "", has_rows);
-                ui.menu_button(RichText::new("入力の切り替え").size(theme::SIZE_LABEL), |ui| {
-                    for mode in LiveSourceMode::ALL {
-                        if choice_button(ui, mode.label(), mode == shown)
-                            .on_hover_text(mode.hint())
-                            .clicked()
-                        {
-                            choice = Some(MenuChoice::Input(mode));
-                        }
-                    }
-                });
                 ui.menu_button(RichText::new("表示").size(theme::SIZE_LABEL), |ui| {
                     toggle(ui, &mut self.settings.live_show_original, "原文をすべて表示");
                     toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール")
@@ -847,7 +838,7 @@ impl App {
                 });
             }
         });
-        choice
+        choice.or(input.map(MenuChoice::Input))
     }
 
     /// Carries out a choice from the その他 menu.
@@ -1006,74 +997,109 @@ impl App {
         }
     }
 
-    /// One fixed row: where the text comes from, and what is being read now.
-    fn live_sources_row(&mut self, ui: &mut egui::Ui) {
-        live_region(ui, "live-sources", SOURCES_HEIGHT, |ui| {
-            ui.horizontal(|ui| {
-                let caption_receiving = self.caption_enabled
-                    && !self.caption_paused
-                    && self
-                        .last_caption
-                        .is_some_and(|time| time.elapsed() < Duration::from_secs(8));
-                let audio_wanted = self.audio_enabled || self.audio_start_requested;
-                let current = self.current_input();
-                let selected = match current {
-                    None => 0,
-                    Some(LiveSourceMode::Captions) => 1,
-                    Some(LiveSourceMode::Audio) => 2,
-                    Some(LiveSourceMode::Auto) => 3,
-                    Some(LiveSourceMode::Screen) => 4,
-                };
-                let chosen = segmented(
-                    ui,
-                    &["停止", "字幕", "PC音声", "両方", "画面"],
-                    Some(selected),
-                );
-                if let Some(index) = chosen {
-                    let mode = match index {
-                        1 => Some(LiveSourceMode::Captions),
-                        2 => Some(LiveSourceMode::Audio),
-                        3 => Some(LiveSourceMode::Auto),
-                        4 => Some(LiveSourceMode::Screen),
-                        _ => None,
-                    };
-                    match mode {
-                        None => self.stop_listening(),
-                        Some(mode) if current != Some(mode) => {
-                            self.listen_input = mode;
-                            self.apply_input(ui.ctx(), mode);
-                        }
-                        Some(_) => {}
+    /// Captions are coming in from the browser extension.
+    fn captions_arriving(&self) -> bool {
+        self.caption_enabled
+            && !self.caption_paused
+            && self
+                .last_caption
+                .is_some_and(|time| time.elapsed() < Duration::from_secs(8))
+    }
+
+    /// The line beside the 聞く button: what is wrong, or what is going on.
+    fn listen_state(&self) -> (&str, Color32) {
+        if !self.service_error.is_empty() {
+            return (&self.service_error, ERROR);
+        }
+        let model = self.translation_readiness();
+        if let Some(words) = model.needed() {
+            return (words, model.headline_color());
+        }
+        match self.current_input() {
+            None => ("止まっています", TEXT_SECONDARY),
+            Some(LiveSourceMode::Screen) => ("画面の文字を読み取っています", ACCENT),
+            Some(_) if self.captions_arriving() => ("YouTube字幕を受け取っています", ACCENT),
+            Some(_) if self.audio_enabled && self.asr_ready => ("PC音声を聞いています", ACCENT),
+            Some(_) if self.audio_start_requested => ("音声認識を準備しています", TEXT_SECONDARY),
+            Some(_) if self.caption_enabled => ("YouTube字幕を待っています", TEXT_SECONDARY),
+            Some(_) => ("入力を待っています", TEXT_SECONDARY),
+        }
+    }
+
+    /// The bar under the chat, where a messenger puts its message box: one
+    /// large button that listens and stops, and one line about what is going
+    /// on. The readout switch is here too when readout is used.
+    fn listen_bar(&mut self, ui: &mut egui::Ui) {
+        let listening = self.current_input().is_some();
+        // A model that went away must not keep the button from stopping.
+        let enabled = listening || self.backend_ready;
+        let hover = if listening {
+            "入力を止めます。保存済みの訳文はそのまま残ります".to_owned()
+        } else {
+            self.listen_input.hint().to_owned()
+        };
+        let mut press = false;
+        let mut switch_readout = false;
+        let mut rects = None;
+        live_region(ui, "listen-bar", LISTEN_BAR_HEIGHT, |ui| {
+            let bar = ui.max_rect();
+            ui.painter().rect(
+                bar,
+                theme::RADIUS_CARD,
+                SURFACE,
+                theme::hairline(),
+                egui::StrokeKind::Inside,
+            );
+            let inner = bar.shrink2(Vec2::new(theme::SPACE_3, theme::SPACE_2));
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(inner)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    if self.settings.readout_enabled {
+                        switch_readout = auto_read_switch(ui, self.settings.auto_read).clicked();
                     }
-                }
-                let state = if self.screen_feed.is_some() {
-                    ("画面を読み取り中", ACCENT)
-                } else if self.caption_enabled && caption_receiving {
-                    ("字幕を受信中", ACCENT)
-                } else if audio_wanted && self.audio_enabled && self.asr_ready {
-                    ("音声を認識中", ACCENT)
-                } else if self.caption_enabled || audio_wanted {
-                    ("入力を待っています", TEXT_MUTED)
-                } else {
-                    ("停止中", TEXT_MUTED)
-                };
-                ui.add(egui::Label::new(
-                    RichText::new(state.0)
-                        .size(theme::SIZE_CAPTION)
-                        .color(state.1),
-                ))
-                .on_hover_text(
-                    current
-                        .map(LiveSourceMode::hint)
-                        .unwrap_or("入力を選ぶと翻訳が始まります"),
-                );
-            });
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = theme::SPACE_3;
+                        let button = ui
+                            .add_enabled(enabled, listen_button(listening))
+                            .on_hover_text(format!(
+                                "{hover}
+{LISTEN_SHORTCUT}"
+                            ))
+                            .on_disabled_hover_text("翻訳モデルの準備ができると、聞けます");
+                        press = button.clicked();
+                        rects = Some((bar, button.rect));
+                        let (words, color) = self.listen_state();
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(words).size(theme::SIZE_LABEL).color(color),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(words);
+                    });
+                },
+            );
         });
+        #[cfg(test)]
+        {
+            self.ui_probe.listen_bar = rects.map(|(bar, _)| bar);
+            self.ui_probe.listen_button = rects.map(|(_, button)| button);
+        }
+        #[cfg(not(test))]
+        let _ = rects;
+        if switch_readout {
+            self.toggle_auto_read(ui.ctx());
+        }
+        if press {
+            self.toggle_listening(ui.ctx());
+        }
     }
 
     /// One reserved line: a failure to save first, then what is happening now,
-    /// then whether the timeline is being saved. Service errors are in the
-    /// status row at the bottom.
+    /// then whether the timeline is being saved. Service errors are beside the
+    /// 聞く button.
     fn live_status_line(&mut self, ui: &mut egui::Ui) {
         live_region(ui, "live-status", STATUS_LINE_HEIGHT, |ui| {
             // The journal error is the storage layer's own wording, so the
@@ -1097,21 +1123,8 @@ impl App {
             } else {
                 ("プレビュー · 保存されません", TEXT_MUTED)
             };
-            let both = if self.caption_enabled && self.audio_enabled {
-                "字幕を優先し、字幕がない間は音声を使います"
-            } else {
-                ""
-            };
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                status_message(
-                    ui,
-                    &[
-                        (unsaved.as_str(), ERROR),
-                        (activity, ACCENT),
-                        saved,
-                        (both, TEXT_MUTED),
-                    ],
-                );
+                status_message(ui, &[(unsaved.as_str(), ERROR), (activity, ACCENT), saved]);
             });
         });
     }
@@ -1239,17 +1252,20 @@ impl App {
                 });
         });
     }
-    /// The local models in use, in the order the details list them.
-    fn model_statuses(&self) -> Vec<ModelStatus> {
-        // `service_error` also carries speech-recognition failures, so the
-        // translation state follows the translation engine alone.
-        let translation = if self.backend_ready {
+    /// `service_error` also carries speech-recognition failures, so the
+    /// translation state follows the translation engine alone.
+    fn translation_readiness(&self) -> Readiness {
+        if self.backend_ready {
             Readiness::Ready
         } else if self.backend_loading || self.setup.installing() {
             Readiness::Preparing
         } else {
             Readiness::Missing
-        };
+        }
+    }
+    /// The local models in use, in the order the details list them.
+    fn model_statuses(&self) -> Vec<ModelStatus> {
+        let translation = self.translation_readiness();
         let ocr = if self.screen_ocr_ready() {
             Readiness::Ready
         } else if self.screen_ocr_preparing() {
@@ -1471,7 +1487,6 @@ impl App {
         page_column(ui, |ui| {
             self.page_header(ui, "地元翻訳くん", "PC内で翻訳", |_| {});
             ui.add_space(theme::SPACE_2);
-            self.live_sources_row(ui);
             self.live_status_line(ui);
             ui.add_space(theme::SPACE_1);
             #[cfg(test)]
@@ -1490,7 +1505,17 @@ impl App {
                 follow: self.settings.auto_scroll,
                 readout: self.settings.readout_enabled.then(|| self.readout_busy()),
             };
-            let action = self.live_chat.show(ui, "live-chat", &messages, options);
+            // The chat takes the room the bar under it leaves.
+            let chat = Vec2::new(
+                ui.available_width(),
+                (ui.available_height() - LISTEN_BAR_HEIGHT - ui.spacing().item_spacing.y).max(0.0),
+            );
+            let action = ui
+                .allocate_ui(chat, |ui| {
+                    self.live_chat.show(ui, "live-chat", &messages, options)
+                })
+                .inner;
+            self.listen_bar(ui);
             match action {
                 Some(chat::Action::Read(text)) => self.read_translation(text),
                 Some(chat::Action::StopReadout) => self.stop_readout(),
@@ -1733,12 +1758,7 @@ impl App {
 
     fn settings_youtube_card(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("YouTube字幕の接続").strong());
-        let receiving = self.caption_enabled
-            && !self.caption_paused
-            && self
-                .last_caption
-                .is_some_and(|time| time.elapsed() < Duration::from_secs(8));
-        let (state, color) = if receiving {
+        let (state, color) = if self.captions_arriving() {
             ("字幕を受信中", theme::SUCCESS)
         } else if self.caption_enabled {
             ("接続待ち", WARNING)
@@ -1861,7 +1881,7 @@ impl App {
             .show(ui, |ui| {
                 secondary(
                     ui,
-                    "範囲翻訳: Ctrl + Alt + T　 PC音声の翻訳: Ctrl + Alt + L",
+                    "範囲翻訳: Ctrl + Alt + T　 聞く・止める: Ctrl + Alt + L",
                 );
                 if ui.add(standard("保存フォルダーを開く")).clicked() {
                     self.open_data_folder();
@@ -2028,9 +2048,14 @@ impl App {
                 self.tab = tab;
             }
         }
-        // The chat says one thing about the models; an error stands in its place.
-        let readiness = (self.tab == Tab::Live && self.service_error.is_empty())
-            .then(|| overall(&self.model_statuses()));
+        // The chat says one thing about the models. Its errors are beside the
+        // 聞く button, so the row does not repeat them.
+        let readiness = (self.tab == Tab::Live).then(|| overall(&self.model_statuses()));
+        let service_error = if self.tab == Tab::Live {
+            ""
+        } else {
+            self.service_error.as_str()
+        };
         let mut open_models = false;
         // One fixed row: a long message is truncated instead of growing the
         // panel and pushing the page up.
@@ -2063,7 +2088,7 @@ impl App {
                         status_message(
                             ui,
                             &[
-                                (self.service_error.as_str(), ERROR),
+                                (service_error, ERROR),
                                 (self.status.as_str(), TEXT_SECONDARY),
                                 readout,
                             ],

@@ -102,6 +102,15 @@ impl Window {
         self.settle(app);
         self.click(app, "⋯ その他");
     }
+
+    /// Rests the pointer over the text, long enough for its hover text.
+    pub(super) fn hover(&mut self, app: &mut App, label: &str) {
+        self.context
+            .style_mut(|style| style.interaction.tooltip_delay = 0.0);
+        let at = self.at(label).center();
+        self.draw(app, vec![egui::Event::PointerMoved(at)]);
+        self.settle(app);
+    }
 }
 
 fn hardware() -> Hardware {
@@ -143,13 +152,20 @@ const HEADERED: [(Tab, &str); 5] = [
 ];
 
 #[test]
-fn the_app_opens_on_the_chat_with_its_name_and_one_menu_and_nothing_else() {
+fn the_app_opens_on_the_chat_with_its_name_one_menu_and_the_listen_button() {
     assert!(Tab::default() == Tab::Live);
     for (width, height) in [(860.0, 620.0), (2560.0, 1369.0)] {
         let mut app = chat();
         let mut window = Window::new(width, height);
         window.settle(&mut app);
-        for shown in ["地元翻訳くん", "PC内で翻訳", "⋯ その他", credit::LABEL] {
+        for shown in [
+            "地元翻訳くん",
+            "PC内で翻訳",
+            "⋯ その他",
+            "● 聞く",
+            "止まっています",
+            credit::LABEL,
+        ] {
             assert!(
                 window.has(shown),
                 "{shown} is not drawn at {width}x{height}"
@@ -422,14 +438,32 @@ fn the_display_options_moved_into_the_menu_and_still_work() {
 }
 
 #[test]
-fn the_readout_switch_stays_beside_the_menu() {
+fn the_readout_switch_is_in_the_bar_on_the_chat_and_beside_the_menu_on_the_other_screens() {
     let mut app = chat();
     app.settings.readout_enabled = true;
     let mut window = Window::new(860.0, 620.0);
     window.settle(&mut app);
-    let (switch, menu) = (window.at("自動読み上げ"), window.at("⋯ その他"));
-    assert!(switch.right() < menu.left());
-    assert!((switch.center().y - menu.center().y).abs() < 2.0);
+    let (switch, menu, listen) = (
+        window.at("自動読み上げ"),
+        window.at("⋯ その他"),
+        window.at("● 聞く"),
+    );
+    let bar = app.ui_probe.listen_bar.expect("the bar is drawn");
+    assert!(bar.contains_rect(switch), "the switch is not in the bar");
+    assert!(switch.top() > menu.bottom(), "the header still has it");
+    assert!(listen.right() < switch.left());
+    assert!((switch.center().y - listen.center().y).abs() < 2.0);
+
+    for tab in [Tab::Text, Tab::Files, Tab::Settings, Tab::Setup] {
+        let mut app = chat();
+        app.tab = tab;
+        app.settings.readout_enabled = true;
+        let mut window = Window::new(860.0, 620.0);
+        window.settle(&mut app);
+        let (switch, menu) = (window.at("自動読み上げ"), window.at("⋯ その他"));
+        assert!(switch.right() < menu.left());
+        assert!((switch.center().y - menu.center().y).abs() < 2.0);
+    }
 }
 
 #[test]
@@ -612,10 +646,16 @@ fn the_chat_shows_one_state_where_the_four_models_were() {
     only(&window, "準備が必要です");
     assert!(window.has("モデルの準備"));
 
-    // An error stands in the state's place, in red and in its own words.
+    // An error is beside the button, in red and in its own words, and only
+    // there. The row keeps the state of the models.
     let window = draw(|app| app.service_error = LOAD_FAILED.into());
-    only(&window, "");
-    assert_eq!(find_text(&window.output, LOAD_FAILED).1, theme::ERROR);
+    only(&window, "準備完了");
+    let (rect, color) = find_text(&window.output, LOAD_FAILED);
+    assert_eq!(color, theme::ERROR);
+    assert!(
+        rect.bottom() < 620.0 - theme::CONTROL_H,
+        "the error is in the status row, not beside the button"
+    );
     assert_eq!(
         texts(&window.output)
             .iter()

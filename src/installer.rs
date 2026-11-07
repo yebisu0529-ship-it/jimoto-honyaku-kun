@@ -1010,6 +1010,50 @@ pub(crate) fn remaining_bytes(artifact: &Artifact, target: &Path) -> Result<u64>
     )
 }
 
+/// What is left to download for these files, each counted from its resumable
+/// partial download. A path or record that cannot be checked counts in full.
+pub(crate) fn remaining_total(files: &[(&Artifact, PathBuf)]) -> u64 {
+    files
+        .iter()
+        .map(|(artifact, target)| remaining_bytes(artifact, target).unwrap_or(artifact.bytes))
+        .sum()
+}
+
+fn model_artifact(request: &InstallRequest) -> Artifact {
+    Artifact {
+        name: request.filename.clone(),
+        url: hugging_face_url(&request.repo, &request.revision, &request.filename),
+        bytes: request.bytes,
+        sha256: request.sha256.to_ascii_lowercase(),
+    }
+}
+
+/// What `install` would download for this request now: the runtime archives
+/// unless the runtime is already unpacked, and the model unless the whole file
+/// is saved.
+pub fn pending_download_bytes(request: &InstallRequest) -> u64 {
+    let root = &request.install_root;
+    let runtime = root
+        .join("runtime")
+        .join(format!("llama-{RELEASE}-{}", request.backend));
+    let model = model_artifact(request);
+    let mut files = vec![(
+        &model,
+        root.join("models")
+            .join(&request.revision)
+            .join(&request.filename),
+    )];
+    let archives = runtime_assets(&request.backend);
+    if !runtime.exists() {
+        files.extend(
+            archives
+                .iter()
+                .map(|asset| (asset, root.join("downloads").join(&asset.name))),
+        );
+    }
+    remaining_total(&files)
+}
+
 pub(crate) fn runtime_assets(backend: &str) -> Vec<Artifact> {
     let rows: &[(&str, u64, &str)] = match backend {
         "cpu" => &[(
@@ -1366,12 +1410,7 @@ pub fn install(
         fs::rename(&staging, &runtime)?;
     }
     let model_path = model_parent.join(&request.filename);
-    let model = Artifact {
-        name: request.filename.clone(),
-        url: hugging_face_url(&request.repo, &request.revision, &request.filename),
-        bytes: request.bytes,
-        sha256: request.sha256.to_ascii_lowercase(),
-    };
+    let model = model_artifact(&request);
     download_verified(
         &model,
         &model_path,
@@ -2084,5 +2123,97 @@ mod tests {
         fs::write(&manifest.model_path, b"yes").unwrap();
         atomic_write(&path, &serde_json::to_vec(&manifest).unwrap()).unwrap();
         assert!(load_installation(&temp.0).is_err());
+    }
+    fn pending_request(root: &Path, backend: &str) -> InstallRequest {
+        InstallRequest {
+            repo: "pfnet/plamo-3-translate-2b-GGUF".into(),
+            revision: "b".repeat(40),
+            filename: "plamo-3-translate-2b-Q4_K_M.gguf".into(),
+            bytes: 1_700_000_000,
+            sha256: "c".repeat(64),
+            backend: backend.into(),
+            install_root: root.into(),
+        }
+    }
+    fn saved_file(path: &Path, bytes: u64) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::File::create(path).unwrap().set_len(bytes).unwrap();
+    }
+    #[test]
+    fn pending_bytes_are_the_runtime_archives_and_the_model_that_are_not_saved() {
+        for backend in ["cpu", "vulkan", "cuda"] {
+            let temp = Temp::new();
+            let request = pending_request(&temp.0, backend);
+            let archives: Vec<_> = runtime_assets(backend);
+            let runtime_bytes: u64 = archives.iter().map(|a| a.bytes).sum();
+            assert_eq!(
+                pending_download_bytes(&request),
+                runtime_bytes + request.bytes,
+                "{backend}: nothing saved"
+            );
+            let model = temp
+                .0
+                .join("models")
+                .join(&request.revision)
+                .join(&request.filename);
+            saved_file(&model, request.bytes);
+            assert_eq!(pending_download_bytes(&request), runtime_bytes, "{backend}");
+            fs::create_dir_all(
+                temp.0
+                    .join("runtime")
+                    .join(format!("llama-{RELEASE}-{backend}")),
+            )
+            .unwrap();
+            assert_eq!(pending_download_bytes(&request), 0, "{backend}: all saved");
+        }
+    }
+    #[test]
+    fn a_model_of_the_wrong_size_or_for_another_runtime_still_counts() {
+        let temp = Temp::new();
+        let request = pending_request(&temp.0, "cpu");
+        let model = temp
+            .0
+            .join("models")
+            .join(&request.revision)
+            .join(&request.filename);
+        saved_file(&model, request.bytes - 1);
+        fs::create_dir_all(
+            temp.0
+                .join("runtime")
+                .join(format!("llama-{RELEASE}-vulkan")),
+        )
+        .unwrap();
+        assert_eq!(
+            pending_download_bytes(&request),
+            runtime_assets("cpu")[0].bytes + request.bytes,
+            "a cut-off file is downloaded again, and the Vulkan runtime is not the CPU one"
+        );
+    }
+    #[test]
+    fn a_resumable_partial_download_counts_only_for_what_is_left() {
+        let temp = Temp::new();
+        let request = pending_request(&temp.0, "cpu");
+        fs::create_dir_all(temp.0.join("runtime").join(format!("llama-{RELEASE}-cpu"))).unwrap();
+        let model = model_artifact(&request);
+        let folder = temp.0.join("models").join(&request.revision);
+        fs::create_dir_all(&folder).unwrap();
+        let partial = folder.join(format!("{}.partial", request.filename));
+        fs::File::create(&partial)
+            .unwrap()
+            .set_len(500_000_000)
+            .unwrap();
+        let record = folder.join(format!("{}.partial.json", request.filename));
+        fs::write(&record, serde_json::to_vec(&model).unwrap()).unwrap();
+        assert_eq!(pending_download_bytes(&request), 1_200_000_000);
+        let other = Artifact {
+            sha256: "d".repeat(64),
+            ..model
+        };
+        fs::write(&record, serde_json::to_vec(&other).unwrap()).unwrap();
+        assert_eq!(
+            pending_download_bytes(&request),
+            request.bytes,
+            "a partial file of another file is thrown away, so all of it is downloaded"
+        );
     }
 }

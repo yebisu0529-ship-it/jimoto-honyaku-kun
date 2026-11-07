@@ -10,9 +10,7 @@ use theme::{
     TEXT_SECONDARY, WARNING,
 };
 
-/// Width of the meter column beside the list.
 const METER_WIDTH: f32 = 320.0;
-/// The picker never grows past this, however wide the window.
 const PICKER_MAX_WIDTH: f32 = 1040.0;
 /// Below this content width the meter sits above the list instead of beside it.
 /// The list needs about 660 for its longest row, plus the meter and the gap.
@@ -22,8 +20,6 @@ const RADIO_RADIUS: f32 = 7.0;
 /// Room for the widest size label ("0.8B") before the description starts.
 const SIZE_COLUMN: f32 = 56.0;
 
-/// What a row's status column says, and whether the row can be chosen.
-#[derive(Clone, Debug, PartialEq)]
 pub(super) enum RowStatus {
     Blocked(Blocker),
     /// In use. Carries the quantization when it is not the one this row installs.
@@ -59,7 +55,6 @@ impl RowStatus {
     }
 }
 
-/// The reason a row cannot be chosen, with how much is missing.
 fn blocker_text(blocker: Blocker) -> String {
     // Round up, so a small shortfall never reads as "0 MB".
     let missing = |bytes_missing: u64| bytes(bytes_missing.next_multiple_of(1_048_576));
@@ -100,7 +95,6 @@ pub(super) struct PickerRow {
     pub details: String,
 }
 
-/// One row per model size, in catalog order.
 pub(super) struct Picker {
     pub rows: Vec<PickerRow>,
     recommended: usize,
@@ -296,8 +290,6 @@ impl App {
         })
     }
 
-    /// The model list, with the GPU memory beside it when the window is wide and
-    /// above it when narrow.
     pub(super) fn picker_ui(&mut self, ui: &mut egui::Ui) {
         let Some(recommendation) = &self.setup.recommendation else {
             return;
@@ -383,8 +375,6 @@ fn rows_ui(
     clicked
 }
 
-/// One whole-row button: size, description and download size on the left,
-/// one status word at the right end.
 fn paint_row(
     ui: &mut egui::Ui,
     row: &PickerRow,

@@ -2384,18 +2384,30 @@ fn render_setup_views(folder: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// What a preview of the main window shows over its screen.
+enum Overlay {
+    Nothing,
+    Menu,
+    Details,
+    NoModel,
+}
+
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
     render_setup_views(folder)?;
     let nothing_saved = tempfile::tempdir()?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
-        for (name, tab, filled) in [
-            ("01-text-empty", Tab::Text, false),
-            ("02-text-filled", Tab::Text, true),
-            ("03-live", Tab::Live, true),
-            ("04-settings", Tab::Settings, false),
-            ("05-first-run", Tab::Setup, false),
-            ("18-history", Tab::Files, true),
+        for (name, tab, filled, overlay) in [
+            ("01-text-empty", Tab::Text, false, Overlay::Nothing),
+            ("02-text-filled", Tab::Text, true, Overlay::Nothing),
+            ("03-live", Tab::Live, true, Overlay::Nothing),
+            ("04-settings", Tab::Settings, false, Overlay::Nothing),
+            ("05-first-run", Tab::Setup, false, Overlay::Nothing),
+            ("18-history", Tab::Files, true, Overlay::Nothing),
+            ("27-menu", Tab::Live, true, Overlay::Menu),
+            ("28-details", Tab::Live, true, Overlay::Details),
+            ("29-no-model", Tab::Live, true, Overlay::NoModel),
         ] {
             let ctx = egui::Context::default();
             ui::configure_theme(&ctx);
@@ -2485,6 +2497,17 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 app.rows = demo_talk(5);
                 app.current_live_id = Some(5);
                 app.live_chat.toggle_original(3, 0);
+            }
+            match overlay {
+                Overlay::Nothing => {}
+                Overlay::Menu => egui::Popup::open_id(&ctx, egui::Id::new(ui::MORE_MENU)),
+                Overlay::Details => {
+                    // The window fades in; the picture shows it after it has.
+                    ctx.style_mut(|style| style.animation_time = 0.0);
+                    app.settings.readout_enabled = true;
+                    app.details_open = true;
+                }
+                Overlay::NoModel => app.backend_ready = false,
             }
             preview::render(
                 &ctx,

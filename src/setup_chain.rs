@@ -32,10 +32,10 @@ impl Step {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Outcome {
     Running,
-    Failed,
+    Failed(String),
     Cancelled,
 }
 
@@ -46,7 +46,6 @@ pub(super) struct Chain {
     current: Option<Step>,
     pending: VecDeque<Step>,
     outcome: Outcome,
-    error: String,
 }
 
 impl Chain {
@@ -56,7 +55,6 @@ impl Chain {
             current: None,
             pending: steps.into_iter().collect(),
             outcome: Outcome::Running,
-            error: String::new(),
         }
     }
 
@@ -74,8 +72,8 @@ impl Chain {
         &self.done
     }
 
-    pub(super) fn outcome(&self) -> Outcome {
-        self.outcome
+    pub(super) fn outcome(&self) -> &Outcome {
+        &self.outcome
     }
 
     pub(super) fn is_running(&self) -> bool {
@@ -88,7 +86,10 @@ impl Chain {
 
     /// The detailed error of the step that failed.
     pub(super) fn failure(&self) -> Option<&str> {
-        (self.outcome == Outcome::Failed).then_some(self.error.as_str())
+        match &self.outcome {
+            Outcome::Failed(error) => Some(error),
+            _ => None,
+        }
     }
 
     /// The number of the step now running and how many there are in all.
@@ -123,8 +124,7 @@ impl Chain {
     pub(super) fn fail(&mut self, step: Step, error: String) -> bool {
         let waits = self.waits_for(step);
         if waits {
-            self.outcome = Outcome::Failed;
-            self.error = error;
+            self.outcome = Outcome::Failed(error);
         }
         waits
     }
@@ -143,7 +143,6 @@ impl Chain {
             return false;
         }
         self.outcome = Outcome::Running;
-        self.error.clear();
         if let Some(step) = self.current.take() {
             self.pending.push_front(step);
         }

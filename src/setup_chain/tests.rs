@@ -170,7 +170,7 @@ fn a_failure_in_step_three_keeps_the_first_two_and_again_resumes_at_step_three()
         },
     );
     let chain = app.setup.chain.as_ref().unwrap();
-    assert_eq!(chain.outcome(), Outcome::Failed);
+    assert!(matches!(chain.outcome(), Outcome::Failed(_)));
     assert_eq!(chain.failure(), Some("HTTP 503"));
     assert_eq!(chain.done(), [Step::Translation, Step::Punctuation]);
     assert_eq!(chain.position(), (3, 3));
@@ -220,7 +220,7 @@ fn each_step_reports_its_own_failure_and_changes_no_setting() {
         let before = settings_of(&app);
         process(&mut app, event);
         let chain = app.setup.chain.as_ref().unwrap();
-        assert_eq!(chain.outcome(), Outcome::Failed, "{step:?}");
+        assert!(matches!(chain.outcome(), Outcome::Failed(_)), "{step:?}");
         assert_eq!(chain.failure(), Some("checksum mismatch"), "{step:?}");
         assert_eq!(settings_of(&app), before, "{step:?}");
     }
@@ -266,7 +266,7 @@ fn cancelling_stops_the_step_that_runs_and_adopts_nothing_from_it() {
         assert!(app.step_cancel(step).load(Ordering::Relaxed), "{step:?}");
         process(&mut app, event);
         let chain = app.setup.chain.as_ref().unwrap();
-        assert_eq!(chain.outcome(), Outcome::Cancelled, "{step:?}");
+        assert_eq!(chain.outcome(), &Outcome::Cancelled, "{step:?}");
         assert_eq!(chain.failure(), None, "{step:?}");
         assert_eq!(chain.done(), earlier, "{step:?}");
         assert_eq!(settings_of(&app), before, "{step:?}");
@@ -687,7 +687,7 @@ fn only_the_step_that_runs_can_finish_or_stop() {
     assert!(!chain.complete(Step::Speech), "a later step");
     assert!(!chain.fail(Step::Speech, "late".into()));
     assert!(!chain.cancel(Step::Speech));
-    assert_eq!(chain.outcome(), Outcome::Running);
+    assert_eq!(chain.outcome(), &Outcome::Running);
     assert_eq!(chain.current(), Some(Step::Translation));
 }
 
@@ -700,7 +700,7 @@ fn a_failure_keeps_the_finished_steps_and_retry_starts_at_the_failed_one() {
     }
     assert_eq!(chain.take_next(), Some(Step::Speech));
     assert!(chain.fail(Step::Speech, "HTTP 503".into()));
-    assert_eq!(chain.outcome(), Outcome::Failed);
+    assert!(matches!(chain.outcome(), Outcome::Failed(_)));
     assert_eq!(chain.failure(), Some("HTTP 503"));
     assert_eq!(chain.done(), [Step::Translation, Step::Punctuation]);
     assert_eq!(chain.position(), (3, 3));
@@ -724,7 +724,7 @@ fn a_cancelled_step_is_started_again_by_retry_and_the_others_stay_done() {
     chain.complete(Step::Translation);
     chain.take_next();
     assert!(chain.cancel(Step::Punctuation));
-    assert_eq!(chain.outcome(), Outcome::Cancelled);
+    assert_eq!(chain.outcome(), &Outcome::Cancelled);
     assert_eq!(chain.failure(), None);
     assert!(!chain.is_finished());
     assert!(chain.retry());

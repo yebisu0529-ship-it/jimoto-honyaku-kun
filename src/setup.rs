@@ -554,12 +554,12 @@ impl App {
             .setup
             .chain
             .as_ref()
-            .map(|chain| (chain.outcome(), chain.active(), chain.position()));
+            .map(|chain| (chain.outcome().clone(), chain.active(), chain.position()));
         match stage {
             Some((Outcome::Running, Some(step), (number, total))) => {
                 self.chain_progress(ui, step, number, total);
             }
-            Some((Outcome::Failed, Some(step), (number, total))) => {
+            Some((Outcome::Failed(_), Some(step), (number, total))) => {
                 // The first step has no step before it to keep, only what it fetched.
                 let kept = if number == 1 {
                     "取得済みのデータは保持しています。"

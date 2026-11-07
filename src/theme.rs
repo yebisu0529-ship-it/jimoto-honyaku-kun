@@ -405,6 +405,7 @@ mod tests {
             ("ui.rs", include_str!("ui.rs")),
             ("mini.rs", include_str!("mini.rs")),
             ("setup.rs", include_str!("setup.rs")),
+            ("picker.rs", include_str!("picker.rs")),
             ("screen_ocr.rs", include_str!("screen_ocr.rs")),
             ("readout.rs", include_str!("readout.rs")),
             ("subtitle_window.rs", include_str!("subtitle_window.rs")),

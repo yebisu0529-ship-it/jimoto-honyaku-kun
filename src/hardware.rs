@@ -87,14 +87,10 @@ fn windows_detect(target: &Path, hardware: &mut Hardware) {
     use std::os::windows::ffi::OsStrExt;
     use windows::{
         Win32::{
-            Graphics::Dxgi::{
-                CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
-                DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3, IDXGIFactory1,
-            },
             Storage::FileSystem::GetDiskFreeSpaceExW,
             System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
         },
-        core::{Interface, PCWSTR},
+        core::PCWSTR,
     };
     let mut memory = MEMORYSTATUSEX {
         dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
@@ -117,60 +113,31 @@ fn windows_detect(target: &Path, hardware: &mut Hardware) {
             .warnings
             .push("保存先ディスクの空き容量を確認できませんでした。".into());
     }
-    let factory: windows::core::Result<IDXGIFactory1> = unsafe { CreateDXGIFactory1() };
-    match factory {
-        Ok(factory) => {
+    match dxgi_adapters() {
+        Some(adapters) => {
             let vulkan = vulkan_devices();
-            for index in 0..32 {
-                let Ok(adapter) = (unsafe { factory.EnumAdapters1(index) }) else {
-                    break;
-                };
-                let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
-                    continue;
-                };
-                let end = desc
-                    .Description
-                    .iter()
-                    .position(|&c| c == 0)
-                    .unwrap_or(desc.Description.len());
-                let name = String::from_utf16_lossy(&desc.Description[..end]);
-                let dedicated = desc.DedicatedVideoMemory as u64;
-                let software = desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0;
-                let mut free = None;
-                if !software
-                    && dedicated > 0
-                    && let Ok(adapter3) = adapter.cast::<IDXGIAdapter3>()
-                {
-                    let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
-                    if unsafe {
-                        adapter3.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
-                    }
-                    .is_ok()
-                    {
-                        free = Some(info.Budget.saturating_sub(info.CurrentUsage).min(dedicated));
-                    }
-                }
-                let normalized = normalized_name(&name);
-                let vulkan_eligible = !software
+            for adapter in adapters {
+                let normalized = normalized_name(&adapter.name);
+                let vulkan_eligible = !adapter.software
                     && vulkan.iter().any(|(vendor, candidate)| {
-                        *vendor == desc.VendorId && (normalized_name(candidate) == normalized)
+                        *vendor == adapter.vendor_id && (normalized_name(candidate) == normalized)
                     });
                 hardware.gpus.push(Gpu {
-                    name,
-                    vendor: match desc.VendorId {
+                    name: adapter.name,
+                    vendor: match adapter.vendor_id {
                         0x10de => "nvidia",
                         0x1002 | 0x1022 => "amd",
                         0x8086 => "intel",
                         _ => "unknown",
                     }
                     .into(),
-                    dedicated_vram_bytes: Some(dedicated),
-                    free_vram_bytes: free,
+                    dedicated_vram_bytes: Some(adapter.dedicated),
+                    free_vram_bytes: adapter.free,
                     driver_version: None,
                     cuda_eligible: false,
                     vulkan_eligible,
-                    is_software: software,
-                    memory_telemetry: if free.is_some() {
+                    is_software: adapter.software,
+                    memory_telemetry: if adapter.free.is_some() {
                         "dxgi-local-budget"
                     } else {
                         "unknown"
@@ -179,48 +146,16 @@ fn windows_detect(target: &Path, hardware: &mut Hardware) {
                 });
             }
         }
-        Err(_) => hardware
+        None => hardware
             .warnings
             .push("DXGIでGPUを確認できませんでした。CPUを候補にします。".into()),
     }
-    if let Some(output) = hidden_output(
-        "nvidia-smi",
-        &[
-            "--query-gpu=name,memory.total,memory.free,driver_version",
-            "--format=csv,noheader,nounits",
-        ],
-    ) {
-        let mut used = std::collections::HashSet::new();
-        for line in output.lines() {
-            let fields: Vec<_> = line.split(',').map(str::trim).collect();
-            if fields.len() != 4 {
-                continue;
-            }
-            let total = fields[1]
-                .parse::<u64>()
-                .ok()
-                .and_then(|n| n.checked_mul(1_048_576));
-            let free = fields[2]
-                .parse::<u64>()
-                .ok()
-                .and_then(|n| n.checked_mul(1_048_576));
-            if let Some((index, gpu)) = hardware.gpus.iter_mut().enumerate().find(|(index, gpu)| {
-                !used.contains(index)
-                    && gpu.vendor == "nvidia"
-                    && normalized_name(&gpu.name) == normalized_name(fields[0])
-            }) {
-                used.insert(index);
-                gpu.driver_version = Some(fields[3].to_string());
-                gpu.cuda_eligible = !gpu.is_software && cuda_124_driver_supported(fields[3]);
-                if let (Some(free), Some(total)) = (free, total) {
-                    gpu.free_vram_bytes = Some(
-                        free.min(total)
-                            .min(gpu.dedicated_vram_bytes.unwrap_or(total)),
-                    );
-                    gpu.memory_telemetry = "nvidia-smi".into();
-                }
-            }
-        }
+    let rows = nvidia_smi();
+    for (index, row) in match_smi(&hardware.gpus, &rows) {
+        let gpu = &mut hardware.gpus[index];
+        gpu.driver_version = Some(row.driver.clone());
+        gpu.cuda_eligible = !gpu.is_software && cuda_124_driver_supported(&row.driver);
+        apply_smi_memory(gpu, row);
     }
     if hardware
         .gpus
@@ -231,12 +166,178 @@ fn windows_detect(target: &Path, hardware: &mut Hardware) {
     }
 }
 
-#[cfg(windows)]
+/// Update the free memory of GPUs that [`detect`] found, cheaply enough to repeat
+/// every few seconds. Names, eligibility and capacity stay as detected, and a
+/// reading that fails leaves the last good value in place.
+pub fn refresh_gpu_memory(gpus: &mut [Gpu]) {
+    #[cfg(windows)]
+    {
+        if let Some(adapters) = dxgi_adapters() {
+            for (gpu, adapter) in gpus.iter_mut().zip(adapters) {
+                // nvidia-smi measures the whole card. Do not trade it for the OS budget.
+                if gpu.name == adapter.name
+                    && gpu.memory_telemetry != "nvidia-smi"
+                    && let Some(free) = adapter.free
+                {
+                    gpu.free_vram_bytes = Some(free);
+                    gpu.memory_telemetry = "dxgi-local-budget".into();
+                }
+            }
+        }
+        if gpus.iter().any(|gpu| gpu.vendor == "nvidia") {
+            let rows = nvidia_smi();
+            for (index, row) in match_smi(gpus, &rows) {
+                apply_smi_memory(&mut gpus[index], row);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = gpus;
+}
+
+#[cfg(any(windows, test))]
 fn normalized_name(name: &str) -> String {
     name.chars()
         .filter(char::is_ascii_alphanumeric)
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+/// One graphics adapter as DXGI lists it.
+#[cfg(windows)]
+struct Adapter {
+    name: String,
+    vendor_id: u32,
+    dedicated: u64,
+    software: bool,
+    /// What the OS budget lets this process still allocate. Not the card's whole free memory.
+    free: Option<u64>,
+}
+
+/// Every adapter DXGI lists, in its enumeration order, or `None` without DXGI.
+#[cfg(windows)]
+fn dxgi_adapters() -> Option<Vec<Adapter>> {
+    use windows::{
+        Win32::Graphics::Dxgi::{
+            CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+            DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3, IDXGIFactory1,
+        },
+        core::Interface,
+    };
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.ok()?;
+    let mut adapters = Vec::new();
+    for index in 0..32 {
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(index) }) else {
+            break;
+        };
+        let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
+            continue;
+        };
+        let end = desc
+            .Description
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(desc.Description.len());
+        let dedicated = desc.DedicatedVideoMemory as u64;
+        let software = desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0;
+        let mut free = None;
+        if !software
+            && dedicated > 0
+            && let Ok(adapter3) = adapter.cast::<IDXGIAdapter3>()
+        {
+            let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+            if unsafe {
+                adapter3.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
+            }
+            .is_ok()
+            {
+                free = Some(info.Budget.saturating_sub(info.CurrentUsage).min(dedicated));
+            }
+        }
+        adapters.push(Adapter {
+            name: String::from_utf16_lossy(&desc.Description[..end]),
+            vendor_id: desc.VendorId,
+            dedicated,
+            software,
+            free,
+        });
+    }
+    Some(adapters)
+}
+
+/// One row of `nvidia-smi --query-gpu=name,memory.total,memory.free,driver_version`.
+#[cfg(any(windows, test))]
+struct SmiRow {
+    name: String,
+    total: Option<u64>,
+    free: Option<u64>,
+    driver: String,
+}
+
+#[cfg(any(windows, test))]
+fn parse_nvidia_smi(output: &str) -> Vec<SmiRow> {
+    let mib = |text: &str| {
+        text.parse::<u64>()
+            .ok()
+            .and_then(|n| n.checked_mul(1_048_576))
+    };
+    output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split(',').map(str::trim).collect();
+            let [name, total, free, driver] = fields[..] else {
+                return None;
+            };
+            Some(SmiRow {
+                name: name.into(),
+                total: mib(total),
+                free: mib(free),
+                driver: driver.into(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn nvidia_smi() -> Vec<SmiRow> {
+    hidden_output(
+        "nvidia-smi",
+        &[
+            "--query-gpu=name,memory.total,memory.free,driver_version",
+            "--format=csv,noheader,nounits",
+        ],
+    )
+    .map(|output| parse_nvidia_smi(&output))
+    .unwrap_or_default()
+}
+
+/// Pair each NVIDIA adapter with the row that names it. Identical cards pair in
+/// listing order, each used once.
+#[cfg(any(windows, test))]
+fn match_smi<'a>(gpus: &[Gpu], rows: &'a [SmiRow]) -> Vec<(usize, &'a SmiRow)> {
+    let mut used = std::collections::HashSet::new();
+    rows.iter()
+        .filter_map(|row| {
+            let (index, _) = gpus.iter().enumerate().find(|(index, gpu)| {
+                !used.contains(index)
+                    && gpu.vendor == "nvidia"
+                    && normalized_name(&gpu.name) == normalized_name(&row.name)
+            })?;
+            used.insert(index);
+            Some((index, row))
+        })
+        .collect()
+}
+
+#[cfg(any(windows, test))]
+fn apply_smi_memory(gpu: &mut Gpu, row: &SmiRow) {
+    if let (Some(free), Some(total)) = (row.free, row.total) {
+        gpu.free_vram_bytes = Some(
+            free.min(total)
+                .min(gpu.dedicated_vram_bytes.unwrap_or(total)),
+        );
+        gpu.memory_telemetry = "nvidia-smi".into();
+    }
 }
 
 #[cfg(windows)]
@@ -414,6 +515,66 @@ mod tests {
         assert!(!cuda_124_driver_supported("551.60"));
         assert!(cuda_124_driver_supported("551.61"));
         assert!(cuda_124_driver_supported("580.97"));
+    }
+    fn adapter(name: &str, vendor: &str, dedicated: u64) -> Gpu {
+        Gpu {
+            name: name.into(),
+            vendor: vendor.into(),
+            dedicated_vram_bytes: Some(dedicated),
+            free_vram_bytes: None,
+            driver_version: None,
+            cuda_eligible: false,
+            vulkan_eligible: false,
+            is_software: false,
+            memory_telemetry: "unknown".into(),
+        }
+    }
+    #[test]
+    fn nvidia_smi_rows_are_read_in_bytes_and_malformed_lines_are_skipped() {
+        let rows = parse_nvidia_smi(
+            "NVIDIA GeForce RTX 4090, 24564, 12932, 617.14\nnot a row\nNVIDIA GeForce RTX 4090, N/A, 100, 617.14\n",
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "NVIDIA GeForce RTX 4090");
+        assert_eq!(rows[0].total, Some(24564 * 1_048_576));
+        assert_eq!(rows[0].free, Some(12932 * 1_048_576));
+        assert_eq!(rows[0].driver, "617.14");
+        assert_eq!(rows[1].total, None);
+    }
+    #[test]
+    fn identical_cards_pair_with_smi_rows_in_order_and_each_row_once() {
+        let gpus = vec![
+            adapter("Microsoft Basic Render Driver", "unknown", 0),
+            adapter("NVIDIA GeForce RTX 4090", "nvidia", 1),
+            adapter("NVIDIA GeForce RTX 4090", "nvidia", 2),
+            adapter("AMD Radeon RX 7900", "amd", 3),
+        ];
+        let rows = parse_nvidia_smi(
+            "NVIDIA GeForce RTX 4090, 100, 10, 600.00\nNVIDIA GeForce RTX 4090, 100, 20, 600.00\nNVIDIA GeForce RTX 4090, 100, 30, 600.00\n",
+        );
+        let pairs: Vec<_> = match_smi(&gpus, &rows)
+            .into_iter()
+            .map(|(gpu, row)| (gpu, row.free.unwrap() / 1_048_576))
+            .collect();
+        assert_eq!(pairs, [(1, 10), (2, 20)]);
+    }
+    #[test]
+    fn smi_memory_replaces_the_estimate_but_never_exceeds_the_dedicated_size() {
+        let mut gpu = adapter("NVIDIA GeForce RTX 4090", "nvidia", 24_000 * 1_048_576);
+        gpu.free_vram_bytes = Some(1);
+        gpu.memory_telemetry = "dxgi-local-budget".into();
+        let rows = parse_nvidia_smi("NVIDIA GeForce RTX 4090, 24564, 24500, 617.14\n");
+        apply_smi_memory(&mut gpu, &rows[0]);
+        assert_eq!(gpu.free_vram_bytes, Some(24_000 * 1_048_576));
+        assert_eq!(gpu.memory_telemetry, "nvidia-smi");
+        let unreadable = parse_nvidia_smi("NVIDIA GeForce RTX 4090, N/A, N/A, 617.14\n");
+        gpu.free_vram_bytes = Some(5);
+        apply_smi_memory(&mut gpu, &unreadable[0]);
+        assert_eq!(
+            gpu.free_vram_bytes,
+            Some(5),
+            "a failed reading keeps the last value"
+        );
     }
     #[test]
     fn disk_target_uses_an_existing_ancestor_without_creating_directories() {

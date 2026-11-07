@@ -30,6 +30,7 @@ mod document;
 mod file_output;
 mod mini;
 mod paragraph_tools;
+mod picker;
 mod preview;
 mod readout;
 mod screen_feed;
@@ -199,7 +200,7 @@ enum Event {
         row_id: u64,
         request: plamo_translate::live_text::Request,
         options: TranslationOptions,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<document::LiveTranslation, String>,
         elapsed: f32,
     },
     Partial {
@@ -232,6 +233,7 @@ enum Event {
     FileDone(std::result::Result<String, String>),
     Info(String),
     Hardware(std::result::Result<plamo_translate::hardware::Hardware, String>),
+    GpuMemory(Vec<plamo_translate::hardware::Gpu>),
     InstallProgress(plamo_translate::installer::Progress),
     Installed(std::result::Result<plamo_translate::installer::InstallResult, String>),
     ServiceStatus {
@@ -716,6 +718,7 @@ impl App {
                     end_ms,
                     source: text.clone(),
                     translation: String::new(),
+                    standard_translation: None,
                     kind: kind.into(),
                     video_id: if kind == "YouTube" {
                         self.video_id.clone()
@@ -1351,11 +1354,14 @@ impl App {
                     match result {
                         Ok(hardware) => {
                             self.setup.hardware = Some(hardware);
+                            self.setup.gpu_polled_at = Instant::now();
+                            self.refresh_store_state();
                             self.recalculate_recommendation();
                         }
                         Err(error) => self.setup.error = error,
                     }
                 }
+                Event::GpuMemory(gpus) => self.accept_gpu_memory(gpus),
                 Event::InstallProgress(progress) => self.setup.progress = Some(progress),
                 Event::Installed(result) => {
                     self.setup.installing = false;
@@ -1771,6 +1777,7 @@ impl eframe::App for App {
         self.sync_capture_protection(ctx);
         self.poll_services();
         self.poll_readout();
+        self.poll_gpu_memory(ctx);
         if self.window_mode.is_mini()
             && (self.tab == Tab::Setup
                 || self.audio_confirmation
@@ -2089,6 +2096,7 @@ fn demo_talk(rows: usize) -> Vec<Row> {
             end_ms: start_ms + 4_000,
             source: source.into(),
             translation: translation.into(),
+            standard_translation: None,
             kind: kind.into(),
             video_id: if kind == "YouTube" {
                 "preview".into()
@@ -2231,8 +2239,113 @@ fn demo_subtitle(youtube: bool, fixed: usize, forming: (&str, &str)) -> subtitle
     state
 }
 
+/// The model setup screen on several PCs, at the smallest window and at 4K.
+/// Memory figures are fixtures: previews never measure the machine.
+fn render_setup_views(folder: &Path) -> Result<()> {
+    use plamo_translate::{
+        hardware::{Gpu, Hardware},
+        model_catalog,
+    };
+    const GIB: u64 = 1_073_741_824;
+    let pc = |gpu: Option<(&str, u64, u64)>| Hardware {
+        os_arch: "windows-x86_64".into(),
+        cpu_logical: 16,
+        ram_total_bytes: Some(32 * GIB),
+        ram_available_bytes: Some(20 * GIB),
+        disk_free_bytes: Some(120 * GIB),
+        disk_target: "C:/".into(),
+        gpus: gpu
+            .into_iter()
+            .map(|(name, total, used)| Gpu {
+                name: name.into(),
+                vendor: "nvidia".into(),
+                dedicated_vram_bytes: Some(total),
+                free_vram_bytes: Some(total - used),
+                driver_version: Some("570.00".into()),
+                cuda_eligible: true,
+                vulkan_eligible: true,
+                is_software: false,
+                memory_telemetry: "nvidia-smi".into(),
+            })
+            .collect(),
+        warnings: vec![],
+    };
+    let catalog = model_catalog::bundled()?;
+    let model = |id: &str| catalog.models.iter().find(|m| m.id == id).cloned().unwrap();
+    let loaded = model("plamo3-8b-q3_k_m");
+    let (big, small) = ("NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4060");
+    for (name, hardware, in_use, selected) in [
+        (
+            "setup-a-24gb",
+            pc(Some((big, 24 * GIB, 5 * GIB))),
+            None,
+            None,
+        ),
+        (
+            "setup-b-8gb-busy",
+            pc(Some((small, 8 * GIB, 13 * GIB / 2))),
+            None,
+            None,
+        ),
+        (
+            "setup-b2-8gb",
+            pc(Some((small, 8 * GIB, 3 * GIB))),
+            None,
+            None,
+        ),
+        ("setup-c-cpu", pc(None), None, None),
+        (
+            "setup-d-loaded",
+            pc(Some((
+                big,
+                24 * GIB,
+                5 * GIB + model_catalog::inference_bytes(&loaded),
+            ))),
+            Some(&loaded),
+            None,
+        ),
+        (
+            "setup-e-no-longer-fits",
+            pc(Some((small, 8 * GIB, 3 * GIB))),
+            None,
+            Some("plamo3-8b-q4_k_m"),
+        ),
+    ] {
+        for (width, height) in [(860, 620), (2560, 1369)] {
+            let ctx = egui::Context::default();
+            ui::configure_theme(&ctx);
+            let mut app = App::inert();
+            app.tab = Tab::Setup;
+            app.startup_decided = true;
+            app.status = "プレビュー · 接続や保存は行いません".into();
+            app.setup.hardware = Some(hardware.clone());
+            if let Some(model) = in_use {
+                app.settings.model = format!("models/{}", model.filename);
+                app.settings.gpu_layers = 99;
+                app.backend_ready = true;
+                app.setup.in_use = Some(model.clone());
+                app.setup.saved = ["plamo3-0.8b-q4_k_m", "plamo3-2b-q4_k_m", &model.id]
+                    .map(String::from)
+                    .into();
+            }
+            app.recalculate_recommendation();
+            if let Some(id) = selected {
+                app.setup.selected_id = id.into();
+            }
+            preview::render(
+                &ctx,
+                &folder.join(format!("{name}-{width}x{height}.png")),
+                width,
+                height,
+                |ctx| app.render_ui(ctx),
+            )?;
+        }
+    }
+    Ok(())
+}
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
+    render_setup_views(folder)?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
         for (name, tab, filled) in [
             ("01-text-empty", Tab::Text, false),
@@ -2312,6 +2425,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                             end_ms: index * 5000 + 4000,
                             source: source.into(),
                             translation: translation.into(),
+                            standard_translation: None,
                             kind: "YouTube".into(),
                             video_id: "preview".into(),
                             created_at: "2026-11-05T12:00:00+09:00".into(),
@@ -2373,6 +2487,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 end_ms: 16000,
                 source: "The translations stay on your computer, so you can read them again later.".into(),
                 translation: "翻訳はこのPCに保存されるので、あとから読み返せます。画面を小さくしても、翻訳と保存は続きます。".into(),
+                standard_translation: None,
                 kind: "YouTube".into(),
                 video_id: "preview".into(),
                 created_at: "2026-11-05T12:00:00+09:00".into(),
@@ -2391,6 +2506,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     end_ms: 20000,
                     source: "The next sentence is still being translated.".into(),
                     translation: "次の文は、まだ翻訳の".into(),
+                    standard_translation: None,
                     kind: "音声".into(),
                     video_id: String::new(),
                     created_at: String::new(),
@@ -2471,6 +2587,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     end_ms: end,
                     source: source.into(),
                     translation: target.into(),
+                    standard_translation: None,
                     kind: "音声".into(),
                     video_id: String::new(),
                     created_at: String::new(),
@@ -2652,6 +2769,7 @@ mod tests {
             end_ms: end,
             source: "source".into(),
             translation: "translation".into(),
+            standard_translation: None,
             created_at: String::new(),
             paragraph: None,
         }

@@ -64,6 +64,13 @@ struct Flight {
     cancel: Arc<AtomicBool>,
 }
 
+/// A translated live paragraph. For a Japanese target `easy` is `standard`
+/// rewritten as やさしい日本語, and that is the text the user reads.
+pub(super) struct LiveTranslation {
+    standard: String,
+    easy: Option<String>,
+}
+
 struct VisibleInterim {
     snapshot: ParagraphSnapshot,
     row: Row,
@@ -343,6 +350,7 @@ impl App {
                     end_ms: snapshot.end_ms,
                     source: snapshot.text.clone(),
                     translation: String::new(),
+                    standard_translation: None,
                     kind: source_name(snapshot.stamp.kind, &snapshot.stamp.video_id).into(),
                     video_id: snapshot.stamp.video_id.clone(),
                     created_at: chrono::Local::now().to_rfc3339(),
@@ -375,6 +383,7 @@ impl App {
                 .is_some_and(|source| !snapshot.text.starts_with(source))
             {
                 row.record.translation.clear();
+                row.record.standard_translation = None;
                 self.document.translated_source.remove(&key);
             }
             row.record.source.clone_from(&snapshot.text);
@@ -437,6 +446,7 @@ impl App {
                 end_ms: end_ms.max(start_ms),
                 source: text,
                 translation: String::new(),
+                standard_translation: None,
                 kind: source_name(kind, &self.video_id).into(),
                 video_id: if kind == SourceKind::Caption {
                     self.video_id.clone()
@@ -812,7 +822,7 @@ impl App {
         let tx = self.tx.clone();
         thread::spawn(move || {
             let started = Instant::now();
-            let result = (|| -> Result<String> {
+            let result = (|| -> Result<LiveTranslation> {
                 let mut live_options = options.clone();
                 live_options.context = live_text::compose_context(
                     &options.context,
@@ -820,7 +830,14 @@ impl App {
                     &request.previous_target,
                     4_000,
                 )?;
-                Translator::new(live_options)?.translate_live(&source, &cancel, |_| {})
+                let standard =
+                    Translator::new(live_options)?.translate_live(&source, &cancel, |_| {})?;
+                let easy = if options.target_lang == "ja" {
+                    rewrite_as_easy_japanese(&options, &standard, &cancel)?
+                } else {
+                    None
+                };
+                Ok(LiveTranslation { standard, easy })
             })()
             .map_err(|error| format!("{error:#}"));
             let _ = tx.send(Event::DocumentDone {
@@ -837,7 +854,7 @@ impl App {
         row_id: u64,
         request: Request,
         options: TranslationOptions,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<LiveTranslation, String>,
         elapsed: f32,
     ) {
         if !self.document.flight.as_ref().is_some_and(|flight| {
@@ -858,11 +875,13 @@ impl App {
             self.document.source_mut(kind).cancel_request(&request, now);
             return;
         }
-        let acceptance = match result {
-            Ok(target) => self
-                .document
-                .source_mut(kind)
-                .accept(&request, &target, now),
+        let (acceptance, easy) = match result {
+            Ok(LiveTranslation { standard, easy }) => (
+                self.document
+                    .source_mut(kind)
+                    .accept(&request, &standard, now),
+                easy,
+            ),
             Err(error) => {
                 self.document.source_mut(kind).fail(&request, now);
                 let key = (request.snapshot.stamp.clone(), request.snapshot.key);
@@ -890,10 +909,16 @@ impl App {
                 return;
             }
         };
-        let (snapshot, target, final_paragraph) = match acceptance {
+        let (snapshot, standard, final_paragraph) = match acceptance {
             Acceptance::Rejected => return,
             Acceptance::Interim { snapshot, target } => (snapshot, target, false),
             Acceptance::Committed { snapshot, target } => (snapshot, target, true),
+        };
+        // Context for the next paragraph stays the ordinary translation that
+        // `accept` kept. The user reads the rewrite when there is one.
+        let (target, standard_translation) = match easy {
+            Some(easy) => (easy, Some(standard)),
+            None => (standard, None),
         };
         let key = (snapshot.stamp.clone(), snapshot.key);
         self.document
@@ -908,6 +933,7 @@ impl App {
         let id = self.document_row(&source_snapshot);
         if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
             row.record.translation.clone_from(&target);
+            row.record.standard_translation = standard_translation;
             row.error = None;
             if final_paragraph {
                 row.record.source.clone_from(&snapshot.text);
@@ -962,9 +988,34 @@ impl App {
     }
 }
 
+/// The rewrite refines a translation that already exists, so when it fails the
+/// paragraph keeps the ordinary Japanese. Only a cancellation is an error.
+fn rewrite_as_easy_japanese(
+    options: &TranslationOptions,
+    standard: &str,
+    cancel: &AtomicBool,
+) -> Result<Option<String>> {
+    match Translator::new(options.easy_japanese())
+        .and_then(|translator| translator.translate_live(standard, cancel, |_| {}))
+    {
+        Ok(easy) => Ok(Some(easy)),
+        Err(error) if cancel.load(Ordering::Acquire) => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl From<&str> for LiveTranslation {
+        fn from(standard: &str) -> Self {
+            Self {
+                standard: standard.into(),
+                easy: None,
+            }
+        }
+    }
 
     fn audio_app() -> App {
         let mut app = App::inert();
@@ -1516,31 +1567,88 @@ mod tests {
         }
     }
 
-    /// Answers the three requests of one translation and hands back the prompt.
-    fn translation_stub() -> (String, mpsc::Receiver<String>) {
+    /// What the substitute server answers to one completion request.
+    enum Completion {
+        Text(&'static str),
+        Failure,
+    }
+
+    /// Answers like the local PLaMo server and hands back every prompt it was
+    /// sent, in order. Each completion gets the next scripted answer; a request
+    /// beyond the script fails but is still counted.
+    fn translation_stub(script: Vec<Completion>) -> (String, mpsc::Receiver<String>) {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", server.server_addr().to_ip().unwrap());
         let (prompts_tx, prompts) = mpsc::channel();
         thread::spawn(move || {
-            for mut request in server.incoming_requests().take(3) {
-                let reply = match request.url().to_owned().as_str() {
-                    "/health" => "ok".to_owned(),
-                    "/v1/models" => r#"{"data":[{"id":"plamo3"}]}"#.to_owned(),
+            let mut script = script.into_iter();
+            for mut request in server.incoming_requests() {
+                let url = request.url().to_owned();
+                let response = match url.as_str() {
+                    "/health" => tiny_http::Response::from_string("ok"),
+                    "/v1/models" => {
+                        tiny_http::Response::from_string(r#"{"data":[{"id":"plamo3"}]}"#)
+                    }
                     _ => {
                         let mut body = String::new();
                         request.as_reader().read_to_string(&mut body).unwrap();
                         let body: serde_json::Value = serde_json::from_str(&body).unwrap();
-                        prompts_tx
-                            .send(body["prompt"].as_str().unwrap().to_owned())
-                            .unwrap();
-                        "data: {\"choices\":[{\"text\":\"訳\",\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
-                            .to_owned()
+                        let _ = prompts_tx.send(body["prompt"].as_str().unwrap().to_owned());
+                        match script.next() {
+                            Some(Completion::Text(text)) => {
+                                let chunk = serde_json::json!({
+                                    "choices": [{"text": text, "finish_reason": "stop"}]
+                                });
+                                tiny_http::Response::from_string(format!(
+                                    "data: {chunk}\n\ndata: [DONE]\n\n"
+                                ))
+                            }
+                            Some(Completion::Failure) | None => {
+                                tiny_http::Response::from_string("model failed")
+                                    .with_status_code(500)
+                            }
+                        }
                     }
                 };
-                let _ = request.respond(tiny_http::Response::from_string(reply));
+                let _ = request.respond(response);
             }
         });
         (endpoint, prompts)
+    }
+
+    fn caption_app(endpoint: String) -> App {
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        app.caption_paused = false;
+        app.backend_ready = true;
+        app.settings.translation.endpoint = endpoint;
+        app
+    }
+
+    fn live_caption(app: &mut App, text: &str, position: f64) {
+        app.document_ingest_caption(bridge::Caption {
+            text: text.into(),
+            video_id: "video-a".into(),
+            position,
+            paused: false,
+            epoch: 2,
+        });
+    }
+
+    /// Waits for the translation thread and applies its result as the event
+    /// loop does.
+    fn finish_translation(app: &mut App) {
+        let Ok(Event::DocumentDone {
+            row_id,
+            request,
+            options,
+            result,
+            elapsed,
+        }) = app.rx.recv_timeout(Duration::from_secs(10))
+        else {
+            panic!("the translation thread sent no result");
+        };
+        app.document_done(row_id, request, options, result, elapsed);
     }
 
     #[test]
@@ -1692,7 +1800,8 @@ mod tests {
 
     #[test]
     fn a_live_caption_reaches_the_translation_server_without_its_fillers() {
-        let (endpoint, prompts) = translation_stub();
+        let (endpoint, prompts) =
+            translation_stub(vec![Completion::Text("訳"), Completion::Text("訳")]);
         let mut app = App::inert();
         app.caption_enabled = true;
         app.caption_paused = false;
@@ -1731,7 +1840,8 @@ mod tests {
             }),
             Err("tagger failed".to_owned()),
         ] {
-            let (endpoint, prompts) = translation_stub();
+            let (endpoint, prompts) =
+                translation_stub(vec![Completion::Text("訳"), Completion::Text("訳")]);
             let mut app = App::inert();
             app.settings.translation.endpoint = endpoint;
             let options = app.settings.translation.clone();
@@ -1762,5 +1872,190 @@ mod tests {
                 "{prompt}"
             );
         }
+    }
+
+    const COMMITTEE: &str =
+        "The committee will review the report and we can share it with the public.";
+    const ORDINARY: &str = "委員会は報告書を確認し、一般にも共有できます。";
+    const EASY: &str = "委員会は報告書を見ます。みんなにも見せることができます。";
+
+    #[test]
+    fn a_japanese_paragraph_is_shown_as_easy_japanese_and_history_keeps_the_ordinary_translation() {
+        let (endpoint, prompts) =
+            translation_stub(vec![Completion::Text(ORDINARY), Completion::Text(EASY)]);
+        let history = tempfile::tempdir().unwrap();
+        let mut app = caption_app(endpoint);
+        app.journal = Some(Journal::new(history.path()).unwrap());
+        app.settings.translation.source_lang = "en".into();
+        app.settings.translation.context = "町の図書館の会議".into();
+        app.settings.translation.glossary = vec![("committee".into(), "委員会".into())];
+        live_caption(&mut app, COMMITTEE, 1.0);
+        app.document_close(SourceKind::Caption);
+        app.document_tick();
+        finish_translation(&mut app);
+
+        let first = prompts.try_recv().unwrap();
+        assert!(
+            first.contains(&format!(
+                "<|plamo:msg|>{COMMITTEE}<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>plain<|plamo:msg|>"
+            )),
+            "{first}"
+        );
+        assert!(
+            first.contains("町の図書館の会議") && first.contains("<|plamo:index|>committee"),
+            "{first}"
+        );
+        assert_eq!(
+            prompts.try_recv().unwrap(),
+            format!(
+                "<|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>{ORDINARY}<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja(easy)<|plamo:msg|>"
+            )
+        );
+        assert!(prompts.try_recv().is_err(), "exactly two requests");
+
+        let row = &app.rows[0];
+        assert!(row.is_confirmed());
+        assert_eq!(row.record.translation, EASY);
+        assert_eq!(row.record.standard_translation.as_deref(), Some(ORDINARY));
+        assert_eq!(app.overlay_text, EASY);
+        app.document_update_subtitle_window();
+        assert_eq!(app.subtitle_window.view().unwrap().target, EASY);
+
+        let (_, saved) = Journal::open_latest(history.path()).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].translation, EASY);
+        assert_eq!(saved[0].standard_translation.as_deref(), Some(ORDINARY));
+    }
+
+    #[test]
+    fn the_next_paragraph_gets_the_ordinary_translation_as_its_context() {
+        let (endpoint, prompts) = translation_stub(vec![
+            Completion::Text(ORDINARY),
+            Completion::Text(EASY),
+            Completion::Text("では、会議の後半を始めましょう。"),
+            Completion::Text("では、会議の後ろ半分を始めましょう。"),
+        ]);
+        let mut app = caption_app(endpoint);
+        live_caption(&mut app, COMMITTEE, 1.0);
+        app.document_close(SourceKind::Caption);
+        app.document_tick();
+        finish_translation(&mut app);
+        live_caption(
+            &mut app,
+            "Well, we should begin the second part of the meeting now.",
+            2.0,
+        );
+        app.document_tick();
+        finish_translation(&mut app);
+
+        let prompts: Vec<String> = prompts.try_iter().collect();
+        assert_eq!(prompts.len(), 4);
+        assert!(
+            prompts[2].contains(&format!("Previous translation:\n{ORDINARY}")),
+            "{}",
+            prompts[2]
+        );
+        assert!(!prompts[2].contains(EASY), "{}", prompts[2]);
+    }
+
+    #[test]
+    fn a_failed_rewrite_keeps_the_ordinary_translation_and_the_paragraph() {
+        for rewrite in [Completion::Failure, Completion::Text("")] {
+            let (endpoint, prompts) = translation_stub(vec![Completion::Text(ORDINARY), rewrite]);
+            let mut app = caption_app(endpoint);
+            live_caption(&mut app, COMMITTEE, 1.0);
+            app.document_close(SourceKind::Caption);
+            app.document_tick();
+            finish_translation(&mut app);
+
+            assert_eq!(prompts.try_iter().count(), 2, "the rewrite was tried");
+            let row = &app.rows[0];
+            assert!(row.is_confirmed());
+            assert_eq!(row.record.translation, ORDINARY);
+            assert_eq!(row.record.standard_translation, None);
+        }
+    }
+
+    #[test]
+    fn other_target_languages_are_translated_in_one_request() {
+        let (endpoint, prompts) =
+            translation_stub(vec![Completion::Text("The committee reviews the report.")]);
+        let mut app = caption_app(endpoint);
+        app.settings.translation.source_lang = "de".into();
+        app.settings.translation.target_lang = "en".into();
+        live_caption(
+            &mut app,
+            "Der Ausschuss prüft den Bericht und macht ihn der Öffentlichkeit zugänglich.",
+            1.0,
+        );
+        app.document_close(SourceKind::Caption);
+        app.document_tick();
+        finish_translation(&mut app);
+
+        assert_eq!(prompts.try_iter().count(), 1);
+        assert_eq!(
+            app.rows[0].record.translation,
+            "The committee reviews the report."
+        );
+        assert_eq!(app.rows[0].record.standard_translation, None);
+    }
+
+    #[test]
+    fn a_cancelled_rewrite_is_an_error_but_a_failed_one_is_not() {
+        let (endpoint, prompts) = translation_stub(vec![Completion::Failure]);
+        let options = TranslationOptions {
+            endpoint,
+            ..Default::default()
+        };
+        assert!(matches!(
+            rewrite_as_easy_japanese(&options, ORDINARY, &AtomicBool::new(false)),
+            Ok(None)
+        ));
+        assert_eq!(
+            prompts.try_iter().count(),
+            1,
+            "the failing request was made"
+        );
+        assert!(rewrite_as_easy_japanese(&options, ORDINARY, &AtomicBool::new(true)).is_err());
+        assert_eq!(
+            prompts.try_iter().count(),
+            0,
+            "a cancelled rewrite asks nothing"
+        );
+    }
+
+    #[test]
+    fn a_corrected_source_drops_the_rewrite_with_its_ordinary_translation() {
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        app.caption_paused = false;
+        live_caption(
+            &mut app,
+            "The loan period is five days for registered readers",
+            1.0,
+        );
+        let (id, request, options) = take_job(&mut app, SourceKind::Caption, 1_500);
+        let five_days = LiveTranslation {
+            standard: "貸出期間は5日です。".into(),
+            easy: Some("登録した人は、5日、本を借りられます。".into()),
+        };
+        app.document_done(id, request, options, Ok(five_days), 0.1);
+        assert_eq!(
+            app.rows[0].record.standard_translation.as_deref(),
+            Some("貸出期間は5日です。")
+        );
+        app.document_update_subtitle_window();
+        assert_eq!(
+            app.subtitle_window.view().unwrap().target,
+            "登録した人は、5日、本を借りられます。"
+        );
+
+        live_caption(
+            &mut app,
+            "The loan period is six days for registered readers",
+            1.1,
+        );
+        assert!(app.rows[0].record.translation.is_empty());
+        assert_eq!(app.rows[0].record.standard_translation, None);
     }
 }

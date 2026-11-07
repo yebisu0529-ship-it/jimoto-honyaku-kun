@@ -288,6 +288,7 @@ mod tests {
                 end_ms: 1500,
                 source: "The previous sentence.".into(),
                 translation: String::new(),
+                standard_translation: None,
                 kind: "音声".into(),
                 video_id: String::new(),
                 created_at: String::new(),

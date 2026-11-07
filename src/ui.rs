@@ -10,8 +10,6 @@ use plamo_translate::journal::ParagraphState;
 const HEADER_HEIGHT: f32 = 56.0;
 /// Height reserved for the live input/display controls.
 const SOURCES_HEIGHT: f32 = 40.0;
-/// Height reserved above the history list for its label.
-const HISTORY_HEADING_HEIGHT: f32 = 28.0;
 /// The four pages in rail order, each with the Ctrl shortcut that opens it.
 const TAB_ORDER: [(Tab, &str, egui::Key); 4] = [
     (Tab::Text, "文章", egui::Key::Num1),
@@ -36,7 +34,6 @@ fn text_area_height(ui: &egui::Ui) -> f32 {
 pub(super) struct UiProbe {
     pub rail_width: f32,
     pub nav_heights: Vec<f32>,
-    pub now_rect: Option<egui::Rect>,
     pub reading_font: f32,
     pub status_rect: Option<egui::Rect>,
 }
@@ -199,63 +196,8 @@ fn history_time(created_at: &str) -> String {
         .unwrap_or_else(|_| created_at.to_owned())
 }
 
-fn paragraph_label(row: &Row) -> &'static str {
-    match row.record.paragraph.as_ref().map(|p| p.state) {
-        Some(ParagraphState::Open | ParagraphState::Closing) => "継続中の文章 · 訳文を更新中",
-        Some(ParagraphState::Final) => "確定した文章",
-        Some(ParagraphState::Interrupted) => "中断した文章 · 途中の訳文（未確定）",
-        Some(ParagraphState::Failed) => "翻訳できなかった文章 · 未確定",
-        None if row.pending => "翻訳中",
-        None => "最新の対訳",
-    }
-}
-
-fn history_row_visible(row: &Row, current: Option<u64>) -> bool {
-    !row.is_provisional()
-        && super::live_view::history_visible(
-            row.record.id,
-            row.pending,
-            if row.is_confirmed() { current } else { None },
-        )
-}
-
-/// A paragraph that is still being revised is never presented as final, and
-/// never paired with a different source.
-fn row_is_unfinished(row: &Row) -> bool {
-    row.record.paragraph.as_ref().is_some_and(|p| {
-        matches!(
-            p.state,
-            ParagraphState::Open
-                | ParagraphState::Closing
-                | ParagraphState::Interrupted
-                | ParagraphState::Failed
-        )
-    })
-}
-
 /// Height of the one status line between the live toolbar and the panel.
 const STATUS_LINE_HEIGHT: f32 = 24.0;
-
-#[derive(Clone, Copy)]
-struct LiveLayout {
-    latest_height: f32,
-}
-impl LiveLayout {
-    fn for_height(height: f32) -> Self {
-        // Viewport points, not physical pixels or changing source/status text.
-        // Grow with the window below 727 points without consuming the minimum
-        // history viewport; the common DPI-scaled window gets a full paragraph.
-        Self {
-            // Fixed for a given window size (content changes never resize it),
-            // but it grows with the window so a short paragraph does not leave
-            // a large empty box on a tall screen. The history list keeps at
-            // least 110 points at the minimum window height.
-            latest_height: (height * 0.36)
-                .clamp(170.0, 300.0)
-                .min((height - 434.0).max(150.0)),
-        }
-    }
-}
 
 /// Allocate a hard outer rectangle; changing child content cannot move history.
 fn live_region<R>(
@@ -291,344 +233,6 @@ fn page_column(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
             add(ui);
         },
     );
-}
-
-/// Left-aligned block for long prose inside a full-width surface. The block
-/// follows the window until a line would exceed the readable measure.
-fn measure_block<R>(
-    ui: &mut egui::Ui,
-    reading_size: f32,
-    add: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    let width = ui.available_width().min(theme::prose_width(reading_size));
-    let height = ui.available_height();
-    ui.allocate_ui_with_layout(
-        Vec2::new(width, height),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            ui.set_width(width);
-            add(ui)
-        },
-    )
-    .inner
-}
-
-/// What the reader asked the latest panel to do in this frame.
-enum PanelAction {
-    Read(String),
-    StopReadout,
-}
-
-fn live_latest_panel(
-    ui: &mut egui::Ui,
-    current: Option<&Row>,
-    draft: &str,
-    mode: super::live_view::LatestMode,
-    layout: LiveLayout,
-    preferences: (f32, bool, bool),
-    // Some(speaking) while readout is in use; None leaves its buttons out.
-    readout: Option<bool>,
-) -> Option<PanelAction> {
-    use super::live_view::LatestMode;
-    let (font_size, show_original, auto_scroll) = preferences;
-    // A fresh ASR draft is an addition to the accepted paragraph, never a
-    // replacement for its coherent interim Japanese translation.
-    let mode = if current.is_some() {
-        LatestMode::Current
-    } else {
-        mode
-    };
-    let selected = if mode == LatestMode::Current {
-        current
-    } else {
-        None
-    };
-    let translation = selected
-        .map(|row| row.record.translation.as_str())
-        .unwrap_or("");
-    let mut action = None;
-    live_region(ui, "live-latest-panel", layout.latest_height, |ui| {
-        theme::reading_surface().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.set_min_height(ui.available_height());
-            measure_block(ui, font_size, |ui| {
-                ui.spacing_mut().item_spacing.y = theme::SPACE_1;
-                // One line says what is shown; the actions for it sit beside it.
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if readout.is_some()
-                            && ui
-                                .add_enabled(
-                                    selected.is_some_and(Row::is_confirmed),
-                                    standard("読み上げ"),
-                                )
-                                .clicked()
-                        {
-                            action = Some(PanelAction::Read(translation.to_owned()));
-                        }
-                        if ui
-                            .add_enabled(!translation.is_empty(), standard("コピー"))
-                            .on_hover_text("PLaMoのクレジットを付けてコピーします")
-                            .clicked()
-                            && let Ok(mut clipboard) = arboard::Clipboard::new()
-                        {
-                            let _ = clipboard.set_text(credit::published(translation));
-                        }
-                        // Only while something is read, and to the left so the
-                        // copy and read buttons never move.
-                        if readout == Some(true)
-                            && ui.add(standard("読み上げを停止").selected(true)).clicked()
-                        {
-                            action = Some(PanelAction::StopReadout);
-                        }
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let state = match (mode, selected) {
-                                (LatestMode::Current, Some(row)) => {
-                                    source_badge(ui, &row.record.kind);
-                                    ui.label(theme::caption(clock(row.record.start_ms)));
-                                    paragraph_label(row)
-                                }
-                                (LatestMode::Draft, _) => "認識途中 · 原文をつないで翻訳します",
-                                _ => "YouTube字幕またはPC音声の入力を待っています",
-                            };
-                            ui.add(egui::Label::new(theme::caption(state)).truncate());
-                        });
-                    });
-                });
-                let source = match mode {
-                    LatestMode::Draft => draft.to_owned(),
-                    LatestMode::Current if show_original => {
-                        let accepted = selected.map(|row| row.record.source.as_str()).unwrap_or("");
-                        if draft.trim().is_empty() {
-                            accepted.to_owned()
-                        } else {
-                            format!("{accepted}\n\n追加で認識中の原文（未確定）:\n{draft}")
-                        }
-                    }
-                    LatestMode::Current => {
-                        "原文は非表示です。表示メニューから切り替えられます。".to_owned()
-                    }
-                    LatestMode::Empty => "原文はここに表示されます。".to_owned(),
-                };
-                let error = selected.and_then(|row| row.error.as_deref());
-                let target = error.unwrap_or_else(|| {
-                    if !translation.is_empty() {
-                        translation
-                    } else if mode == LatestMode::Draft {
-                        "原文をつなぎながら訳文を更新します。"
-                    } else if selected.is_some_and(|row| row.pending) {
-                        "翻訳しています…"
-                    } else {
-                        "訳文はここに表示されます。"
-                    }
-                });
-                let id = selected.map(|row| row.record.id).unwrap_or(0);
-                let show_source = show_original || mode == LatestMode::Draft;
-                let height = ui.available_height().max(24.0);
-                ui.columns(if show_source { 2 } else { 1 }, |columns| {
-                    if show_source {
-                        live_text_column(
-                            &mut columns[0],
-                            ("latest-source", id, mode == LatestMode::Draft),
-                            Some("原文"),
-                            &source,
-                            (theme::SIZE_BODY, TEXT_MUTED),
-                            auto_scroll
-                                && (mode == LatestMode::Draft
-                                    || selected
-                                        .is_some_and(|row| row.pending || row.is_provisional())),
-                            height,
-                        );
-                    }
-                    // A lone translation needs no column label.
-                    live_text_column(
-                        &mut columns[usize::from(show_source)],
-                        ("latest-target", id, false),
-                        show_source.then_some("訳文"),
-                        target,
-                        (
-                            theme::reading_size(font_size),
-                            if error.is_some() { ERROR } else { TEXT },
-                        ),
-                        auto_scroll
-                            && selected.is_some_and(|row| row.pending || row.is_provisional()),
-                        height,
-                    );
-                });
-            });
-        });
-    });
-    action
-}
-
-fn live_text_column(
-    ui: &mut egui::Ui,
-    id: (&'static str, u64, bool),
-    label: Option<&str>,
-    text: &str,
-    style: (f32, Color32),
-    follow: bool,
-    height: f32,
-) {
-    let (size, color) = style;
-    let label_height = match label {
-        Some(label) => {
-            ui.label(theme::caption(label));
-            ui.fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(theme::SIZE_CAPTION)))
-                .ceil()
-                + theme::SPACE_1
-        }
-        None => 0.0,
-    };
-    // Use the same explicit pitch for wrapping and viewport sizing. A sticky
-    // tail then lands on complete rows instead of clipping half the first row.
-    let row_height = ui
-        .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(size)))
-        .ceil();
-    let available = (height - label_height).max(row_height);
-    let rows = ((available - 4.0) / row_height).floor().max(1.0);
-    let height = rows * row_height + 4.0;
-    egui::ScrollArea::vertical()
-        .id_salt(id)
-        .max_height(height)
-        .min_scrolled_height(height)
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-        .auto_shrink([false, false])
-        .stick_to_bottom(follow)
-        .show_viewport(ui, |ui, viewport| {
-            // ScrollArea deliberately expands its default clip by a few points.
-            // Prose aligned to a sticky tail must not reveal the previous row's
-            // glyph edge through that margin.
-            let visible = viewport.translate(ui.max_rect().min.to_vec2());
-            ui.set_clip_rect(ui.clip_rect().intersect(visible));
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.add_space(2.0);
-            ui.add(
-                egui::Label::new(
-                    RichText::new(text)
-                        .size(size)
-                        .line_height(Some(row_height))
-                        .color(color),
-                )
-                .wrap()
-                .selectable(true),
-            );
-            ui.add_space(2.0);
-        });
-}
-
-/// Where a live row came from, in its own colour.
-fn source_badge(ui: &mut egui::Ui, kind: &str) {
-    let color = live_kind_color(kind);
-    egui::Frame::new()
-        .fill(SURFACE_RAISED)
-        .stroke(egui::Stroke::new(1.0_f32, color))
-        .corner_radius(4)
-        .inner_margin(egui::Margin::symmetric(6, 2))
-        .show(ui, |ui| {
-            ui.label(RichText::new(kind).size(theme::SIZE_CAPTION).color(color));
-        });
-}
-
-/// Row actions repeat down a list, so they show a frame only on hover or focus.
-fn quiet(label: &str) -> egui::Button<'_> {
-    egui::Button::new(
-        RichText::new(label)
-            .size(theme::SIZE_LABEL)
-            .color(TEXT_SECONDARY),
-    )
-    .frame_when_inactive(false)
-    .min_size(Vec2::new(0.0, theme::CONTROL_H))
-}
-
-fn live_history_card(
-    ui: &mut egui::Ui,
-    row: &Row,
-    font_size: f32,
-    show_original: bool,
-    // None while readout is not in use, which leaves its button out.
-    read_requested: Option<&mut Option<String>>,
-) -> egui::Rect {
-    let unfinished = row_is_unfinished(row);
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(0, 2))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(read_requested) = read_requested
-                        && ui
-                            .add_enabled(row.is_confirmed(), quiet("読み上げ"))
-                            .clicked()
-                    {
-                        *read_requested = Some(row.record.translation.clone());
-                    }
-                    if ui
-                        .add_enabled(!row.record.translation.is_empty(), quiet("コピー"))
-                        .on_hover_text("PLaMoのクレジットを付けてコピーします")
-                        .clicked()
-                        && let Ok(mut clipboard) = arboard::Clipboard::new()
-                    {
-                        let _ = clipboard.set_text(credit::published(&row.record.translation));
-                    }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.label(theme::caption(clock(row.record.start_ms)));
-                        source_badge(ui, &row.record.kind);
-                        // A confirmed row needs no label; unconfirmed text is
-                        // labelled, not just tinted.
-                        if unfinished {
-                            badge(
-                                ui,
-                                paragraph_label(row),
-                                if row.error.is_some() { ERROR } else { WARNING },
-                            );
-                        }
-                    });
-                });
-            });
-            if let Some(error) = &row.error {
-                ui.add(
-                    egui::Label::new(RichText::new(error).size(theme::SIZE_LABEL).color(ERROR))
-                        .wrap(),
-                );
-            }
-            ui.add_space(theme::SPACE_1);
-            if !row.record.translation.is_empty() {
-                ui.add(
-                    egui::Label::new(theme::reading(&row.record.translation, font_size))
-                        .wrap()
-                        .selectable(true),
-                );
-            } else {
-                ui.label(
-                    RichText::new("訳文はありません。")
-                        .size(theme::SIZE_BODY)
-                        .color(TEXT_MUTED),
-                );
-            }
-            if show_original {
-                ui.add_space(theme::SPACE_1);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(&row.record.source)
-                            .size(theme::SIZE_LABEL)
-                            .color(TEXT_MUTED),
-                    )
-                    .wrap()
-                    .selectable(true),
-                );
-            }
-        })
-        .response
-        .rect
-}
-
-fn live_kind_color(kind: &str) -> Color32 {
-    match kind {
-        "YouTube" => theme::SOURCE_YOUTUBE,
-        "音声" => theme::SOURCE_AUDIO,
-        _ => theme::SOURCE_OTHER,
-    }
 }
 
 pub(super) fn configure_theme(ctx: &egui::Context) {
@@ -843,6 +447,55 @@ fn parse_glossary(input: &str) -> std::result::Result<Vec<(String, String)>, Str
     Ok(entries)
 }
 
+/// The live rows as chat messages, oldest first. `visible` is the coherent
+/// pair of the current paragraph, which stands in for its row while a split
+/// leaves the row's own translation out of date. `drafting` is speech still
+/// being recognised that no paragraph holds yet.
+fn live_messages<'a>(
+    rows: &'a [Row],
+    visible: Option<&'a Row>,
+    drafting: bool,
+) -> Vec<chat::Message<'a>> {
+    let mut messages: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            visible
+                .filter(|visible| visible.record.id == row.record.id)
+                .unwrap_or(row)
+        })
+        .filter_map(|row| {
+            let record = &row.record;
+            let source = chat::Source::from_kind(&record.kind)?;
+            let state = record.paragraph.as_ref().map(|paragraph| paragraph.state);
+            let status = if row.error.is_some() || state == Some(ParagraphState::Failed) {
+                chat::Status::Failed
+            } else if row.pending || row.is_provisional() {
+                chat::Status::Forming
+            } else if state == Some(ParagraphState::Interrupted) {
+                chat::Status::Interrupted
+            } else {
+                chat::Status::Fixed
+            };
+            Some(chat::Message {
+                id: record.id,
+                source,
+                target: &record.translation,
+                original: &record.source,
+                moment: chat::Moment::from_record(&record.created_at, record.start_ms, source),
+                status,
+                failure: row.error.as_deref(),
+            })
+        })
+        .collect();
+    let talking = messages.last().is_some_and(|last| {
+        last.source == chat::Source::PcAudio && last.status == chat::Status::Forming
+    });
+    if drafting && !talking {
+        messages.push(chat::Message::typing(chat::Source::PcAudio));
+    }
+    messages
+}
+
 impl App {
     /// Page title and supporting line. Actions sit on the same fixed row so
     /// changing content can never shift the reading area.
@@ -925,6 +578,32 @@ impl App {
                 self.toggle_auto_read(ui.ctx());
             }
         });
+    }
+
+    /// The subtitle window knows its parts by row id. The rows know when each
+    /// one was said.
+    pub(super) fn sync_subtitle_moments(&mut self) {
+        if !self.subtitle_window.open {
+            return;
+        }
+        let moments = self
+            .subtitle_window
+            .paragraph_keys()
+            .filter_map(|key| {
+                let record = &self
+                    .rows
+                    .iter()
+                    .rev()
+                    .find(|row| row.record.id == key)?
+                    .record;
+                let source = chat::Source::from_kind(&record.kind)?;
+                Some((
+                    key,
+                    chat::Moment::from_record(&record.created_at, record.start_ms, source),
+                ))
+            })
+            .collect();
+        self.subtitle_window.set_moments(moments);
     }
 
     /// Apply one of the three explicit input modes. Audio start is deferred
@@ -1022,7 +701,7 @@ impl App {
                 ui.separator();
                 ui.add_space(theme::SPACE_2);
                 ui.menu_button(RichText::new("表示").size(theme::SIZE_LABEL), |ui| {
-                    toggle(ui, &mut self.settings.live_show_original, "原文を表示");
+                    toggle(ui, &mut self.settings.live_show_original, "原文をすべて表示");
                     toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール")
                         .on_hover_text(
                             "上へスクロールしている間は位置を保ちます。OFFからONに戻すと末尾へ移動します。",
@@ -1458,7 +1137,6 @@ impl App {
     }
 
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
-        let layout = LiveLayout::for_height(ui.ctx().input(|input| input.content_rect().height()));
         page_column(ui, |ui| {
             self.page_header(
                 ui,
@@ -1470,164 +1148,27 @@ impl App {
             self.live_sources_row(ui);
             self.live_status_line(ui);
             ui.add_space(theme::SPACE_1);
-            let current = self
-                .document_visible_row()
-                .filter(|row| row.is_provisional() || row.is_confirmed());
-            let mode = super::live_view::latest_mode(
-                current.is_none() && !self.asr_partial.trim().is_empty(),
-                current.is_some(),
-            );
-            #[cfg(test)]
-            let top_before = ui.cursor().top();
-            let panel_action = live_latest_panel(
-                ui,
-                current,
-                &self.asr_partial,
-                mode,
-                layout,
-                (
-                    self.settings.font_size,
-                    self.settings.live_show_original,
-                    self.settings.auto_scroll,
-                ),
-                self.settings.readout_enabled.then(|| self.readout_busy()),
-            );
-            let mut read_requested = None;
-            match panel_action {
-                Some(PanelAction::Read(text)) => read_requested = Some(text),
-                Some(PanelAction::StopReadout) => self.stop_readout(),
-                None => {}
-            }
             #[cfg(test)]
             {
-                self.ui_probe.now_rect = Some(egui::Rect::from_min_max(
-                    egui::Pos2::new(ui.min_rect().left(), top_before),
-                    egui::Pos2::new(ui.min_rect().right(), ui.cursor().top()),
-                ));
                 self.ui_probe.reading_font = theme::reading_size(self.settings.font_size);
             }
-            ui.add_space(theme::SPACE_2);
-            let history_ids: Vec<u64> = self
-                .rows
-                .iter()
-                .filter(|row| history_row_visible(row, self.current_live_id))
-                .map(|row| row.record.id)
-                .collect();
-            live_region(ui, "live-history-heading", HISTORY_HEADING_HEIGHT, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("これまでの文章")
-                            .size(theme::SIZE_CAPTION)
-                            .color(TEXT_MUTED),
-                    );
-                    ui.label(
-                        RichText::new(format!("{}件", history_ids.len()))
-                            .size(theme::SIZE_CAPTION)
-                            .color(TEXT_MUTED),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(if self.settings.auto_scroll {
-                                "新しい順に追従"
-                            } else {
-                                "読んでいる位置を保持"
-                            })
-                            .size(theme::SIZE_CAPTION)
-                            .color(TEXT_MUTED),
-                        );
-                    });
-                });
-            });
-            self.live_view.prepare_history(self.settings.auto_scroll);
-            let area = egui::ScrollArea::vertical()
-                .id_salt("live-confirmed-history")
-                .auto_shrink([false, false])
-                .stick_to_bottom(self.settings.auto_scroll);
-            let output = area.show_viewport(ui, |ui, viewport| {
-                let origin = ui.cursor().top();
-                let mut geometry = Vec::with_capacity(history_ids.len());
-                if history_ids.is_empty() {
-                    ui.add_space(theme::SPACE_4);
-                    ui.label(
-                        RichText::new("まとまった文章がここに並びます。")
-                            .size(theme::SIZE_BODY)
-                            .color(TEXT_SECONDARY),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new("YouTube字幕またはPC音声をオンにしてください。")
-                                .size(theme::SIZE_LABEL)
-                                .color(TEXT_MUTED),
-                        )
-                        .wrap(),
-                    );
-                }
-                for row in self
-                    .rows
-                    .iter()
-                    .filter(|row| history_row_visible(row, self.current_live_id))
-                {
-                    let rect = ui
-                        .push_id(("history-row", row.record.id), |ui| {
-                            measure_block(ui, self.settings.font_size, |ui| {
-                                let rect = live_history_card(
-                                    ui,
-                                    row,
-                                    self.settings.font_size,
-                                    self.settings.live_show_original,
-                                    self.settings.readout_enabled.then_some(&mut read_requested),
-                                );
-                                ui.add_space(theme::SPACE_2);
-                                ui.separator();
-                                rect
-                            })
-                        })
-                        .inner;
-                    geometry.push(super::live_view::RowGeometry {
-                        id: row.record.id,
-                        top: rect.top() - origin,
-                        bottom: rect.bottom() - origin,
-                    });
-                    ui.add_space(theme::SPACE_2);
-                }
-                (geometry, viewport)
-            });
-            let pointer = ui.input(|input| input.pointer.hover_pos());
-            #[cfg(test)]
-            {
-                self.live_view.history_viewport_height = output
-                    .inner_rect
-                    .intersect(ui.clip_rect())
-                    .height()
-                    .max(0.0);
-                self.live_view.history_order = output.inner.0.iter().map(|row| row.id).collect();
-                self.live_view.history_geometry = output.inner.0.clone();
-                self.live_view.history_offset = output.state.offset.y;
-                self.live_view.history_rect = Some(output.inner_rect.intersect(ui.clip_rect()));
-            }
-            let hovering =
-                pointer.is_some_and(|point| output.inner_rect.expand(18.0).contains(point));
-            let user_scrolling = hovering
-                && ui.input(|input| input.smooth_scroll_delta.y != 0.0 || input.pointer.any_down())
-                || output.state.velocity().y.abs() > 0.1;
-            if let Some(offset) = self.live_view.finish(
-                &output.inner.0,
-                output.state.offset.y,
-                output.inner_rect.height(),
-                output.content_size.y,
-                user_scrolling,
-            ) {
-                let mut state = output.state;
-                state.offset.y = offset;
-                state.store(ui.ctx(), output.id);
-                // Correct the sizing pass before presenting resized history content.
-                // If another widget used the extra pass, the stored offset still
-                // applies on the following repaint rather than accumulating drift.
-                ui.ctx().request_discard("keep live history row anchored");
-                ui.ctx().request_repaint();
-            }
-            if let Some(text) = read_requested.filter(|_| !ui.ctx().will_discard()) {
-                self.read_translation(text);
+            let visible = self.document_visible_row().cloned();
+            let messages = live_messages(
+                &self.rows,
+                visible.as_ref(),
+                !self.asr_partial.trim().is_empty(),
+            );
+            let options = chat::Options {
+                text_size: theme::reading_size(self.settings.font_size),
+                show_originals: self.settings.live_show_original,
+                follow: self.settings.auto_scroll,
+                readout: self.settings.readout_enabled.then(|| self.readout_busy()),
+            };
+            let action = self.live_chat.show(ui, "live-chat", &messages, options);
+            match action {
+                Some(chat::Action::Read(text)) => self.read_translation(text),
+                Some(chat::Action::StopReadout) => self.stop_readout(),
+                None => {}
             }
         });
     }
@@ -2381,164 +1922,218 @@ mod live_layout_tests {
             generation: 0,
         }
     }
-    #[test]
-    fn paragraph_interim_stays_above_history_when_http_idle_and_a_new_draft_arrives() {
-        use plamo_translate::journal::{ParagraphMeta, ParagraphState};
-        let context = egui::Context::default();
-        configure_theme(&context);
-        let mut paragraph = row(7, false, false);
-        paragraph.record.translation = "文章全体をつないだ継続中の日本語訳".into();
-        paragraph.record.paragraph = Some(ParagraphMeta {
-            revision: 4,
-            state: ParagraphState::Open,
+    use crate::chat::testing::{cut_at_the_top, dots, find_text, has_text_containing};
+    use plamo_translate::journal::{ParagraphMeta, ParagraphState};
+
+    fn paragraph(row: &mut Row, state: ParagraphState) {
+        row.record.paragraph = Some(ParagraphMeta {
+            revision: 1,
+            state,
             close_reason: None,
         });
-        assert!(!history_row_visible(&paragraph, None));
-        let output = context.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(860.0, 620.0),
-                )),
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    live_latest_panel(
-                        ui,
-                        Some(&paragraph),
-                        "Additional unconfirmed draft",
-                        crate::live_view::LatestMode::Draft,
-                        LiveLayout::for_height(620.0),
-                        (22.0, true, true),
-                        Some(false),
-                    );
-                });
-            },
+    }
+
+    #[test]
+    fn live_rows_become_messages_in_order_with_their_status_and_other_kinds_stay_out() {
+        let mut fixed = row(1, false, false);
+        paragraph(&mut fixed, ParagraphState::Final);
+        let mut open = row(2, false, false);
+        paragraph(&mut open, ParagraphState::Open);
+        let pending = row(3, true, false);
+        let mut interrupted = row(4, false, false);
+        paragraph(&mut interrupted, ParagraphState::Interrupted);
+        let failed = row(5, false, true);
+        let mut manual = row(6, false, false);
+        manual.record.kind = "文章".into();
+        let mut video = row(7, false, false);
+        video.record.kind = "YouTube".into();
+        video.record.start_ms = 754_000;
+        video.record.created_at = "2026-11-07T21:48:03+09:00".into();
+        let rows = [fixed, open, pending, interrupted, failed, manual, video];
+
+        let messages = live_messages(&rows, None, false);
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.id)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 7],
+            "oldest first, and text typed by hand is not part of the chat"
         );
-        fn text(shape: &egui::epaint::Shape) -> String {
-            match shape {
-                egui::epaint::Shape::Text(t) => t.galley.job.text.clone(),
-                egui::epaint::Shape::Vec(shapes) => {
-                    shapes.iter().map(text).collect::<Vec<_>>().join("\n")
-                }
-                _ => String::new(),
-            }
-        }
-        let drawn = output
-            .shapes
-            .iter()
-            .map(|shape| text(&shape.shape))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(drawn.contains("文章全体をつないだ継続中の日本語訳"));
-        assert!(drawn.contains("継続中の文章"));
-        assert!(drawn.contains("追加で認識中の原文（未確定）"));
-        paragraph.record.paragraph.as_mut().unwrap().state = ParagraphState::Closing;
-        assert!(!history_row_visible(&paragraph, None));
-        paragraph.record.paragraph.as_mut().unwrap().state = ParagraphState::Final;
-        assert!(history_row_visible(&paragraph, None));
-        paragraph.record.paragraph.as_mut().unwrap().state = ParagraphState::Interrupted;
-        assert!(history_row_visible(&paragraph, Some(7)));
-        assert!(paragraph_label(&paragraph).contains("中断"));
-        paragraph.record.paragraph.as_mut().unwrap().state = ParagraphState::Failed;
-        assert!(history_row_visible(&paragraph, Some(7)));
-        assert!(paragraph_label(&paragraph).contains("未確定"));
+        use chat::Status::{Failed, Fixed, Forming, Interrupted};
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.status)
+                .collect::<Vec<_>>(),
+            [Fixed, Forming, Forming, Interrupted, Failed, Fixed]
+        );
+        assert!(
+            messages[4]
+                .failure
+                .is_some_and(|reason| reason.contains("Long error"))
+        );
+        let video = messages[5];
+        assert_eq!(video.source, chat::Source::YouTube);
+        assert_eq!(video.moment.video_ms, Some(754_000));
+        assert_eq!(
+            video.moment.sent.map(|sent| sent.to_string()),
+            Some("2026-11-07 21:48:03".to_owned()),
+            "the clock comes from created_at"
+        );
+        assert_eq!(
+            messages[0].moment.video_ms, None,
+            "only YouTube has a video time"
+        );
     }
+
     #[test]
-    fn latest_panel_has_constant_outer_height_for_empty_draft_partial_and_completed_text() {
-        use crate::live_view::LatestMode;
-        for viewport_height in [620.0, 880.0] {
-            let context = egui::Context::default();
-            let mut heights = Vec::new();
-            let layout = LiveLayout::for_height(viewport_height);
-            for (mode, pending, error) in [
-                (LatestMode::Empty, false, false),
-                (LatestMode::Draft, false, false),
-                (LatestMode::Current, true, false),
-                (LatestMode::Current, false, false),
-                (LatestMode::Current, false, true),
-            ] {
-                let row = row(9, pending, error);
-                let input = egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        Vec2::new(900.0, viewport_height),
-                    )),
-                    ..Default::default()
-                };
-                let _ = context.run(input, |context| {
-                    egui::CentralPanel::default().show(context, |ui| {
-                        let before = ui.cursor().top();
-                        live_latest_panel(
-                            ui,
-                            Some(&row),
-                            &"Draft text. ".repeat(300),
-                            mode,
-                            layout,
-                            (24.0, true, true),
-                            Some(false),
-                        );
-                        heights.push(ui.cursor().top() - before);
-                    });
-                });
-            }
-            assert!(
-                heights
-                    .iter()
-                    .all(|height| (*height - heights[0]).abs() < 0.1),
-                "outer heights changed: {heights:?}"
-            );
-            assert!((heights[0] - layout.latest_height).abs() < 16.0);
-        }
-        assert_eq!(LiveLayout::for_height(800.0).latest_height, 288.0);
+    fn the_coherent_pair_of_the_current_paragraph_stands_in_for_its_row() {
+        let mut open = row(2, false, false);
+        paragraph(&mut open, ParagraphState::Open);
+        let rows = [row(1, false, false), open.clone()];
+        open.record.translation = "分割前の訳文".into();
+        let messages = live_messages(&rows, Some(&open), false);
+        assert_eq!(messages[1].target, "分割前の訳文");
+        assert_eq!(messages[0].target, rows[0].record.translation);
     }
+
     #[test]
-    fn live_japanese_has_complete_rows_at_minimum_and_dpi_scaled_window_heights() {
-        use plamo_translate::journal::{ParagraphMeta, ParagraphState};
-        fn collect<'a>(
-            shape: &'a egui::epaint::Shape,
-            clip: egui::Rect,
-            out: &mut Vec<(egui::Rect, &'a egui::epaint::TextShape)>,
-        ) {
-            match shape {
-                egui::epaint::Shape::Text(text) => out.push((clip, text)),
-                egui::epaint::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        collect(shape, clip, out);
-                    }
-                }
-                _ => {}
-            }
+    fn speech_being_recognised_is_a_bubble_of_dots_unless_a_message_is_already_forming() {
+        let mut fixed = row(1, false, false);
+        paragraph(&mut fixed, ParagraphState::Final);
+        let mut open = row(2, false, false);
+        paragraph(&mut open, ParagraphState::Open);
+        let typing = |messages: &[chat::Message<'_>]| {
+            messages
+                .last()
+                .is_some_and(|message| message.id == chat::TYPING)
+        };
+        assert!(typing(&live_messages(&[], None, true)));
+        assert!(typing(&live_messages(
+            std::slice::from_ref(&fixed),
+            None,
+            true
+        )));
+        assert!(!typing(&live_messages(
+            std::slice::from_ref(&fixed),
+            None,
+            false
+        )));
+        assert!(
+            !typing(&live_messages(&[fixed.clone(), open], None, true)),
+            "the forming message already ends in dots"
+        );
+        let mut video = fixed;
+        video.record.kind = "YouTube".into();
+        assert!(
+            typing(&live_messages(&[video], None, true)),
+            "recognised speech is PC audio, whatever came before"
+        );
+    }
+
+    #[test]
+    fn the_live_page_is_a_chat_with_the_oldest_message_at_the_top() {
+        let mut app = App::inert();
+        app.tab = Tab::Live;
+        app.backend_ready = true;
+        let mut rows = Vec::new();
+        for (id, kind, clock) in [
+            (1, "YouTube", "21:46:10"),
+            (2, "YouTube", "21:46:40"),
+            (3, "音声", "21:48:20"),
+        ] {
+            let mut message = row(id, false, false);
+            message.record.kind = kind.into();
+            message.record.created_at = format!("2026-11-07T{clock}+09:00");
+            message.record.source = format!("Original {id}.");
+            message.record.translation = format!("{id}番目の訳文です。");
+            rows.push(message);
         }
+        app.rows = rows;
+        let drawn = drawn_text(&mut app, 1280.0, 880.0);
+        let at = |text: &str| {
+            drawn
+                .find(text)
+                .unwrap_or_else(|| panic!("{text} is not drawn"))
+        };
+        assert!(at("1番目の訳文です。") < at("2番目の訳文です。"));
+        assert!(at("2番目の訳文です。") < at("3番目の訳文です。"));
+        for shown in ["11月7日（土）", "YouTube", "PC音声", "21:46", "21:48"] {
+            assert!(drawn.contains(shown), "{shown} is not drawn");
+        }
+        for gone in [
+            "これまでの文章",
+            "最新の対訳",
+            "新しい順に追従",
+            "Original 1.",
+        ] {
+            assert!(!drawn.contains(gone), "{gone} is still drawn");
+        }
+    }
+
+    #[test]
+    fn a_forming_paragraph_ends_in_dots_and_a_new_draft_does_not_add_a_second_bubble() {
+        let mut app = App::inert();
+        app.tab = Tab::Live;
+        app.backend_ready = true;
+        let mut open = row(7, false, false);
+        open.record.translation = "文章全体をつないだ継続中の日本語訳".into();
+        paragraph(&mut open, ParagraphState::Open);
+        app.rows = vec![open];
+        app.current_live_id = Some(7);
+        app.asr_partial = "Additional unconfirmed draft".into();
+        let output = render(&mut app, 860.0, 620.0);
+        let (_, color) = find_text(&output, "文章全体をつないだ継続中の日本語訳");
+        assert_eq!(color, theme::CHAT_TEXT_FORMING);
+        assert_eq!(
+            dots(&output).len(),
+            3,
+            "one forming message, one set of dots"
+        );
+        assert!(!has_text_containing(
+            &output,
+            "Additional unconfirmed draft"
+        ));
+
+        app.rows[0].record.paragraph.as_mut().unwrap().state = ParagraphState::Final;
+        app.current_live_id = None;
+        let output = render(&mut app, 860.0, 620.0);
+        let (_, color) = find_text(&output, "文章全体をつないだ継続中の日本語訳");
+        assert_eq!(color, theme::CHAT_TEXT);
+        assert_eq!(
+            dots(&output).len(),
+            3,
+            "the new speech is a bubble of dots after the fixed message"
+        );
+    }
+
+    #[test]
+    fn no_message_is_drawn_cut_at_the_top_while_the_live_chat_follows() {
         for height in [620.0, 727.0, 800.0, 880.0] {
             for size in [18.0, 20.0, 24.0] {
-                let context = egui::Context::default();
-                configure_theme(&context);
                 let mut app = App::inert();
                 app.backend_ready = true;
-                app.asr_ready = true;
-                app.caption_enabled = true;
                 app.settings.font_size = size;
-                assert!(!app.settings.live_show_original);
-                let japanese:String = "文章全体の文脈を保ちながら原文の続きを受け取り、一つの段落として訳文を更新します。".chars().cycle().take(600).collect();
-                let mut active = row(2, false, false);
-                active.record.translation = japanese.clone();
-                active.record.paragraph = Some(ParagraphMeta {
-                    revision: 1,
-                    state: ParagraphState::Open,
-                    close_reason: None,
-                });
-                app.rows = vec![row(1, false, false), active];
-                app.current_live_id = Some(2);
+                app.rows = (1..=14)
+                    .map(|id| {
+                        let mut message = row(id, false, false);
+                        message.record.translation = format!(
+                            "{id}番目の訳文です。文章全体の文脈を保ちながら訳文を更新します。"
+                        );
+                        message
+                    })
+                    .collect();
+                let context = egui::Context::default();
+                configure_theme(&context);
                 let mut output = None;
-                for frame in 0..4 {
+                for frame in 0..6 {
                     let mut input = egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
                             egui::vec2(if height == 620.0 { 860.0 } else { 1182.0 }, height),
                         )),
-                        time: Some(frame as f64 / 60.0),
+                        time: Some(f64::from(frame) / 60.0),
                         ..Default::default()
                     };
                     input
@@ -2549,143 +2144,84 @@ mod live_layout_tests {
                     output = Some(context.run(input, |ctx| app.render_ui(ctx)));
                 }
                 let output = output.unwrap();
-                let mut text_shapes = Vec::new();
-                for shape in &output.shapes {
-                    collect(&shape.shape, shape.clip_rect, &mut text_shapes);
-                }
-                let (clip, text) = text_shapes
-                    .iter()
-                    .find(|(_, text)| text.galley.job.text == japanese)
-                    .expect("progress Japanese was hidden");
-                let mut complete_rows = 0;
-                for row in &text.galley.rows {
-                    let bounds = row
-                        .visuals
-                        .mesh_bounds
-                        .translate(text.pos.to_vec2() + row.pos.to_vec2());
-                    if bounds.intersect(*clip).height() > 0.5 {
-                        assert!(
-                            bounds.top() >= clip.top() - 0.5
-                                && bounds.bottom() <= clip.bottom() + 0.5,
-                            "partial glyph row at height={height},font={size}: {bounds:?},clip={clip:?}"
-                        );
-                        complete_rows += 1;
-                    }
-                }
-                eprintln!(
-                    "live height={height} font={size}: {complete_rows} complete rows; history={}",
-                    app.live_view.history_viewport_height
-                );
-                if height >= 727.0 {
-                    assert!(
-                        complete_rows >= 4,
-                        "only {complete_rows} complete rows at {height}/{size}"
-                    );
-                }
+                let body = app.live_chat.body().unwrap();
                 assert!(
-                    app.live_view.history_viewport_height >= 100.0,
-                    "history at {height}/{size}"
+                    app.live_chat.offset() > 0.0,
+                    "the talk is taller than the window"
                 );
-                for (clip, text) in text_shapes
-                    .iter()
-                    .filter(|(_, text)| text.galley.job.text == "継続中の文章 · 訳文を更新中")
-                {
-                    let bounds = text.galley.mesh_bounds.translate(text.pos.to_vec2());
-                    assert!(
-                        bounds.top() >= clip.top() - 0.5 && bounds.bottom() <= clip.bottom() + 0.5,
-                        "progress header clipped"
-                    );
-                }
                 assert!(
-                    text_shapes
-                        .iter()
-                        .any(|(_, text)| text.galley.job.text == "継続中の文章 · 訳文を更新中"),
-                    "progress header missing at height={height},font={size}"
+                    !cut_at_the_top(&output, body),
+                    "a message is cut at the top at height={height}, font={size}"
+                );
+                assert!(
+                    has_text_containing(&output, "14番目の訳文です。"),
+                    "the newest message is in view at height={height}, font={size}"
                 );
             }
         }
     }
+
     #[test]
-    fn minimum_live_window_keeps_more_than_one_hundred_pixels_of_history() {
+    fn the_live_chat_keeps_its_height_with_a_long_service_error_at_the_minimum_window() {
         for (width, height) in [(860.0, 620.0), (1280.0, 800.0)] {
-            let context = egui::Context::default();
-            configure_theme(&context);
             let mut app = App::inert();
             app.backend_ready = true;
             app.asr_ready = true;
             app.audio_enabled = true;
             app.caption_enabled = true;
-            app.rows = vec![
-                row(1, false, false),
-                row(2, false, false),
-                row(3, false, false),
-            ];
+            app.rows = (1..=3).map(|id| row(id, false, false)).collect();
             app.current_live_id = Some(3);
-            // Compact errors remain in the one reserved notice line, not hidden.
+            // The error stays in the one reserved status line.
             app.service_error = "Long service error. ".repeat(100);
-            for frame in 0..3 {
-                let input = egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        Vec2::new(width, height),
-                    )),
-                    time: Some(frame as f64 / 60.0),
-                    ..Default::default()
-                };
-                let _ = context.run(input, |context| app.render_ui(context));
-            }
-            eprintln!(
-                "live history viewport {width}x{height}: {}",
-                app.live_view.history_viewport_height
-            );
+            live_window(&mut app, width, height);
+            let body = app.live_chat.body().unwrap();
             assert!(
-                app.live_view.history_viewport_height > 100.0,
-                "history at {width}x{height}: {}",
-                app.live_view.history_viewport_height
+                body.height() > 300.0,
+                "the chat is only {} points tall at {width}x{height}",
+                body.height()
             );
         }
     }
+
     #[test]
-    fn chronological_history_stays_anchored_when_reading_and_returns_to_tail_on_enable() {
+    fn the_live_chat_follows_the_newest_message_until_the_reader_scrolls_up() {
         let context = egui::Context::default();
         configure_theme(&context);
         let mut app = App::inert();
         app.backend_ready = true;
-        app.settings.live_show_original = false;
         app.settings.auto_scroll = true;
-        app.rows = (1..=6)
-            .map(|id| {
-                let mut row = row(id, false, false);
-                row.record.translation = format!(
-                    "Paragraph {id}. {}",
-                    "A complete translated paragraph. ".repeat(16)
-                );
-                row
-            })
-            .collect();
+        let paragraph_row = |id: u64| {
+            let mut message = row(id, false, false);
+            message.record.translation = format!(
+                "Paragraph {id}. {}",
+                "A complete translated paragraph. ".repeat(16)
+            );
+            message
+        };
+        app.rows = (1..=6).map(paragraph_row).collect();
         let mut frame = 0;
         let mut draw = |app: &mut App, events: Vec<egui::Event>| {
             frame += 1;
-            let _ = context.run(
+            context.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
                         egui::vec2(1280.0, 880.0),
                     )),
-                    time: Some(frame as f64 * 0.05),
+                    time: Some(f64::from(frame) * 0.05),
                     events,
                     ..Default::default()
                 },
                 |ctx| app.render_ui(ctx),
-            );
+            )
         };
         for _ in 0..5 {
             draw(&mut app, vec![]);
         }
-        assert_eq!(app.live_view.history_order, vec![1, 2, 3, 4, 5, 6]);
-        let tail = app.live_view.history_offset;
-        assert!(tail > 100.0);
-        let pointer = app.live_view.history_rect.unwrap().center();
+        let tail = app.live_chat.offset();
+        assert!(tail > 100.0, "the talk is taller than the window: {tail}");
+
+        let pointer = app.live_chat.body().unwrap().center();
         draw(
             &mut app,
             vec![
@@ -2700,69 +2236,44 @@ mod live_layout_tests {
         for _ in 0..25 {
             draw(&mut app, vec![]);
         }
-        let reading_offset = app.live_view.history_offset;
+        let reading = app.live_chat.offset();
         assert!(
-            reading_offset < tail - 1.0,
-            "wheel did not leave tail: {reading_offset} vs {tail}"
+            reading < tail - 1.0,
+            "the wheel did not leave the tail: {reading} vs {tail}"
         );
-        let mut appended = row(7, false, false);
-        appended.record.translation = "Newly finalized paragraph. ".repeat(16);
-        app.rows.push(appended);
+
+        app.rows.push(paragraph_row(7));
+        let mut output = draw(&mut app, vec![]);
         for _ in 0..3 {
-            draw(&mut app, vec![]);
+            output = draw(&mut app, vec![]);
         }
-        assert_eq!(app.live_view.history_order, vec![1, 2, 3, 4, 5, 6, 7]);
         assert!(
-            (app.live_view.history_offset - reading_offset).abs() < 1.0,
-            "append moved reading position"
+            (app.live_chat.offset() - reading).abs() < 1.0,
+            "a new message moved the reader's position"
         );
-        let offset = app.live_view.history_offset;
-        let anchor = *app
-            .live_view
-            .history_geometry
-            .iter()
-            .find(|row| row.bottom > offset)
-            .unwrap();
-        assert!(anchor.id > 1);
-        let anchor_screen_top = anchor.top - offset;
-        app.rows[0]
-            .record
-            .translation
-            .push_str(&"Earlier paragraph grew. ".repeat(20));
-        for _ in 0..3 {
-            draw(&mut app, vec![]);
-        }
-        let updated_anchor = app
-            .live_view
-            .history_geometry
-            .iter()
-            .find(|row| row.id == anchor.id)
-            .unwrap();
-        assert!(
-            (updated_anchor.top - app.live_view.history_offset - anchor_screen_top).abs() < 1.0,
-            "height change moved reading anchor"
-        );
+        assert!(has_text_containing(&output, "↓ 新しいメッセージ 1件"));
+
         app.settings.auto_scroll = false;
         draw(&mut app, vec![]);
-        let old_offset = app.live_view.history_offset;
+        let waiting = app.live_chat.offset();
         app.settings.auto_scroll = true;
         for _ in 0..3 {
-            draw(&mut app, vec![]);
+            output = draw(&mut app, vec![]);
         }
         assert!(
-            app.live_view.history_offset > old_offset + 50.0,
-            "explicit enable failed to return to tail"
+            app.live_chat.offset() > waiting + 50.0,
+            "turning auto-scroll on again did not return to the tail"
         );
-        let tail = app.live_view.history_offset;
-        let mut appended = row(8, false, false);
-        appended.record.translation = "The following finalized paragraph. ".repeat(16);
-        app.rows.push(appended);
+        assert!(!has_text_containing(&output, "新しいメッセージ"));
+        let tail = app.live_chat.offset();
+
+        app.rows.push(paragraph_row(8));
         for _ in 0..3 {
             draw(&mut app, vec![]);
         }
         assert!(
-            app.live_view.history_offset > tail + 50.0,
-            "tail did not follow the next append"
+            app.live_chat.offset() > tail + 50.0,
+            "the tail did not follow the next message"
         );
     }
 
@@ -2783,6 +2294,27 @@ mod live_layout_tests {
             );
         }
         context
+    }
+
+    /// The last of three frames of the app in a fresh window.
+    fn render(app: &mut App, width: f32, height: f32) -> egui::FullOutput {
+        let context = egui::Context::default();
+        configure_theme(&context);
+        let mut output = None;
+        for frame in 0..3 {
+            output = Some(context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, height),
+                    )),
+                    time: Some(f64::from(frame) / 60.0),
+                    ..Default::default()
+                },
+                |context| app.render_ui(context),
+            ));
+        }
+        output.unwrap()
     }
 
     fn drawn_text(app: &mut App, width: f32, height: f32) -> String {
@@ -2865,7 +2397,7 @@ mod live_layout_tests {
     }
 
     #[test]
-    fn only_the_current_pair_is_called_latest_and_the_page_keeps_one_status_line() {
+    fn the_live_page_keeps_one_status_line() {
         let mut app = App::inert();
         app.tab = Tab::Live;
         app.backend_ready = true;
@@ -2876,11 +2408,11 @@ mod live_layout_tests {
         ];
         app.current_live_id = Some(3);
         let drawn = drawn_text(&mut app, 1280.0, 880.0);
-        assert_eq!(drawn.matches("最新の対訳").count(), 1, "{drawn}");
-        for gone in ["進行中の文章／最新の対訳", "最新の対訳を表示します"] {
-            assert!(!drawn.contains(gone), "{gone} is still drawn");
-        }
-        assert!(drawn.contains("プレビュー · 保存されません"));
+        assert_eq!(
+            drawn.matches("プレビュー · 保存されません").count(),
+            1,
+            "{drawn}"
+        );
     }
 
     #[test]
@@ -3046,21 +2578,16 @@ mod live_layout_tests {
             "reading font {} is below 20 points",
             app.ui_probe.reading_font
         );
+        let body = app.live_chat.body().unwrap();
         assert!(
-            app.live_view.history_viewport_height > 100.0,
-            "history viewport {} at 860x620",
-            app.live_view.history_viewport_height
-        );
-        let now = app.ui_probe.now_rect.unwrap();
-        assert!(
-            now.height() >= 150.0,
-            "in-progress area is only {} points",
-            now.height()
+            body.height() > 300.0,
+            "the chat is only {} points tall at 860x620",
+            body.height()
         );
     }
 
     #[test]
-    fn growing_translation_never_moves_the_header_or_history_viewport() {
+    fn growing_translation_never_moves_the_header_or_the_chat_area() {
         let mut app = App::inert();
         app.backend_ready = true;
         app.tab = Tab::Live;
@@ -3069,45 +2596,45 @@ mod live_layout_tests {
         app.rows = vec![row(1, false, false), active];
         app.current_live_id = Some(2);
         live_window(&mut app, 1280.0, 800.0);
-        let now_before = app.ui_probe.now_rect.unwrap();
-        let history_before = app.live_view.history_rect.unwrap();
+        let before = app.live_chat.panel().unwrap();
         app.rows[1].record.translation = "段落全体を更新する長い日本語の訳文です。".repeat(40);
         live_window(&mut app, 1280.0, 800.0);
-        let now_after = app.ui_probe.now_rect.unwrap();
-        let history_after = app.live_view.history_rect.unwrap();
-        assert!((now_before.top() - now_after.top()).abs() < 0.5);
-        assert!((now_before.height() - now_after.height()).abs() < 0.5);
-        assert!((history_before.top() - history_after.top()).abs() < 0.5);
-        assert!((history_before.height() - history_after.height()).abs() < 0.5);
+        let after = app.live_chat.panel().unwrap();
+        assert!((before.top() - after.top()).abs() < 0.5);
+        assert!((before.height() - after.height()).abs() < 0.5);
     }
 
     #[test]
-    fn unconfirmed_paragraph_is_labelled_apart_from_confirmed_history() {
-        use plamo_translate::journal::{ParagraphMeta, ParagraphState};
+    fn an_unconfirmed_paragraph_is_marked_apart_from_a_confirmed_one() {
         let mut app = App::inert();
         app.backend_ready = true;
         app.tab = Tab::Live;
         let mut confirmed = row(1, false, false);
-        confirmed.record.paragraph = Some(ParagraphMeta {
-            revision: 3,
-            state: ParagraphState::Final,
-            close_reason: None,
-        });
-        let mut open = row(2, false, false);
-        open.record.paragraph = Some(ParagraphMeta {
-            revision: 1,
-            state: ParagraphState::Open,
-            close_reason: None,
-        });
-        assert_eq!(paragraph_label(&confirmed), "確定した文章");
-        assert!(paragraph_label(&open).contains("更新中"));
-        app.rows = vec![confirmed, open];
-        app.current_live_id = Some(2);
-        assert!(!history_row_visible(&app.rows[1], Some(2)));
-        assert!(history_row_visible(&app.rows[0], Some(2)));
-        assert!(row_is_unfinished(&app.rows[1]));
-        assert!(!row_is_unfinished(&app.rows[0]));
+        confirmed.record.translation = "確定した訳文です。".into();
+        paragraph(&mut confirmed, ParagraphState::Final);
+        let mut interrupted = row(2, false, false);
+        interrupted.record.translation = "中断された訳文です。".into();
+        paragraph(&mut interrupted, ParagraphState::Interrupted);
+        let mut failed = row(3, false, true);
+        failed.record.translation = "失敗した訳文です。".into();
+        paragraph(&mut failed, ParagraphState::Failed);
+        app.rows = vec![confirmed, interrupted, failed];
+        let drawn = drawn_text(&mut app, 1280.0, 880.0);
+        assert_eq!(drawn.matches("中断した文章 · 未確定").count(), 1, "{drawn}");
+        assert_eq!(
+            drawn.matches("更新に失敗 · 最後の訳文を表示").count(),
+            1,
+            "{drawn}"
+        );
+        for text in [
+            "確定した訳文です。",
+            "中断された訳文です。",
+            "失敗した訳文です。",
+        ] {
+            assert!(drawn.contains(text), "{text} is not drawn");
+        }
     }
+
     /// Clicks the one control drawn with exactly `label`, the way a pointer
     /// would: hover, press and release over the centre of its text.
     fn click_label(app: &mut App, label: &str, width: f32, height: f32) {

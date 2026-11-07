@@ -1,13 +1,13 @@
 //! Independent native subtitle viewport. This module never changes source,
 //! translation, speech, root-window or Mini lifecycles.
+use std::collections::HashMap;
+
 use eframe::egui::{self, Color32, RichText};
 use plamo_translate::live_text::{SourceKind, SourceStamp};
 
-use super::theme;
+use super::{chat, theme};
 
 const BACKGROUND: Color32 = theme::CANVAS;
-const SURFACE: Color32 = theme::SURFACE;
-const TEXT: Color32 = theme::TEXT;
 const MUTED: Color32 = theme::TEXT_SECONDARY;
 const ACCENT: Color32 = theme::ACCENT;
 const WARNING: Color32 = theme::WARNING;
@@ -61,9 +61,9 @@ pub struct WindowResponse {
 pub struct State {
     pub open: bool,
     pub always_on_top: bool,
+    /// Show the original under every translation, not only the clicked ones.
     pub show_source: bool,
     pub font_size: f32,
-    pub follow_latest: bool,
     /// Leave screen captures while the 画面 input reads the screen.
     pub content_protected: bool,
     applied_protection: Option<bool>,
@@ -72,16 +72,13 @@ pub struct State {
     /// Parts whose translation is final, oldest first. They are drawn as
     /// separate messages that never change, above the part still forming.
     history: Vec<View>,
+    /// When each part was said, by paragraph key. The views carry no times.
+    moments: HashMap<u64, chat::Moment>,
     playback: Playback,
     waiting_for_update: bool,
-    scroll_offset: f32,
-    /// The reading area showed its last line on the previous frame.
-    showing_end: bool,
-    jump_to_end: bool,
+    pub(super) chat: chat::State,
     native_size: egui::Vec2,
     native_position: Option<egui::Pos2>,
-    #[cfg(test)]
-    body_rect: Option<egui::Rect>,
 }
 
 impl Default for State {
@@ -91,21 +88,17 @@ impl Default for State {
             always_on_top: true,
             show_source: false,
             font_size: 25.0,
-            follow_latest: true,
             content_protected: false,
             applied_protection: None,
             scope: None,
             view: None,
             history: Vec::new(),
+            moments: HashMap::new(),
             playback: Playback::Running,
             waiting_for_update: false,
-            scroll_offset: 0.0,
-            showing_end: true,
-            jump_to_end: false,
+            chat: chat::State::default(),
             native_size: egui::vec2(720.0, 360.0),
             native_position: None,
-            #[cfg(test)]
-            body_rect: None,
         }
     }
 }
@@ -135,9 +128,21 @@ impl State {
         self.history = history;
     }
 
+    /// The paragraph keys of every part the window shows.
+    pub fn paragraph_keys(&self) -> impl Iterator<Item = u64> + '_ {
+        self.history
+            .iter()
+            .chain(&self.view)
+            .map(|view| view.paragraph_key)
+    }
+
+    pub fn set_moments(&mut self, moments: HashMap<u64, chat::Moment>) {
+        self.moments = moments;
+    }
+
     #[cfg(test)]
     pub fn scroll_offset(&self) -> f32 {
-        self.scroll_offset
+        self.chat.offset()
     }
 
     #[cfg(test)]
@@ -161,9 +166,9 @@ impl State {
             self.scope = expected_scope.cloned();
             self.view = None;
             self.history.clear();
+            self.moments.clear();
             self.waiting_for_update = false;
-            self.scroll_offset = 0.0;
-            self.jump_to_end = false;
+            self.chat.clear();
         }
         let Some(incoming) = view else {
             return if changed_scope {
@@ -273,15 +278,16 @@ impl State {
 
     /// The native window's panel. Previews and tests draw through it too.
     pub fn panel() -> egui::CentralPanel {
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BACKGROUND).inner_margin(12))
     }
 
     /// Headless-previewable content; emits no native close/focus commands.
     pub fn paint(&mut self, ui: &mut egui::Ui) -> WindowResponse {
         let mut closed = false;
+        // The chat is what the window is for, so the rows above it sit close.
+        ui.spacing_mut().item_spacing.y = theme::SPACE_1;
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.always_on_top, "最前面");
-            ui.checkbox(&mut self.show_source, "原文");
             ui.menu_button("表示", |ui| {
                 ui.label(
                     RichText::new("文字サイズ")
@@ -297,172 +303,54 @@ impl State {
                     .integer()
                     .suffix(" pt"),
                 );
-                ui.checkbox(&mut self.follow_latest, "末尾に追従する");
+                ui.checkbox(&mut self.show_source, "原文をすべて表示");
             });
-            if ui
-                .add(egui::Button::new("末尾へ").min_size(egui::vec2(0.0, theme::CONTROL_H)))
-                .clicked()
-            {
-                self.jump_to_end = true;
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Near the minimum window width the button's usual padding would
-                // push it over 末尾へ, so the padding shrinks to the room left.
-                let room = ui.available_width();
-                let text = ui
-                    .painter()
-                    .layout_no_wrap(
-                        "閉じる".into(),
-                        egui::FontId::proportional(theme::SIZE_LABEL),
-                        TEXT,
-                    )
-                    .size()
-                    .x;
-                let padding = &mut ui.spacing_mut().button_padding.x;
-                *padding = padding.min((room - text) / 2.0).max(2.0);
                 closed = ui
                     .add(
                         egui::Button::new(RichText::new("閉じる").size(theme::SIZE_LABEL))
-                            .min_size(egui::vec2(room.min(72.0), theme::CONTROL_H)),
+                            .min_size(egui::vec2(72.0, theme::CONTROL_H)),
                     )
                     .clicked();
             });
         });
-        ui.add_space(6.0);
         let (label, color) = self.status();
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(label).size(theme::SIZE_LABEL).color(color));
-            if let Some(view) = &self.view {
-                ui.label(
-                    RichText::new(match view.stamp.kind {
-                        SourceKind::Audio => "PC音声",
-                        SourceKind::Caption
-                            if view
-                                .stamp
-                                .video_id
-                                .starts_with(super::screen_feed::SCREEN_SOURCE) =>
-                        {
-                            "画面"
-                        }
-                        SourceKind::Caption => "YouTube字幕",
-                    })
-                    .size(theme::SIZE_CAPTION)
-                    .color(MUTED),
-                );
-            }
-        });
-        ui.add_space(8.0);
-        let mut area = egui::ScrollArea::vertical()
-            .id_salt("subtitle-window-reading")
-            .auto_shrink([false, false])
-            .stick_to_bottom(self.follow_latest);
-        if self.jump_to_end {
-            area = area.vertical_scroll_offset(f32::MAX);
-            self.jump_to_end = false;
-        } else if !self.follow_latest {
-            area = area.vertical_scroll_offset(self.scroll_offset);
-        }
-        let at_end = self.showing_end;
-        let output = area.show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            let forming = self.view.as_ref().filter(|view| {
-                !self
-                    .history
-                    .iter()
-                    .any(|done| done.paragraph_key == view.paragraph_key)
-            });
-            let messages: Vec<(&View, bool)> = self
-                .history
-                .iter()
-                .map(|view| (view, false))
-                .chain(forming.map(|view| (view, view.phase != Phase::Final)))
-                .collect();
-            let newest = messages.len().saturating_sub(1);
-            for (index, (view, outlined)) in messages.iter().enumerate() {
-                if index > 0 {
-                    ui.add_space(theme::SPACE_3);
-                }
-                // While the end of the talk is in view, an older message that
-                // starts above the reading area would show only its lower part.
-                // It keeps its space but is not drawn; scrolling up shows it.
-                let whole = !at_end
-                    || index == newest
-                    || ui.next_widget_position().y >= ui.clip_rect().top();
-                let mut space = egui::UiBuilder::new();
-                if !whole {
-                    space = space.invisible();
-                }
-                ui.scope_builder(space, |ui| self.message(ui, view, *outlined));
-            }
-            if messages.is_empty() {
-                ui.add_space(12.0);
-                ui.label(
-                    RichText::new("まとまった訳文を待っています。")
-                        .size(theme::SIZE_TITLE)
-                        .color(TEXT),
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("YouTube字幕またはPC音声の訳文がここに表示されます。")
-                        .size(theme::SIZE_LABEL)
+        ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = 0.0;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(label).size(theme::SIZE_LABEL).color(color));
+                if let Some(view) = &self.view {
+                    ui.label(
+                        RichText::new(match source_of(&view.stamp) {
+                            chat::Source::PcAudio => "PC音声",
+                            chat::Source::Screen => "画面",
+                            chat::Source::YouTube => "YouTube字幕",
+                        })
+                        .size(theme::SIZE_CAPTION)
                         .color(MUTED),
-                );
-            }
+                    );
+                }
+            });
         });
-        self.scroll_offset = output.state.offset.y;
-        self.showing_end =
-            output.state.offset.y + output.inner_rect.height() + 0.5 >= output.content_size.y;
-        #[cfg(test)]
-        {
-            self.body_rect = Some(output.inner_rect);
-        }
+        let messages = messages(&self.history, self.view.as_ref(), &self.moments);
+        self.chat.show(
+            ui,
+            "subtitle-window-chat",
+            &messages,
+            chat::Options {
+                text_size: self
+                    .font_size
+                    .clamp(theme::READING_MIN, theme::SUBTITLE_READING_MAX),
+                show_originals: self.show_source,
+                follow: true,
+                readout: None,
+            },
+        );
         if closed {
             self.close()
         } else {
             WindowResponse::default()
         }
-    }
-
-    /// One part of the talk, drawn like a chat message. Only the part still
-    /// forming carries an outline, so fixed messages read as settled.
-    fn message(&self, ui: &mut egui::Ui, view: &View, forming: bool) {
-        let size = self
-            .font_size
-            .clamp(theme::READING_MIN, theme::SUBTITLE_READING_MAX);
-        egui::Frame::new()
-            .fill(SURFACE)
-            .stroke(if forming {
-                egui::Stroke::new(1.0_f32, theme::BORDER_STRONG)
-            } else {
-                egui::Stroke::NONE
-            })
-            .corner_radius(12)
-            .inner_margin(egui::Margin::symmetric(14, 10))
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(&view.target)
-                            .size(size)
-                            .color(TEXT)
-                            .line_height(Some((size * 1.55).ceil())),
-                    )
-                    .wrap()
-                    .selectable(true),
-                );
-                if self.show_source && !view.source.is_empty() {
-                    ui.add_space(theme::SPACE_1);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(&view.source)
-                                .size(theme::SIZE_LABEL)
-                                .color(MUTED),
-                        )
-                        .wrap()
-                        .selectable(true),
-                    );
-                }
-            });
     }
 
     fn status(&self) -> (String, Color32) {
@@ -483,6 +371,54 @@ impl State {
             label.push_str(" · 新しい訳文を待っています");
         }
         (label, color)
+    }
+}
+
+/// The fixed parts, then the part still forming unless it is already fixed.
+fn messages<'a>(
+    history: &'a [View],
+    view: Option<&'a View>,
+    moments: &HashMap<u64, chat::Moment>,
+) -> Vec<chat::Message<'a>> {
+    let forming = view.filter(|view| {
+        !history
+            .iter()
+            .any(|done| done.paragraph_key == view.paragraph_key)
+    });
+    history
+        .iter()
+        .chain(forming)
+        .map(|view| chat::Message {
+            id: view.paragraph_key,
+            source: source_of(&view.stamp),
+            target: &view.target,
+            original: &view.source,
+            moment: moments
+                .get(&view.paragraph_key)
+                .copied()
+                .unwrap_or_default(),
+            status: match view.phase {
+                Phase::Updating => chat::Status::Forming,
+                Phase::Final => chat::Status::Fixed,
+                Phase::Interrupted => chat::Status::Interrupted,
+                Phase::Failed => chat::Status::Failed,
+            },
+            failure: None,
+        })
+        .collect()
+}
+
+fn source_of(stamp: &SourceStamp) -> chat::Source {
+    match stamp.kind {
+        SourceKind::Audio => chat::Source::PcAudio,
+        SourceKind::Caption
+            if stamp
+                .video_id
+                .starts_with(super::screen_feed::SCREEN_SOURCE) =>
+        {
+            chat::Source::Screen
+        }
+        SourceKind::Caption => chat::Source::YouTube,
     }
 }
 
@@ -508,9 +444,18 @@ mod tests {
         }
     }
     fn paint(state: &mut State, ctx: &egui::Context, size: egui::Vec2) -> egui::FullOutput {
+        paint_with(state, ctx, size, vec![])
+    }
+    fn paint_with(
+        state: &mut State,
+        ctx: &egui::Context,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
         ctx.run(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
                 ..Default::default()
             },
             |ctx| {
@@ -519,6 +464,25 @@ mod tests {
                 });
             },
         )
+    }
+    /// A turn of the mouse wheel over the reading area, then frames until the
+    /// scrolling has stopped. Positive scrolls up.
+    fn turn_wheel(state: &mut State, ctx: &egui::Context, size: egui::Vec2, pixels: f32) {
+        let pointer = state.chat.body().expect("drawn").center();
+        paint_with(state, ctx, size, vec![egui::Event::PointerMoved(pointer)]);
+        paint_with(
+            state,
+            ctx,
+            size,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, pixels),
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        for _ in 0..30 {
+            paint(state, ctx, size);
+        }
     }
     fn painted_text(output: &egui::FullOutput) -> String {
         fn add(shape: &egui::Shape, text: &mut String) {
@@ -652,17 +616,22 @@ mod tests {
         let mut state = State {
             open: true,
             show_source: true,
-            scroll_offset: 121.0,
             ..State::default()
         };
         let original = view(1, 1, Phase::Final);
         state.update(Some(&original.stamp), Some(&original), Playback::Running);
-        state.scroll_offset = 121.0;
+        state.chat.toggle_original(1, 0);
+        state.chat.reading_from_start(0);
+        let reading = format!("{:?}", state.chat);
         assert!(state.close().closed);
         assert!(!state.open);
         assert_eq!(state.view(), Some(&original));
         assert!(state.show_source);
-        assert_eq!(state.scroll_offset(), 121.0);
+        assert_eq!(
+            format!("{:?}", state.chat),
+            reading,
+            "what the reader opened and where the reader stopped are kept"
+        );
     }
     #[test]
     fn minimum_headless_window_renders_provisional_and_paused_without_root_close() {
@@ -677,7 +646,10 @@ mod tests {
         let text = painted_text(&output);
         assert!(text.contains("未確定"));
         assert!(text.contains("一時停止中"));
-        assert!(state.body_rect.unwrap().height() > 80.0);
+        assert!(
+            state.chat.body().unwrap().height() > 120.0,
+            "room for a message of two lines at the default size"
+        );
         assert!(
             output
                 .viewport_output
@@ -688,26 +660,80 @@ mod tests {
     #[test]
     fn long_text_is_scrollable_and_read_position_survives_revision() {
         let ctx = egui::Context::default();
-        let mut state = State {
-            follow_latest: false,
-            ..State::default()
-        };
+        let size = egui::vec2(360.0, 220.0);
+        let mut state = State::default();
         let mut original = view(1, 1, Phase::Updating);
         original.target =
             "A long readable translated paragraph stays here while additional words arrive. "
                 .repeat(80);
         state.update(Some(&original.stamp), Some(&original), Playback::Running);
-        paint(&mut state, &ctx, egui::vec2(360.0, 220.0));
-        state.scroll_offset = 120.0;
-        paint(&mut state, &ctx, egui::vec2(360.0, 220.0));
+        for _ in 0..3 {
+            paint(&mut state, &ctx, size);
+        }
+        let end = state.scroll_offset();
+        assert!(end > 500.0, "the text is far taller than the window: {end}");
+        turn_wheel(&mut state, &ctx, size, 300.0);
         let before = state.scroll_offset();
-        assert!(before > 100.0);
+        assert!(before > 100.0 && before < end - 100.0, "{before} of {end}");
         original.revision = 2;
         original.target.push_str("The next sentence arrives.");
         state.update(None, Some(&original), Playback::Running);
-        paint(&mut state, &ctx, egui::vec2(360.0, 220.0));
+        for _ in 0..3 {
+            paint(&mut state, &ctx, size);
+        }
         assert!((state.scroll_offset() - before).abs() < 1.0);
     }
+    #[test]
+    fn a_message_of_two_lines_is_drawn_whole_in_the_minimum_window() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(360.0, 220.0);
+        let mut state = State::default();
+        let forming = View {
+            target: "お名前は必要ありません。".into(),
+            ..view(1, 1, Phase::Updating)
+        };
+        state.update(Some(&forming.stamp), Some(&forming), Playback::Running);
+        let mut output = paint(&mut state, &ctx, size);
+        for _ in 0..3 {
+            output = paint(&mut state, &ctx, size);
+        }
+        assert!(
+            !cut_at_the_top(&state, &output),
+            "nothing of the message is cut at the top"
+        );
+        let drawn = painted_text(&output);
+        assert!(drawn.contains("お名前は必要ありません。"));
+        assert_eq!(
+            drawn.matches("YouTube").count(),
+            2,
+            "the status line and the name above the message: {drawn}"
+        );
+
+        // A time under the bubble takes the room of the name, which is left
+        // out instead of being drawn half.
+        state.set_moments(
+            [(
+                1,
+                chat::Moment::from_record("2026-11-07T21:49:52+09:00", 0, chat::Source::YouTube),
+            )]
+            .into(),
+        );
+        for _ in 0..3 {
+            output = paint(&mut state, &ctx, size);
+        }
+        let drawn = painted_text(&output);
+        assert!(drawn.contains("お名前は必要ありません。") && drawn.contains("21:49"));
+        assert_eq!(
+            drawn.matches("YouTube").count(),
+            1,
+            "only the status line: {drawn}"
+        );
+        assert!(
+            !cut_at_the_top(&state, &output),
+            "no avatar is drawn cut at the top"
+        );
+    }
+
     #[test]
     fn a_dragged_window_is_never_moved_back_and_reopens_where_it_was_left() {
         let ctx = egui::Context::default();
@@ -799,11 +825,7 @@ mod tests {
     }
     // Shapes inside the reading area are clipped to it; the header is not.
     fn cut_at_the_top(state: &State, output: &egui::FullOutput) -> bool {
-        let body = state.body_rect.unwrap();
-        output.shapes.iter().any(|clipped| {
-            clipped.clip_rect.top() > body.top() - 8.0
-                && clipped.shape.visual_bounding_rect().top() < clipped.clip_rect.top() - 0.5
-        })
+        chat::testing::cut_at_the_top(output, state.chat.body().unwrap())
     }
     fn talk(state: &mut State, newest: &str) {
         let forming = View {
@@ -884,25 +906,130 @@ mod tests {
                 .unwrap_or_else(|| panic!("{label} has no button frame"))
         };
         assert!(
-            !button("末尾へ").intersects(button("閉じる")),
-            "閉じる covers 末尾へ"
+            !button("表示").intersects(button("閉じる")),
+            "閉じる covers 表示"
         );
+        for gone in ["原文", "末尾へ", "末尾に追従する"] {
+            assert!(
+                !shapes.iter().any(|shape| matches!(
+                    shape,
+                    egui::Shape::Text(text) if text.galley.text() == gone
+                )),
+                "{gone} is still in the toolbar"
+            );
+        }
     }
     #[test]
     fn scrolling_up_by_hand_still_shows_the_message_at_the_top_edge() {
         let ctx = egui::Context::default();
         let size = egui::vec2(720.0, 360.0);
-        let mut state = State {
-            follow_latest: false,
-            ..State::default()
-        };
+        let mut state = State::default();
         talk(&mut state, "いま話している途中の部分です。");
-        paint(&mut state, &ctx, size);
-        state.scroll_offset = 30.0;
+        for _ in 0..3 {
+            paint(&mut state, &ctx, size);
+        }
+        let end = state.scroll_offset();
+        turn_wheel(&mut state, &ctx, size, 30.0);
+        assert!(
+            (end - state.scroll_offset() - 30.0).abs() < 1.5,
+            "the wheel moved the view by 30 points: {end} to {}",
+            state.scroll_offset()
+        );
         let output = paint(&mut state, &ctx, size);
         assert!(
             cut_at_the_top(&state, &output),
-            "the first message is drawn while it scrolls past the top"
+            "a message is drawn while it scrolls past the top"
+        );
+    }
+
+    #[test]
+    fn every_original_is_shown_from_the_view_menu_and_one_click_opens_one_original() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(720.0, 460.0);
+        let mut state = State::default();
+        let first = View {
+            source: "First original.".into(),
+            ..view(1, 1, Phase::Final)
+        };
+        let second = View {
+            source: "Second original.".into(),
+            ..view(2, 1, Phase::Final)
+        };
+        state.update(Some(&second.stamp), Some(&second), Playback::Running);
+        state.set_history(vec![first, second]);
+        let drawn = painted_text(&paint(&mut state, &ctx, size));
+        assert!(!drawn.contains("First original.") && !drawn.contains("Second original."));
+        assert!(
+            !drawn.contains("原文"),
+            "no checkbox for the originals in the toolbar"
+        );
+        state.chat.toggle_original(1, 0);
+        for _ in 0..2 {
+            paint(&mut state, &ctx, size);
+        }
+        let drawn = painted_text(&paint(&mut state, &ctx, size));
+        assert!(drawn.contains("First original.") && !drawn.contains("Second original."));
+        state.show_source = true;
+        for _ in 0..2 {
+            paint(&mut state, &ctx, size);
+        }
+        let drawn = painted_text(&paint(&mut state, &ctx, size));
+        assert!(
+            drawn.contains("First original.") && drawn.contains("Second original."),
+            "the view menu shows every original"
+        );
+        state.chat.toggle_original(1, 0);
+        for _ in 0..2 {
+            paint(&mut state, &ctx, size);
+        }
+        let drawn = painted_text(&paint(&mut state, &ctx, size));
+        assert!(
+            drawn.contains("Second original.") && !drawn.contains("First original."),
+            "with every original shown, a click closes that one"
+        );
+    }
+
+    #[test]
+    fn the_window_shows_when_each_part_was_said_from_the_rows() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(720.0, 460.0);
+        let mut state = State::default();
+        let first = view(1, 1, Phase::Final);
+        let forming = view(2, 1, Phase::Updating);
+        state.update(Some(&forming.stamp), Some(&forming), Playback::Running);
+        state.set_history(vec![first]);
+        assert_eq!(state.paragraph_keys().collect::<Vec<_>>(), [1, 2]);
+        let drawn = painted_text(&paint(&mut state, &ctx, size));
+        assert!(!drawn.contains("21:") && !drawn.contains("11月"));
+        state.set_moments(
+            [
+                (
+                    1,
+                    chat::Moment::from_record(
+                        "2026-11-07T21:46:10+09:00",
+                        0,
+                        chat::Source::YouTube,
+                    ),
+                ),
+                (
+                    2,
+                    chat::Moment::from_record(
+                        "2026-11-07T21:49:52+09:00",
+                        0,
+                        chat::Source::YouTube,
+                    ),
+                ),
+            ]
+            .into(),
+        );
+        let drawn = painted_text(&paint(&mut state, &ctx, size));
+        for shown in ["21:46", "21:49", "11月7日（土）"] {
+            assert!(drawn.contains(shown), "{shown} is not drawn: {drawn}");
+        }
+        assert_eq!(
+            drawn.matches("YouTube").count(),
+            3,
+            "two groups (names) and the status label: {drawn}"
         );
     }
 }

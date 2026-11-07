@@ -41,10 +41,34 @@ pub const ERROR: Color32 = Color32::from_rgb(255, 146, 146);
 pub const WARNING: Color32 = Color32::from_rgb(244, 196, 124);
 pub const SUCCESS: Color32 = Color32::from_rgb(132, 222, 186);
 
-/// Source labels in the live timeline. Each stays readable on a raised surface.
-pub const SOURCE_YOUTUBE: Color32 = Color32::from_rgb(226, 160, 118);
-pub const SOURCE_AUDIO: Color32 = Color32::from_rgb(141, 180, 234);
-pub const SOURCE_OTHER: Color32 = Color32::from_rgb(186, 166, 224);
+// ---------------------------------------------------------------------------
+// Chat: a light messenger canvas inside the dark app.
+// ---------------------------------------------------------------------------
+
+/// Behind the messages.
+pub const CHAT_BACKGROUND: Color32 = Color32::from_rgb(169, 188, 214);
+pub const CHAT_BUBBLE: Color32 = Color32::from_rgb(255, 255, 255);
+/// Text in a bubble.
+pub const CHAT_TEXT: Color32 = Color32::from_rgb(24, 31, 43);
+/// The same ink at about 60 percent, for a message still forming.
+pub const CHAT_TEXT_FORMING: Color32 = Color32::from_rgb(112, 116, 124);
+/// Smaller supporting text inside a bubble: the original and the video time.
+pub const CHAT_TEXT_MUTED: Color32 = Color32::from_rgb(86, 96, 110);
+/// The thin line between a translation and its original.
+pub const CHAT_RULE: Color32 = Color32::from_rgb(220, 225, 232);
+/// Times, sender names and notes on the chat background.
+pub const CHAT_META: Color32 = Color32::from_rgb(43, 56, 76);
+/// Date and new-message pills, and the text on them.
+pub const CHAT_PILL: Color32 = Color32::from_rgb(74, 90, 114);
+pub const CHAT_PILL_HOVER: Color32 = Color32::from_rgb(58, 72, 94);
+pub const CHAT_PILL_TEXT: Color32 = Color32::from_rgb(255, 255, 255);
+/// The scroll bar's track on the chat background.
+pub const CHAT_TRACK: Color32 = Color32::from_rgb(158, 178, 207);
+/// Round avatars, one colour per source, each with a white glyph.
+pub const CHAT_AVATAR_YOUTUBE: Color32 = Color32::from_rgb(184, 32, 40);
+pub const CHAT_AVATAR_AUDIO: Color32 = Color32::from_rgb(52, 86, 184);
+pub const CHAT_AVATAR_SCREEN: Color32 = Color32::from_rgb(118, 58, 176);
+pub const CHAT_AVATAR_GLYPH: Color32 = Color32::from_rgb(255, 255, 255);
 
 // ---------------------------------------------------------------------------
 // Spacing, radius and control sizes (8-point scale with 4-point half steps).
@@ -131,14 +155,6 @@ pub fn card() -> egui::Frame {
         .stroke(hairline())
         .corner_radius(RADIUS_CARD)
         .inner_margin(egui::Margin::same(SPACE_4 as i8))
-}
-
-/// Borderless surface for the reading canvas: no box around prose.
-pub fn reading_surface() -> egui::Frame {
-    egui::Frame::new()
-        .fill(SURFACE)
-        .corner_radius(RADIUS_CARD)
-        .inner_margin(egui::Margin::symmetric(SPACE_6 as i8, SPACE_4 as i8))
 }
 
 // ---------------------------------------------------------------------------
@@ -301,9 +317,6 @@ mod tests {
             ("success/surface", SUCCESS, SURFACE, 4.5),
             ("border/surface", BORDER_STRONG, SURFACE, 3.0),
             ("focus/canvas", ACCENT, CANVAS, 3.0),
-            ("youtube/raised", SOURCE_YOUTUBE, SURFACE_RAISED, 4.5),
-            ("audio/raised", SOURCE_AUDIO, SURFACE_RAISED, 4.5),
-            ("other-source/raised", SOURCE_OTHER, SURFACE_RAISED, 4.5),
         ] {
             let ratio = contrast_ratio(fg, bg);
             assert!(
@@ -311,6 +324,52 @@ mod tests {
                 "{name}: {ratio:.2}:1 is below {minimum}:1"
             );
         }
+    }
+
+    #[test]
+    fn chat_text_meets_wcag_aa_on_the_bubble_and_the_chat_background() {
+        for (name, fg, bg, minimum) in [
+            ("text/bubble", CHAT_TEXT, CHAT_BUBBLE, 4.5),
+            ("forming text/bubble", CHAT_TEXT_FORMING, CHAT_BUBBLE, 4.5),
+            ("muted/bubble", CHAT_TEXT_MUTED, CHAT_BUBBLE, 4.5),
+            ("meta/background", CHAT_META, CHAT_BACKGROUND, 4.5),
+            ("pill text/pill", CHAT_PILL_TEXT, CHAT_PILL, 4.5),
+            (
+                "pill text/hovered pill",
+                CHAT_PILL_TEXT,
+                CHAT_PILL_HOVER,
+                4.5,
+            ),
+            ("glyph/youtube", CHAT_AVATAR_GLYPH, CHAT_AVATAR_YOUTUBE, 4.5),
+            ("glyph/audio", CHAT_AVATAR_GLYPH, CHAT_AVATAR_AUDIO, 4.5),
+            ("glyph/screen", CHAT_AVATAR_GLYPH, CHAT_AVATAR_SCREEN, 4.5),
+            (
+                "youtube/background",
+                CHAT_AVATAR_YOUTUBE,
+                CHAT_BACKGROUND,
+                3.0,
+            ),
+            ("audio/background", CHAT_AVATAR_AUDIO, CHAT_BACKGROUND, 3.0),
+            (
+                "screen/background",
+                CHAT_AVATAR_SCREEN,
+                CHAT_BACKGROUND,
+                3.0,
+            ),
+            ("pill/background", CHAT_PILL, CHAT_BACKGROUND, 3.0),
+            ("handle/track", CHAT_PILL, CHAT_TRACK, 3.0),
+        ] {
+            let ratio = contrast_ratio(fg, bg);
+            assert!(
+                ratio >= minimum,
+                "{name}: {ratio:.2}:1 is below {minimum}:1"
+            );
+        }
+        assert!(
+            relative_luminance(CHAT_TEXT_FORMING) > relative_luminance(CHAT_TEXT),
+            "a forming message reads lighter than a fixed one"
+        );
+        assert_eq!(CHAT_BACKGROUND, Color32::from_rgb(0xA9, 0xBC, 0xD6));
     }
 
     #[test]
@@ -342,6 +401,7 @@ mod tests {
         // roomier place on screen.
         let allowed = [("mini.rs", ".size(9.0)")];
         for (file, source) in [
+            ("chat.rs", include_str!("chat.rs")),
             ("ui.rs", include_str!("ui.rs")),
             ("mini.rs", include_str!("mini.rs")),
             ("setup.rs", include_str!("setup.rs")),
@@ -355,7 +415,6 @@ mod tests {
             ("document.rs", include_str!("document.rs")),
             ("streaming.rs", include_str!("streaming.rs")),
             ("window_mode.rs", include_str!("window_mode.rs")),
-            ("live_view.rs", include_str!("live_view.rs")),
         ] {
             for (index, line) in source.lines().enumerate() {
                 for pattern in [

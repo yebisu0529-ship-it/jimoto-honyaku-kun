@@ -80,8 +80,6 @@ pub const SPACE_3: f32 = 12.0;
 pub const SPACE_4: f32 = 16.0;
 pub const SPACE_6: f32 = 24.0;
 
-/// Navigation rail width. The reading column gets everything else.
-pub const RAIL_WIDTH: f32 = 96.0;
 /// Outer gutter of the content area.
 pub const GUTTER: f32 = 24.0;
 

@@ -176,9 +176,11 @@ fn command_hidden(command: &mut Command) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 enum Tab {
     Text,
+    /// The chat. It is the home screen, and the app opens on it.
+    #[default]
     Live,
     Files,
     Settings,
@@ -423,6 +425,8 @@ struct App {
     audio_cancel: Arc<AtomicBool>,
     readout: readout::ReadoutState,
     ocr: screen_ocr::OcrState,
+    /// The 状態の詳細 window is open.
+    details_open: bool,
     native_window: Option<isize>,
     #[cfg(test)]
     ui_probe: ui::UiProbe,
@@ -435,7 +439,7 @@ impl App {
         App {
             settings: Settings::default(),
             settings_load_failed: true,
-            tab: Tab::Live,
+            tab: Tab::default(),
             input: String::new(),
             output: String::new(),
             status: String::new(),
@@ -521,6 +525,7 @@ impl App {
             audio_cancel: Arc::new(AtomicBool::new(false)),
             readout: readout::ReadoutState::default(),
             ocr: screen_ocr::OcrState::default(),
+            details_open: false,
             native_window: None,
             #[cfg(test)]
             ui_probe: ui::UiProbe::default(),
@@ -586,7 +591,7 @@ impl App {
         let mut app = Self {
             settings,
             settings_load_failed: !load_error.is_empty(),
-            tab: Tab::Text,
+            tab: Tab::default(),
             input: String::new(),
             output: String::new(),
             status: if load_error.is_empty() {
@@ -676,6 +681,7 @@ impl App {
             audio_cancel: Arc::new(AtomicBool::new(false)),
             readout: readout::ReadoutState::default(),
             ocr: screen_ocr::OcrState::default(),
+            details_open: false,
             native_window: None,
             #[cfg(test)]
             ui_probe: ui::UiProbe::default(),
@@ -1028,7 +1034,10 @@ impl App {
     fn accept_ocr(&mut self, text: String) {
         // Keep a single latest request while a manual translation is running.
         self.pending_ocr = Some(text);
-        if self.tab != Tab::Live {
+        // The chat does not show the reading, so the window opens the screen
+        // that does. The mini window shows it itself and picks the screen on
+        // the way back.
+        if !self.window_mode.is_mini() {
             self.tab = Tab::Text;
         }
     }
@@ -1470,6 +1479,23 @@ impl App {
         }
         self.document_tick();
     }
+    fn open_dropped_file(&mut self, ctx: &egui::Context) {
+        let files = ctx.input(|i| i.raw.dropped_files.clone());
+        let Some(path) = files.first().and_then(|f| f.path.clone()) else {
+            return;
+        };
+        match image::open(&path) {
+            Ok(image) => self.do_ocr(image.to_rgba8()),
+            Err(_) => match fs::read_to_string(&path) {
+                Ok(text) => {
+                    self.input = text;
+                    self.tab = Tab::Text;
+                    self.restore_normal_view(ctx);
+                }
+                Err(e) => self.status = e.to_string(),
+            },
+        }
+    }
     fn open_image(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("画像", &["png", "jpg", "jpeg", "webp", "bmp"])
@@ -1768,20 +1794,7 @@ impl eframe::App for App {
             self.request_app_close(ctx);
         }
         if ctx.input(|i| !i.raw.dropped_files.is_empty()) {
-            let files = ctx.input(|i| i.raw.dropped_files.clone());
-            if let Some(path) = files.first().and_then(|f| f.path.clone()) {
-                match image::open(&path) {
-                    Ok(image) => self.do_ocr(image.to_rgba8()),
-                    Err(_) => match fs::read_to_string(&path) {
-                        Ok(text) => {
-                            self.input = text;
-                            self.tab = Tab::Text;
-                            self.restore_normal_view(ctx);
-                        }
-                        Err(e) => self.status = e.to_string(),
-                    },
-                }
-            }
+            self.open_dropped_file(ctx);
         }
         self.children.retain_mut(|child| match child.try_wait() {
             Ok(Some(status)) => {
@@ -2378,18 +2391,30 @@ fn render_setup_views(folder: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// What a preview of the main window shows over its screen.
+enum Overlay {
+    Nothing,
+    Menu,
+    Details,
+    NoModel,
+}
+
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
     render_setup_views(folder)?;
     let nothing_saved = tempfile::tempdir()?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
-        for (name, tab, filled) in [
-            ("01-text-empty", Tab::Text, false),
-            ("02-text-filled", Tab::Text, true),
-            ("03-live", Tab::Live, true),
-            ("04-settings", Tab::Settings, false),
-            ("05-first-run", Tab::Setup, false),
-            ("18-history", Tab::Files, true),
+        for (name, tab, filled, overlay) in [
+            ("01-text-empty", Tab::Text, false, Overlay::Nothing),
+            ("02-text-filled", Tab::Text, true, Overlay::Nothing),
+            ("03-live", Tab::Live, true, Overlay::Nothing),
+            ("04-settings", Tab::Settings, false, Overlay::Nothing),
+            ("05-first-run", Tab::Setup, false, Overlay::Nothing),
+            ("18-history", Tab::Files, true, Overlay::Nothing),
+            ("27-menu", Tab::Live, true, Overlay::Menu),
+            ("28-details", Tab::Live, true, Overlay::Details),
+            ("29-no-model", Tab::Live, true, Overlay::NoModel),
         ] {
             let ctx = egui::Context::default();
             ui::configure_theme(&ctx);
@@ -2479,6 +2504,17 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 app.rows = demo_talk(5);
                 app.current_live_id = Some(5);
                 app.live_chat.toggle_original(3, 0);
+            }
+            match overlay {
+                Overlay::Nothing => {}
+                Overlay::Menu => egui::Popup::open_id(&ctx, egui::Id::new(ui::MORE_MENU)),
+                Overlay::Details => {
+                    // The window fades in; the picture shows it after it has.
+                    ctx.style_mut(|style| style.animation_time = 0.0);
+                    app.settings.readout_enabled = true;
+                    app.details_open = true;
+                }
+                Overlay::NoModel => app.backend_ready = false,
             }
             preview::render(
                 &ctx,
@@ -3267,15 +3303,79 @@ mod tests {
         assert!(a.pending_caption.is_none());
     }
     #[test]
-    fn ocr_keeps_live_tab_and_latest_request_until_manual_lane_is_free() {
+    fn ocr_opens_text_screen_and_latest_request_waits_until_manual_lane_is_free() {
         let mut a = app();
+        assert!(a.tab == Tab::Live);
+        a.caption_enabled = true;
+        let generation = a.caption_generation;
         a.manual_busy = Some(1);
         a.accept_ocr("first".into());
         a.accept_ocr("latest".into());
-        assert!(a.tab == Tab::Live);
+        assert!(a.tab == Tab::Text, "the chat does not show a reading");
+        assert!(
+            a.caption_enabled && a.caption_generation == generation,
+            "the live input runs on behind the other screen"
+        );
         assert!(a.take_ready_ocr().is_none());
         a.manual_busy = None;
         assert_eq!(a.take_ready_ocr().as_deref(), Some("latest"));
+
+        let mut a = app();
+        a.window_mode.enter(&egui::ViewportInfo::default());
+        assert!(a.window_mode.is_mini());
+        a.accept_ocr("read in the mini window".into());
+        assert!(
+            a.tab == Tab::Live,
+            "the mini window shows the reading itself"
+        );
+    }
+    #[test]
+    fn a_file_dropped_on_the_chat_ends_on_the_text_screen_and_the_live_input_runs_on() {
+        let folder = tempfile::tempdir().unwrap();
+        let note = folder.path().join("note.txt");
+        fs::write(&note, "A dropped note.").unwrap();
+        let picture = folder.path().join("picture.png");
+        image::RgbaImage::new(2, 2).save(&picture).unwrap();
+        let drop = |a: &mut App, path: &Path| {
+            let input = egui::RawInput {
+                dropped_files: vec![egui::DroppedFile {
+                    path: Some(path.to_path_buf()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let _ = egui::Context::default().run(input, |ctx| a.open_dropped_file(ctx));
+        };
+        let chat = || {
+            let mut a = app();
+            assert!(a.tab == Tab::Live);
+            a.caption_enabled = true;
+            a
+        };
+
+        let mut a = chat();
+        drop(&mut a, &note);
+        assert!(a.tab == Tab::Text);
+        assert_eq!(a.input, "A dropped note.");
+        assert!(a.caption_enabled);
+
+        // A picture is read first. An unprepared recogniser keeps it waiting,
+        // and the manual lane is busy, so nothing runs in this test.
+        let mut a = chat();
+        a.settings.ocr_backend = "indra".into();
+        a.manual_busy = Some(1);
+        let before = a.ocr.generation;
+        drop(&mut a, &picture);
+        assert_ne!(a.ocr.generation, before, "the picture is sent to be read");
+        a.tx.send(Event::Ocr {
+            generation: a.ocr.generation,
+            result: Ok("読み取った文字".into()),
+        })
+        .unwrap();
+        a.process(&egui::Context::default());
+        assert!(a.tab == Tab::Text);
+        assert_eq!(a.pending_ocr.as_deref(), Some("読み取った文字"));
+        assert!(a.caption_enabled);
     }
     #[test]
     fn unfinished_paragraphs_recover_and_export_as_unfinished_until_final_commit() {

@@ -1063,10 +1063,7 @@ impl App {
                         ui.spacing_mut().item_spacing.x = theme::SPACE_3;
                         let button = ui
                             .add_enabled(enabled, listen_button(listening))
-                            .on_hover_text(format!(
-                                "{hover}
-{LISTEN_SHORTCUT}"
-                            ))
+                            .on_hover_text(format!("{hover}\n{LISTEN_SHORTCUT}"))
                             .on_disabled_hover_text("翻訳モデルの準備ができると、聞けます");
                         press = button.clicked();
                         rects = Some((bar, button.rect));

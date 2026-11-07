@@ -1034,8 +1034,12 @@ impl App {
     fn accept_ocr(&mut self, text: String) {
         // Keep a single latest request while a manual translation is running.
         self.pending_ocr = Some(text);
-        // The chat does not show the reading, so it opens the screen that does.
-        self.tab = Tab::Text;
+        // The chat does not show the reading, so the window opens the screen
+        // that does. The mini window shows it itself and picks the screen on
+        // the way back.
+        if !self.window_mode.is_mini() {
+            self.tab = Tab::Text;
+        }
     }
     fn take_ready_ocr(&mut self) -> Option<String> {
         if self.manual_busy.is_none() {
@@ -3317,6 +3321,15 @@ mod tests {
         assert!(a.take_ready_ocr().is_none());
         a.manual_busy = None;
         assert_eq!(a.take_ready_ocr().as_deref(), Some("latest"));
+
+        let mut a = app();
+        a.window_mode.enter(&egui::ViewportInfo::default());
+        assert!(a.window_mode.is_mini());
+        a.accept_ocr("read in the mini window".into());
+        assert!(
+            a.tab == Tab::Live,
+            "the mini window shows the reading itself"
+        );
     }
     #[test]
     fn a_file_dropped_on_the_chat_ends_on_the_text_screen_and_the_live_input_runs_on() {

@@ -420,6 +420,8 @@ pub(super) enum LiveSourceMode {
 }
 
 impl LiveSourceMode {
+    const ALL: [Self; 4] = [Self::Auto, Self::Captions, Self::Audio, Self::Screen];
+
     fn from_flags(captions: bool, audio: bool) -> Option<Self> {
         match (captions, audio) {
             (true, false) => Some(Self::Captions),
@@ -436,6 +438,15 @@ impl LiveSourceMode {
             Self::Auto => (true, true),
             Self::Captions | Self::Screen => (true, false),
             Self::Audio => (false, true),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "自動（字幕を優先）",
+            Self::Captions => "YouTube字幕だけ",
+            Self::Audio => "PC音声だけ",
+            Self::Screen => "画面の文字",
         }
     }
 
@@ -492,6 +503,8 @@ enum MenuChoice {
     Text,
     Range,
     ScreenText,
+    /// A choice in 入力の切り替え.
+    Input(LiveSourceMode),
     File,
     History,
     Models,
@@ -516,6 +529,15 @@ fn menu_row(ui: &mut egui::Ui, label: &str, shortcut: &str, hover: &str, enabled
     } else {
         response.on_hover_text(hover).clicked()
     }
+}
+
+/// A button that is filled while it is the chosen one, and tells a screen
+/// reader so.
+fn choice_button(ui: &mut egui::Ui, label: &str, chosen: bool) -> egui::Response {
+    let response = ui.add(standard(label).selected(chosen));
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, chosen, label));
+    response
 }
 
 fn parse_glossary(input: &str) -> std::result::Result<Vec<(String, String)>, String> {
@@ -679,6 +701,7 @@ impl App {
         let can_screen = can_range && self.screen_feed.is_none();
         let can_file = ready && !self.file_busy;
         let has_rows = !self.rows.is_empty();
+        let shown = self.shown_input();
         let open = egui::Popup::is_id_open(ui.ctx(), id);
         let button = ui.add(standard("⋯ その他").selected(open));
         #[cfg(test)]
@@ -794,6 +817,16 @@ impl App {
                 ui.separator();
                 row(ui, MenuChoice::NewSession, "新しく始める", "", "", true);
                 row(ui, MenuChoice::Export, "書き出し", "", "", has_rows);
+                ui.menu_button(RichText::new("入力の切り替え").size(theme::SIZE_LABEL), |ui| {
+                    for mode in LiveSourceMode::ALL {
+                        if choice_button(ui, mode.label(), mode == shown)
+                            .on_hover_text(mode.hint())
+                            .clicked()
+                        {
+                            choice = Some(MenuChoice::Input(mode));
+                        }
+                    }
+                });
                 ui.menu_button(RichText::new("表示").size(theme::SIZE_LABEL), |ui| {
                     toggle(ui, &mut self.settings.live_show_original, "原文をすべて表示");
                     toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール")
@@ -831,8 +864,10 @@ impl App {
             }
             MenuChoice::ScreenText => {
                 self.tab = Tab::Live;
-                self.begin_screen_feed(ctx);
+                self.listen_input = LiveSourceMode::Screen;
+                self.apply_input(ctx, LiveSourceMode::Screen);
             }
+            MenuChoice::Input(mode) => self.choose_input(ctx, mode),
             MenuChoice::File => {
                 // The progress and the cancel button are on the 履歴 screen.
                 self.tab = Tab::Files;
@@ -895,6 +930,12 @@ impl App {
         }
     }
 
+    /// What the choice in 入力の切り替え shows: the input that is on, or else
+    /// the one the next 「聞く」 turns on.
+    fn shown_input(&self) -> LiveSourceMode {
+        self.current_input().unwrap_or(self.listen_input)
+    }
+
     /// 「聞く」: turns on the chosen input.
     fn start_listening(&mut self, ctx: &egui::Context) {
         if !self.backend_ready {
@@ -910,6 +951,15 @@ impl App {
         self.audio_start_requested = false;
         if self.audio_enabled {
             self.stop_audio();
+        }
+    }
+
+    /// A choice in 入力の切り替え. An input that is on is switched at once;
+    /// otherwise the choice waits for the next 「聞く」.
+    fn choose_input(&mut self, ctx: &egui::Context, mode: LiveSourceMode) {
+        self.listen_input = mode;
+        if self.current_input().is_some_and(|on| on != mode) {
+            self.apply_input(ctx, mode);
         }
     }
 

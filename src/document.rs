@@ -343,6 +343,7 @@ impl App {
                     end_ms: snapshot.end_ms,
                     source: snapshot.text.clone(),
                     translation: String::new(),
+                    standard_translation: None,
                     kind: source_name(snapshot.stamp.kind, &snapshot.stamp.video_id).into(),
                     video_id: snapshot.stamp.video_id.clone(),
                     created_at: chrono::Local::now().to_rfc3339(),
@@ -437,6 +438,7 @@ impl App {
                 end_ms: end_ms.max(start_ms),
                 source: text,
                 translation: String::new(),
+                standard_translation: None,
                 kind: source_name(kind, &self.video_id).into(),
                 video_id: if kind == SourceKind::Caption {
                     self.video_id.clone()

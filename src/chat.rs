@@ -205,7 +205,6 @@ impl Default for State {
 impl State {
     /// A reader at the start of the transcript who has been shown messages up
     /// to `seen` only.
-    #[cfg(test)]
     pub fn reading_from_start(&mut self, seen: u64) {
         self.at_end = false;
         self.seen = seen;

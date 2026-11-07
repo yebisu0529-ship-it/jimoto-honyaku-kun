@@ -2009,6 +2009,224 @@ fn install_fonts(ctx: &egui::Context) {
     }
     ctx.set_fonts(fonts);
 }
+
+/// A short talk for the live chat previews: a YouTube video with a change of
+/// speaker, then PC audio, ending in a paragraph that is still forming. The
+/// last row is the forming one.
+fn demo_talk(rows: usize) -> Vec<Row> {
+    use plamo_translate::journal::{ParagraphMeta, ParagraphState};
+    const FIXED: [(&str, &str, u64, &str, &str); 9] = [
+        (
+            "YouTube",
+            "21:46:10",
+            0,
+            "Welcome back. Today we're going to build a small application.",
+            "おかえりなさい。今日は小さなアプリを作ります。",
+        ),
+        (
+            "YouTube",
+            "21:46:38",
+            8_000,
+            ">> You can translate text on your screen while listening to a video. >> That is really useful for me.",
+            ">> 動画を聴きながら、画面に表示された文章も翻訳できます。>> それは私にはとても助かります。",
+        ),
+        (
+            "YouTube",
+            "21:47:02",
+            754_000,
+            "Your translations are saved, so you can come back to them later.",
+            "翻訳は保存されるので、あとから読み返せます。",
+        ),
+        (
+            "音声",
+            "21:48:20",
+            0,
+            "Each description has about 150 words in English and a Japanese translation. A shared glossary keeps the names of local places consistent.",
+            "各説明文は英語で約150語で構成され、日本語訳が添えられています。共通の用語集で地域の地名を統一します。",
+        ),
+        (
+            "音声",
+            "21:48:52",
+            0,
+            "When a direct translation is unclear, staff will explain the meaning in ordinary language.",
+            "直訳では分かりにくい場合は、スタッフが平易な言葉で意味を説明します。",
+        ),
+        (
+            "音声",
+            "21:49:10",
+            0,
+            "No name or contact address is required.",
+            "お名前や連絡先は必要ありません。",
+        ),
+        (
+            "音声",
+            "21:49:30",
+            0,
+            "Each Friday staff will review the comments.",
+            "毎週金曜日にスタッフがご意見を確認します。",
+        ),
+        (
+            "音声",
+            "21:49:55",
+            0,
+            "The trial will last six weeks.",
+            "試行期間は6週間です。",
+        ),
+        (
+            "音声",
+            "21:50:20",
+            0,
+            "Please ask the staff if you have any questions.",
+            "ご質問があれば、スタッフにお声がけください。",
+        ),
+    ];
+    let row = |id: u64,
+               (kind, clock, start_ms, source, translation): (&str, &str, u64, &str, &str),
+               state| Row {
+        record: Record {
+            id,
+            start_ms,
+            end_ms: start_ms + 4_000,
+            source: source.into(),
+            translation: translation.into(),
+            kind: kind.into(),
+            video_id: if kind == "YouTube" {
+                "preview".into()
+            } else {
+                String::new()
+            },
+            created_at: format!("2026-11-07T{clock}+09:00"),
+            paragraph: Some(ParagraphMeta {
+                revision: 3,
+                state,
+                close_reason: None,
+            }),
+        },
+        pending: false,
+        error: None,
+        generation: 0,
+    };
+    let Some(fixed) = rows.checked_sub(1) else {
+        return Vec::new();
+    };
+    let mut talk: Vec<Row> = FIXED
+        .iter()
+        .take(fixed)
+        .zip(1..)
+        .map(|(entry, id)| row(id, *entry, ParagraphState::Final))
+        .collect();
+    talk.push(row(
+        rows as u64,
+        (
+            "音声",
+            "21:50:40",
+            0,
+            "Feedback cards ask three questions about memorable details, confusing passages and possible next steps.",
+            "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
+        ),
+        ParagraphState::Open,
+    ));
+    talk
+}
+
+/// A subtitle window holding `fixed` parts and one still forming, filled the
+/// way the app fills it. A YouTube window gets a change of speaker and video
+/// times.
+fn demo_subtitle(youtube: bool, fixed: usize) -> subtitle_window::State {
+    use plamo_translate::live_text::{SourceKind, SourceStamp};
+    use subtitle_window::{Phase, Playback, View};
+    const PARTS: [(&str, &str); 6] = [
+        (
+            "来館者はいつでも展示リストに戻れます。",
+            "Visitors can return to the exhibit list whenever they wish.",
+        ),
+        (
+            "画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。",
+            "We will observe whether they can find an item again rather than simply count screen taps.",
+        ),
+        (
+            "共通の用語集で地域の地名を統一します。",
+            "A shared glossary keeps the names of local places consistent.",
+        ),
+        (
+            "直訳では分かりにくい場合は、スタッフが平易な言葉で意味を説明します。",
+            "When a direct translation is unclear, staff will explain the meaning in ordinary language.",
+        ),
+        ("試行期間は6週間です。", "The trial will last six weeks."),
+        (
+            "お名前や連絡先は必要ありません。",
+            "No name or contact address is required.",
+        ),
+    ];
+    let stamp = SourceStamp {
+        kind: if youtube {
+            SourceKind::Caption
+        } else {
+            SourceKind::Audio
+        },
+        generation: 1,
+        video_id: if youtube {
+            "preview".into()
+        } else {
+            String::new()
+        },
+        epoch: 0,
+    };
+    let source = if youtube {
+        chat::Source::YouTube
+    } else {
+        chat::Source::PcAudio
+    };
+    let view = |key: u64, target: &str, original: &str, phase| View {
+        stamp: stamp.clone(),
+        paragraph_key: key,
+        revision: 1,
+        source: original.into(),
+        target: target.into(),
+        phase,
+    };
+    let mut history: Vec<View> = PARTS
+        .iter()
+        .take(fixed)
+        .zip(1..)
+        .map(|((target, original), key)| view(key, target, original, Phase::Final))
+        .collect();
+    if youtube && let Some(second) = history.get_mut(1) {
+        second.target = "戻ったあとも、続きから読めますか。>> はい、続きから読めます。".into();
+        second.source = "Can I keep reading afterwards? >> Yes, you can.".into();
+    }
+    let forming = view(
+        fixed as u64 + 1,
+        "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
+        "Feedback cards ask three questions about memorable details, confusing passages",
+        Phase::Updating,
+    );
+    let mut state = subtitle_window::State::default();
+    state.update(Some(&stamp), Some(&forming), Playback::Running);
+    state.set_history(history);
+    state.set_moments(
+        (1..=fixed as u64 + 1)
+            .map(|key| {
+                // The part still forming comes minutes after the fixed ones.
+                let clock = if key > fixed as u64 {
+                    "21:49:52".to_owned()
+                } else {
+                    format!("21:46:{:02}", 10 + key * 12)
+                };
+                (
+                    key,
+                    chat::Moment::from_record(
+                        &format!("2026-11-07T{clock}+09:00"),
+                        754_000 + key * 8_000,
+                        source,
+                    ),
+                )
+            })
+            .collect(),
+    );
+    state
+}
+
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
@@ -2064,6 +2282,8 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             if matches!(tab, Tab::Live | Tab::Files) {
                 app.caption_enabled = true;
                 app.audio_enabled = true;
+            }
+            if tab == Tab::Files {
                 for (index, source, translation) in [
                     (
                         0,
@@ -2099,6 +2319,11 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     });
                 }
                 app.current_live_id = Some(3);
+            }
+            if tab == Tab::Live {
+                app.rows = demo_talk(5);
+                app.current_live_id = Some(5);
+                app.live_chat.toggle_original(3, 0);
             }
             preview::render(
                 &ctx,
@@ -2273,76 +2498,68 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             |ctx| app.render_ui(ctx),
         )?;
     }
-    // Independent subtitle window, drawn with its real paint path.
-    for (name, size, show_source, phase, target, fixed) in [
-        (
-            "16-subtitle-updating",
-            [720, 360],
-            false,
-            subtitle_window::Phase::Updating,
-            "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
-            &[
-                "来館者はいつでも展示リストに戻れます。",
-                "画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。",
-            ][..],
-        ),
-        (
-            "17-subtitle-source",
-            [720, 360],
-            true,
-            subtitle_window::Phase::Final,
-            "来館者はいつでも展示リストに戻れます。共通の用語集で地域の地名を統一します。",
-            &[][..],
-        ),
-        (
-            "19-subtitle-minimum",
-            [360, 220],
-            false,
-            subtitle_window::Phase::Updating,
-            "フィードバックカードでは、印象に残った内容、分かりにくい箇所、",
-            &[
-                "来館者はいつでも展示リストに戻れます。",
-                "画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。",
-            ][..],
-        ),
+    // The live chat in its other states.
+    for (name, rows, font_size) in [
+        ("20-live-new-messages", 10, theme::READING_DEFAULT),
+        ("21-live-empty", 0, theme::READING_DEFAULT),
+        ("22-live-large-text", 5, theme::READING_MAX),
     ] {
         let ctx = egui::Context::default();
         ui::configure_theme(&ctx);
-        let mut state = subtitle_window::State::default();
+        let mut app = App::inert();
+        app.tab = Tab::Live;
+        app.backend_ready = true;
+        app.asr_ready = true;
+        app.startup_decided = true;
+        app.caption_enabled = true;
+        app.audio_enabled = true;
+        app.status = "プレビュー · 接続や保存は行いません".into();
+        app.settings.font_size = font_size;
+        app.rows = demo_talk(rows);
+        app.current_live_id = app.rows.last().map(|row| row.record.id);
+        if name == "20-live-new-messages" {
+            app.live_chat.reading_from_start(7);
+        }
+        preview::render(
+            &ctx,
+            &folder.join(format!("{name}-860x620.png")),
+            860,
+            620,
+            |ctx| app.render_ui(ctx),
+        )?;
+    }
+    // Independent subtitle window, drawn with its real paint path.
+    for (name, size, mut state) in [
+        ("16-subtitle-updating", [720, 360], demo_subtitle(false, 3)),
+        ("17-subtitle-source", [720, 360], demo_subtitle(false, 2)),
+        ("19-subtitle-minimum", [360, 220], demo_subtitle(false, 2)),
+        (
+            "23-subtitle-new-messages",
+            [720, 360],
+            demo_subtitle(false, 6),
+        ),
+        ("24-subtitle-youtube", [720, 600], demo_subtitle(true, 2)),
+        (
+            "25-subtitle-empty",
+            [720, 360],
+            subtitle_window::State::default(),
+        ),
+        (
+            "26-subtitle-large-text",
+            [360, 220],
+            demo_subtitle(false, 1),
+        ),
+    ] {
         state.open = true;
-        state.show_source = show_source;
-        let stamp = plamo_translate::live_text::SourceStamp {
-            kind: plamo_translate::live_text::SourceKind::Audio,
-            generation: 1,
-            video_id: String::new(),
-            epoch: 0,
-        };
-        state.update(
-            Some(&stamp),
-            Some(&subtitle_window::View {
-                stamp: stamp.clone(),
-                paragraph_key: fixed.len() as u64 + 1,
-                revision: 7,
-                source: "Visitors can return to the exhibit list whenever they wish. Common glossary terms keep the local place names consistent.".into(),
-                target: target.into(),
-                phase,
-            }),
-            subtitle_window::Playback::Running,
-        );
-        state.set_history(
-            fixed
-                .iter()
-                .zip(1..)
-                .map(|(target, key)| subtitle_window::View {
-                    stamp: stamp.clone(),
-                    paragraph_key: key,
-                    revision: 1,
-                    source: String::new(),
-                    target: (*target).into(),
-                    phase: subtitle_window::Phase::Final,
-                })
-                .collect(),
-        );
+        match name {
+            "17-subtitle-source" => state.show_source = true,
+            "23-subtitle-new-messages" => state.chat.reading_from_start(4),
+            "24-subtitle-youtube" => state.chat.toggle_original(2, 1),
+            "26-subtitle-large-text" => state.font_size = theme::SUBTITLE_READING_MAX,
+            _ => {}
+        }
+        let ctx = egui::Context::default();
+        ui::configure_theme(&ctx);
         preview::render(
             &ctx,
             &folder.join(format!("{name}.png")),

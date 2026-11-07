@@ -533,7 +533,7 @@ fn every_state_of_the_bar_is_drawn_whole_inside_the_window_at_both_sizes() {
         }
     }
     type State = (&'static str, fn(&mut App), &'static [&'static str]);
-    let states: [State; 7] = [
+    let states: [State; 8] = [
         ("before starting", |_| {}, &["はじめる（合計"]),
         (
             "the translation model",
@@ -571,6 +571,17 @@ fn every_state_of_the_bar_is_drawn_whole_inside_the_window_at_both_sizes() {
             &["1/1 読み上げの声を準備中", "中止しています"],
         ),
         (
+            "a failure in the first step",
+            |app| {
+                started(app, &[Step::Translation, Step::Punctuation, Step::Speech]);
+                app.stop_step(Step::Translation, false, "HTTP 503".into());
+            },
+            &[
+                "1/3 翻訳モデルを準備できませんでした。取得済みのデータは保持しています。",
+                "もう一度",
+            ],
+        ),
+        (
             "a failure with long texts",
             |app| {
                 started(app, &[Step::Translation, Step::Punctuation, Step::Speech]);
@@ -585,7 +596,10 @@ fn every_state_of_the_bar_is_drawn_whole_inside_the_window_at_both_sizes() {
                 );
                 app.service_error = "翻訳サービスの長いエラーです。".repeat(80);
             },
-            &["3/3 音声認識を準備できませんでした", "もう一度"],
+            &[
+                "3/3 音声認識を準備できませんでした。ここまでの準備は保持しています。",
+                "もう一度",
+            ],
         ),
         (
             "a cancelled run",

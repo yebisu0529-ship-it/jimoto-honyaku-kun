@@ -560,10 +560,16 @@ impl App {
                 self.chain_progress(ui, step, number, total);
             }
             Some((Outcome::Failed, Some(step), (number, total))) => {
+                // The first step has no step before it to keep, only what it fetched.
+                let kept = if number == 1 {
+                    "取得済みのデータは保持しています。"
+                } else {
+                    "ここまでの準備は保持しています。"
+                };
                 ui.colored_label(
                     theme::ERROR,
                     format!(
-                        "{number}/{total} {}を準備できませんでした。ここまでの準備は保持しています。",
+                        "{number}/{total} {}を準備できませんでした。{kept}",
                         step.name()
                     ),
                 );

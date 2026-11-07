@@ -1,7 +1,7 @@
 //! Optional, pinned speech.cpp / Irodori-TTS installation, isolated from translation.
 use crate::{
     hardware,
-    installer::{self, Artifact, Progress, RuntimeFile},
+    installer::{self, Artifact, Progress, RuntimeFile, Saved},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use std::{
 
 const METADATA: &[u8] = include_bytes!("../scripts/speech-runtime.json");
 const RUNTIME_DIRECTORY: &str = "speech-0.10.1-windows-x64-vulkan";
+const RECORD_MISMATCH: &str = "読み上げのインストール記録が選択されたモデルと一致しません。";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SpeechInstallation {
@@ -21,6 +22,20 @@ pub struct SpeechInstallation {
     pub model: PathBuf,
     pub backend: String,
     pub voice: String,
+}
+impl SpeechInstallation {
+    /// This record is `expected`, written while the folder was somewhere else.
+    /// Only the path fields are left out of the comparison.
+    fn moved_to(&self, root: &Path, expected: &Self) -> bool {
+        let pinned = Self {
+            executable: expected.executable.clone(),
+            model: expected.model.clone(),
+            ..self.clone()
+        };
+        pinned == *expected
+            && installer::relocated(root, &expected.executable, &self.executable)
+            && installer::relocated(root, &expected.model, &self.model)
+    }
 }
 #[derive(Deserialize)]
 struct RuntimeSpec {
@@ -53,7 +68,10 @@ struct Manifest {
     installation: SpeechInstallation,
 }
 fn metadata() -> Result<Metadata> {
-    let metadata: Metadata = serde_json::from_slice(METADATA)?;
+    metadata_of(METADATA)
+}
+fn metadata_of(release: &[u8]) -> Result<Metadata> {
+    let metadata: Metadata = serde_json::from_slice(release)?;
     ensure!(
         metadata.schema_version == 1,
         "読み上げモデルの情報形式が不正です。"
@@ -67,16 +85,16 @@ pub(crate) fn downloads() -> Result<Vec<Artifact>> {
         .chain(data.notices)
         .collect())
 }
-fn metadata_hash() -> String {
-    format!("{:x}", Sha256::digest(METADATA))
+fn metadata_hash(release: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(release))
 }
 /// A record keeps the SHA-256 of the metadata bytes it was installed with.
 /// Line endings in those bytes vary between builds without changing any
 /// pinned artifact, so the parsed content decides whether it is this model.
-fn installed_metadata_matches(recorded_sha256: &str, installed: &[u8]) -> bool {
+fn installed_metadata_matches(release: &[u8], recorded_sha256: &str, installed: &[u8]) -> bool {
     let parse = |bytes: &[u8]| serde_json::from_slice::<serde_json::Value>(bytes).ok();
     format!("{:x}", Sha256::digest(installed)) == recorded_sha256
-        && parse(installed).is_some_and(|content| parse(METADATA) == Some(content))
+        && parse(installed).is_some_and(|content| parse(release) == Some(content))
 }
 fn read_small(path: &Path) -> Result<Vec<u8>> {
     installer::safe_file(path)?;
@@ -152,41 +170,52 @@ fn verify_runtime(root: &Path, spec: &RuntimeSpec, cancel: &AtomicBool) -> Resul
 /// Inspect only a committed, contained installation. The 1.92GB model was hashed
 /// before commit; startup checks its size and hashes the much smaller runtime.
 pub fn load(root: &Path) -> Result<Option<SpeechInstallation>> {
+    read_saved(METADATA, root)?.current(RECORD_MISMATCH)
+}
+
+fn read_saved(release: &[u8], root: &Path) -> Result<Saved<SpeechInstallation>> {
     if !root.exists() {
-        return Ok(None);
+        return Ok(Saved::Absent);
     }
     installer::safe_components(root, false)?;
     let root = fs::canonicalize(root)?;
     let path = root.join("installation.json");
     installer::safe_file(&path)?;
     if !path.exists() {
-        return Ok(None);
+        return Ok(Saved::Absent);
     }
     let manifest: Manifest = serde_json::from_slice(&read_small(&path)?)?;
-    let metadata = metadata()?;
-    validate_backend(&manifest.installation.backend)?;
+    let metadata = metadata_of(release)?;
+    let saved = manifest.installation;
+    validate_backend(&saved.backend)?;
     let installed_metadata = read_small(&root.join("metadata.json"))?;
+    let wanted = expected(&root, &saved.backend, &metadata);
+    let current = saved == wanted;
     ensure!(
         manifest.version == 1
-            && installed_metadata_matches(&manifest.metadata_sha256, &installed_metadata)
-            && manifest.installation == expected(&root, &manifest.installation.backend, &metadata),
-        "読み上げのインストール記録が選択されたモデルと一致しません。"
+            && installed_metadata_matches(release, &manifest.metadata_sha256, &installed_metadata)
+            && (current || saved.moved_to(&root, &wanted)),
+        RECORD_MISMATCH
     );
-    installer::safe_file(&manifest.installation.model)?;
+    installer::safe_file(&wanted.model)?;
     ensure!(
-        fs::metadata(&manifest.installation.model)?.len() == metadata.model.artifact.bytes,
+        fs::metadata(&wanted.model)?.len() == metadata.model.artifact.bytes,
         "保存済みの読み上げモデルのサイズが変わっています。再度準備してください。"
     );
     let cancel = AtomicBool::new(false);
     verify_runtime(
-        manifest.installation.executable.parent().unwrap(),
+        wanted.executable.parent().unwrap(),
         &metadata.runtime,
         &cancel,
     )?;
     for notice in &metadata.notices {
         installer::verify_file(&root.join("notices").join(&notice.name), notice, &cancel)?;
     }
-    Ok(Some(manifest.installation))
+    Ok(if current {
+        Saved::Current(wanted)
+    } else {
+        Saved::Moved
+    })
 }
 /// What `install` would download now: the runtime archive unless it is already
 /// unpacked, the model unless the whole file is saved, and the unsaved notices.
@@ -214,19 +243,32 @@ pub fn install(
     root: &Path,
     backend: &str,
     cancel: Arc<AtomicBool>,
-    mut on_progress: impl FnMut(Progress),
+    on_progress: impl FnMut(Progress),
 ) -> Result<SpeechInstallation> {
     validate_backend(backend)?;
     installer::cancelled(&cancel)?;
     check_platform()?;
-    let metadata = metadata()?;
+    install_release(METADATA, root, backend, cancel, on_progress)
+}
+
+/// `install` for the pinned `release`, which tests replace with a small one.
+fn install_release(
+    release: &[u8],
+    root: &Path,
+    backend: &str,
+    cancel: Arc<AtomicBool>,
+    mut on_progress: impl FnMut(Progress),
+) -> Result<SpeechInstallation> {
+    let metadata = metadata_of(release)?;
     installer::safe_components(root, true)?;
     let root = fs::canonicalize(root)?;
     let _lock = installer::RootLock::acquire(&root)?;
     // An unrelated or damaged pre-existing manifest is never replaced as a side
     // effect of preparing this optional feature. Incomplete downloads have no
-    // manifest and continue through the normal resumable path below.
-    load(&root)
+    // manifest and continue through the normal resumable path below. The record
+    // of a moved folder is neither: it passes, the files are verified below at
+    // this folder's paths, and the record is written for them.
+    read_saved(release, &root)
         .context("既存の読み上げ設定を保持しました。インストール記録を確認してください。")?;
     let installation = expected(&root, backend, &metadata);
     let runtime = installation.executable.parent().unwrap();
@@ -314,13 +356,13 @@ pub fn install(
             &mut on_progress,
         )?;
     }
-    installer::atomic_write(&root.join("metadata.json"), METADATA)?;
+    installer::atomic_write(&root.join("metadata.json"), release)?;
     installer::cancelled(&cancel)?;
     installer::atomic_write(
         &root.join("installation.json"),
         &serde_json::to_vec_pretty(&Manifest {
             version: 1,
-            metadata_sha256: metadata_hash(),
+            metadata_sha256: metadata_hash(release),
             installation: installation.clone(),
         })?,
     )?;
@@ -336,6 +378,226 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::installer::fixtures::{self, Folder};
+
+    const MODEL: &[u8] = b"test speech model";
+    const NOTICE: &[u8] = b"test notice";
+    const REVISION: &str = "0123456789abcdef";
+
+    fn release() -> Vec<u8> {
+        let with = |artifact: Artifact, field: &str, value: &str| {
+            let mut spec = serde_json::to_value(artifact).unwrap();
+            spec[field] = value.into();
+            spec
+        };
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "runtime": with(
+                fixtures::artifact("speech-test.zip", b"runtime archive"),
+                "executable",
+                "speech.exe",
+            ),
+            "model": with(fixtures::artifact("test-voice.gguf", MODEL), "revision", REVISION),
+            "notices": [fixtures::artifact("README.md", NOTICE)],
+        }))
+        .unwrap()
+    }
+    fn runtime_folder(root: &Path, data: &Metadata) -> PathBuf {
+        let wanted = expected(root, "cpu", data);
+        wanted.executable.parent().unwrap().to_path_buf()
+    }
+    fn model_file(root: &Path, data: &Metadata) -> PathBuf {
+        expected(root, "cpu", data).model
+    }
+    /// What a real install leaves under `root`: the downloads unpacked and
+    /// saved, then the record.
+    fn installed(root: &Path, release: &[u8]) -> SpeechInstallation {
+        let data = metadata_of(release).unwrap();
+        let runtime = runtime_folder(root, &data);
+        let index = RuntimeIndex {
+            artifact: data.runtime.artifact.clone(),
+            files: vec![
+                fixtures::package_file(&runtime, "speech.exe", b"executable"),
+                fixtures::package_file(&runtime, "vulkan-shim.dll", b"library"),
+            ],
+        };
+        fixtures::write(
+            &runtime.join("runtime.json"),
+            &serde_json::to_vec(&index).unwrap(),
+        );
+        fixtures::write(&model_file(root, &data), MODEL);
+        for notice in &data.notices {
+            fixtures::write(&root.join("notices").join(&notice.name), NOTICE);
+        }
+        install_at(release, root).0.unwrap()
+    }
+    /// The install, and the stages it reported.
+    fn install_at(release: &[u8], root: &Path) -> (Result<SpeechInstallation>, Vec<String>) {
+        let mut stages = Vec::new();
+        let result = install_release(
+            release,
+            root,
+            "cpu",
+            Arc::new(AtomicBool::new(false)),
+            |progress| stages.push(progress.stage),
+        );
+        (result, stages)
+    }
+    fn edit_record(root: &Path, change: impl FnOnce(&mut Manifest)) {
+        let path = root.join("installation.json");
+        let mut record: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        change(&mut record);
+        fs::write(path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    }
+    /// An installation made in one folder and moved to another.
+    fn moved(folder: &Folder, release: &[u8]) -> (PathBuf, PathBuf, SpeechInstallation) {
+        let before = folder.path.join("before").join("speech");
+        let after = folder.path.join("after").join("speech");
+        let installation = installed(&before, release);
+        fs::create_dir_all(after.parent().unwrap()).unwrap();
+        fs::rename(&before, &after).unwrap();
+        (before, after, installation)
+    }
+    /// Moves an installation and lets `spoil` change it at its new place. The
+    /// install has to refuse it for `evidence` and change no file.
+    #[track_caller]
+    fn assert_refused(release: &[u8], evidence: &str, spoil: impl FnOnce(&Path)) {
+        let folder = Folder::new();
+        let (_, after, _) = moved(&folder, release);
+        spoil(&after);
+        let files = fixtures::snapshot(&after);
+        let error = format!("{:#}", install_at(release, &after).0.unwrap_err());
+        assert!(error.contains(evidence), "{error}");
+        assert_eq!(
+            fixtures::snapshot(&after),
+            files,
+            "a refused install changes no file"
+        );
+    }
+    #[track_caller]
+    fn assert_record_refused(
+        release: &[u8],
+        evidence: &str,
+        change: impl FnOnce(&Path, &mut Manifest),
+    ) {
+        assert_refused(release, evidence, |root| {
+            edit_record(root, |record| change(root, record))
+        });
+    }
+
+    #[test]
+    fn a_moved_installation_is_verified_where_it_now_is_and_its_record_rewritten() {
+        let release = release();
+        let folder = Folder::new();
+        let (before, after, was) = moved(&folder, &release);
+        assert!(
+            matches!(read_saved(&release, &after), Ok(Saved::Moved)),
+            "a reader still refuses the old paths"
+        );
+        let (result, stages) = install_at(&release, &after);
+        let installation = result.unwrap();
+        assert!(
+            stages.iter().all(|s| s == "verify" || s == "complete"),
+            "nothing is downloaded: {stages:?}"
+        );
+        let here = |path: &Path| after.join(path.strip_prefix(&before).unwrap());
+        assert_eq!(
+            installation,
+            SpeechInstallation {
+                executable: here(&was.executable),
+                model: here(&was.model),
+                ..was.clone()
+            }
+        );
+        let record: Manifest =
+            serde_json::from_slice(&fs::read(after.join("installation.json")).unwrap()).unwrap();
+        assert_eq!(record.installation, installation);
+        assert!(matches!(
+            read_saved(&release, &after),
+            Ok(Saved::Current(now)) if now == installation
+        ));
+        assert!(!before.exists(), "the old folder is neither read nor made");
+        let files = fixtures::snapshot(&after);
+        assert_eq!(install_at(&release, &after).0.unwrap(), installation);
+        assert_eq!(
+            fixtures::snapshot(&after),
+            files,
+            "installing again changes nothing"
+        );
+    }
+    #[test]
+    fn a_copied_installation_leaves_the_folder_it_was_copied_from_untouched() {
+        let release = release();
+        let folder = Folder::new();
+        let source = folder.path.join("source").join("speech");
+        let copy = folder.path.join("copy").join("speech");
+        installed(&source, &release);
+        fixtures::copy_tree(&source, &copy);
+        let files = fixtures::snapshot(&source);
+        assert!(matches!(read_saved(&release, &copy), Ok(Saved::Moved)));
+        install_at(&release, &copy).0.unwrap();
+        assert_eq!(fixtures::snapshot(&source), files);
+        assert!(matches!(
+            read_saved(&release, &copy),
+            Ok(Saved::Current(now)) if now.model.starts_with(&copy)
+        ));
+    }
+    #[test]
+    fn a_moved_record_of_another_pinned_release_still_blocks_the_install() {
+        let release = release();
+        let mismatch = RECORD_MISMATCH;
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.metadata_sha256 = "0".repeat(64)
+        });
+        assert_record_refused(&release, mismatch, |_, m| m.version = 2);
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.installation.voice = "someone".into()
+        });
+        let other = String::from_utf8(release.clone())
+            .unwrap()
+            .replace(REVISION, "fedcba9876543210");
+        assert_refused(&release, mismatch, |root| {
+            fs::write(root.join("metadata.json"), &other).unwrap();
+            edit_record(root, |m| {
+                m.metadata_sha256 = metadata_hash(other.as_bytes())
+            });
+        });
+    }
+    #[test]
+    fn a_record_that_names_other_files_than_the_folder_holds_is_not_a_moved_one() {
+        let release = release();
+        let mismatch = RECORD_MISMATCH;
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.installation.model.set_file_name("other.gguf")
+        });
+        assert_record_refused(&release, mismatch, |root, m| {
+            m.installation.model = root.join("test-voice.gguf")
+        });
+        assert_record_refused(&release, mismatch, |_, m| {
+            m.installation.executable = PathBuf::from("speech.exe")
+        });
+    }
+    #[test]
+    fn a_moved_installation_with_a_damaged_file_is_refused_and_the_old_record_kept() {
+        let release = release();
+        let data = metadata_of(&release).unwrap();
+        assert_refused(
+            &release,
+            "SHA256が一致しません: vulkan-shim.dll",
+            |root| fixtures::corrupt(&runtime_folder(root, &data).join("vulkan-shim.dll")),
+        );
+        assert_refused(
+            &release,
+            "SHA256が一致しません: test-voice.gguf",
+            |root| fixtures::corrupt(&model_file(root, &data)),
+        );
+        assert_refused(&release, "サイズ", |root| {
+            fs::write(model_file(root, &data), &MODEL[1..]).unwrap()
+        });
+        assert_refused(&release, "SHA256が一致しません: README.md", |root| {
+            fixtures::corrupt(&root.join("notices/README.md"))
+        });
+    }
     #[test]
     fn pins_are_exact_and_do_not_require_a_reference_voice() {
         let metadata = metadata().unwrap();
@@ -379,7 +641,7 @@ mod tests {
         assert!(load(&root).unwrap().is_none());
         let manifest = Manifest {
             version: 1,
-            metadata_sha256: metadata_hash(),
+            metadata_sha256: metadata_hash(METADATA),
             installation: SpeechInstallation {
                 executable: root.join("../speech.exe"),
                 model: root.join("../model.gguf"),

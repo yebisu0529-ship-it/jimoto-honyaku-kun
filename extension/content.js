@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   let video = null, captionRoot = null, videoId = "", epoch = 0;
-  let timer = null, previous = "", lastObserved = "";
+  let timer = null, previous = "", lastObserved = "", shown = "", shownAt = 0;
   const crop = text => text.slice(0, 4000).replace(/[\uD800-\uDBFF]$/, "");
   const idFromUrl = () => {
     const url = new URL(location.href);
@@ -26,14 +26,23 @@
         && getComputedStyle(node).display !== "none")
       .map(node => node.textContent || "").join(" ").trim());
   }
+  // On a hidden page YouTube may stop updating captions and leave the last cue
+  // on screen (a minimized window does). A cue unchanged there for 5 s of the
+  // video is treated as cleared, not as a live caption.
+  function liveText() {
+    const text = visibleText();
+    return text && document.hidden && text === shown
+      && Math.abs((video?.currentTime ?? 0) - shownAt) >= 5 ? "" : text;
+  }
   function observeText() {
     const text = visibleText();
+    if (text !== shown && !video?.seeking) { shown = text; shownAt = video?.currentTime ?? 0; }
     if (text === lastObserved) return;
     lastObserved = text;
     clearTimeout(timer);
     timer = null;
     if (!text || video?.paused) { send(text); return; }
-    timer = setTimeout(() => { timer = null; send(visibleText()); }, 300);
+    timer = setTimeout(() => { timer = null; send(liveText()); }, 300);
   }
   const captions = new MutationObserver(observeText);
   function reset() {
@@ -73,7 +82,10 @@
   setInterval(() => {
     if (!video || video.paused || video.ended || video.seeking || timer !== null) return;
     const text = visibleText();
-    if (text && text === lastObserved) send(text, true);
+    if (!text || text !== lastObserved) return;
+    const live = liveText();
+    if (live) send(live, true);
+    else send("");
   }, 2000);
   refresh();
 })();

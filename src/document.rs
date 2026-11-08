@@ -603,13 +603,26 @@ impl App {
         }
         for snapshot in self.document.snapshots(kind) {
             let id = self.document_row(&snapshot);
+            // A paragraph whose translation already covers all of its text has
+            // nothing left to finish. The end of a video, a seek, another video
+            // or an input switch stops it complete, not interrupted.
+            let covered = self
+                .document
+                .translated_source
+                .get(&(snapshot.stamp.clone(), snapshot.key))
+                .is_some_and(|source| *source == snapshot.text);
             if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
                 if row.record.paragraph.as_ref().is_some_and(|p| {
                     p.state != ParagraphState::Failed && p.state != ParagraphState::Final
                 }) {
+                    let complete = covered && !row.record.translation.trim().is_empty();
                     row.record.paragraph = Some(ParagraphMeta {
                         revision: snapshot.revision,
-                        state: ParagraphState::Interrupted,
+                        state: if complete {
+                            ParagraphState::Final
+                        } else {
+                            ParagraphState::Interrupted
+                        },
                         close_reason: Some(reason.into()),
                     });
                 }
@@ -1476,6 +1489,97 @@ mod tests {
         });
         let (_, request, _) = take_job(&mut app, SourceKind::Caption, 5_000);
         assert!(request.previous_source.is_empty() && request.previous_target.is_empty());
+    }
+
+    fn tip_caption(text: &str, position: f64, paused: bool, epoch: u64) -> bridge::Caption {
+        bridge::Caption {
+            text: text.into(),
+            video_id: "tip".into(),
+            position,
+            paused,
+            epoch,
+        }
+    }
+
+    const TIP: &str = "thanks for watching this short tip and see you next time";
+    const TIP_TARGET: &str = "この短いコツを見てくれてありがとう。またね。";
+
+    fn translated_tip() -> App {
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        app.accept_caption(tip_caption(TIP, 5.0, false, 1));
+        app.document_take_caption();
+        let (id, request, options) = take_job(&mut app, SourceKind::Caption, 1_500);
+        app.document_done(id, request, options, Ok(TIP_TARGET.into()), 0.1);
+        app
+    }
+
+    #[test]
+    fn a_video_that_ends_keeps_its_translated_last_paragraph_finished() {
+        let mut app = translated_tip();
+        // The extension reports the end of a video as a new epoch with an empty caption.
+        app.accept_caption(tip_caption("", 9.9, true, 2));
+        let row = &app.rows[0];
+        assert_eq!(
+            row.record.paragraph.as_ref().map(|p| p.state),
+            Some(ParagraphState::Final),
+            "the translation covers the whole paragraph"
+        );
+        assert!(row.is_confirmed());
+        assert_eq!(row.record.source, TIP);
+        assert_eq!(row.record.translation, TIP_TARGET);
+    }
+
+    #[test]
+    fn a_video_that_ends_before_its_last_words_are_translated_stays_interrupted() {
+        let mut app = translated_tip();
+        app.accept_caption(tip_caption(
+            &format!("{TIP} and remember to subscribe"),
+            7.0,
+            false,
+            1,
+        ));
+        app.document_take_caption();
+        app.accept_caption(tip_caption("", 9.9, true, 2));
+        let row = &app.rows[0];
+        assert_eq!(
+            row.record.paragraph.as_ref().map(|p| p.state),
+            Some(ParagraphState::Interrupted),
+            "the last words were never translated"
+        );
+        assert!(!row.is_confirmed());
+    }
+
+    #[test]
+    fn captions_taking_over_keep_the_translated_audio_paragraph_finished() {
+        let mut app = audio_app();
+        app.caption_enabled = true;
+        app.settings.asr_backend = "nemotron".into();
+        let target = "字幕について質問したくて、動画を一時停止しました。";
+        feed(
+            &mut app,
+            "I paused the video to ask a question about the captions",
+            0,
+            3_000,
+        );
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 4_000);
+        app.document_done(id, request, options, Ok(target.into()), 0.1);
+        // Captions close the audio paragraph, then the recognizer restarts for
+        // the caption interval, as process_streaming_audio does.
+        app.accept_caption(tip_caption("Thanks for joining us today.", 0.6, false, 1));
+        app.nemotron_epoch += 1;
+        app.clear_streaming_audio();
+        let row = app
+            .rows
+            .iter()
+            .find(|row| row.record.translation == target)
+            .unwrap();
+        assert_eq!(
+            row.record.paragraph.as_ref().map(|p| p.state),
+            Some(ParagraphState::Final),
+            "the question was translated in full before the captions came"
+        );
+        assert!(row.is_confirmed());
     }
 
     #[test]

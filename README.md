@@ -73,7 +73,7 @@ translated by PLaMo
 基本の文章翻訳・Windows OCR・YouTube字幕には追加環境は不要です。以下の機能は使うときだけアプリ内の「設定」から追加できます。
 
 - **画面の文字認識（OCR）**：標準の **Windows OCR** のほか、軽量な **Indra OCR**（CPU）、高精度な **PaddleOCR-VL-1.6** を追加できます。
-- **YouTube字幕連携**：同梱の `extension` フォルダを Chrome / Edge に読み込み、アプリの接続キーを設定すると表示中のCC字幕を自動翻訳します（手順は [extension/README.md](extension/README.md)）。
+- **YouTube字幕連携**：同梱の `extension` フォルダを Chrome / Edge に読み込み、アプリの接続キーを設定すると表示中のCC字幕を自動翻訳します（手順は [extension/README.md](extension/README.md)）。YouTubeの画面が隠れているあいだ（最小化・別のタブなど）は、字幕が届きません。
 - **PC音声の認識（STT）**：英語向けの軽量な **Nemotron Speech** は、初回の「はじめる」で準備します。多言語対応の **Qwen3-ASR**（CUDA）や **Whisper**（CPU）は、設定で選ぶと追加できます。
 - **日本語の読み上げ（TTS）**：設定の「訳文の読み上げ」で「読み上げを使う」をオンにし、**Irodori-TTS** を導入すると、標準の固定声や手元の参照音声（WAV）から登録した声で訳文を読み上げられます。
 

@@ -317,7 +317,18 @@ impl App {
     }
     fn document_ensure_scope(&mut self, kind: SourceKind) {
         let stamp = self.document_stamp(kind);
-        if self.document.source(kind).stamp() == &stamp {
+        let current = self.document.source(kind).stamp();
+        if current == &stamp {
+            return;
+        }
+        // A restarted recognizer is still the same audio source. What it heard
+        // is closed and translated to the end; later speech gets the new stamp.
+        if kind == SourceKind::Audio
+            && current.generation == stamp.generation
+            && current.video_id == stamp.video_id
+        {
+            self.document_close(SourceKind::Audio);
+            self.document.audio.restamp(stamp);
             return;
         }
         if self

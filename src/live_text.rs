@@ -946,7 +946,12 @@ impl Accumulator {
                     && (words.saturating_sub(word_count(&p.last_sent_text)) >= self.policy.interim_added_words
                         || cjk.saturating_sub(cjk_count(&p.last_sent_text)) >= self.policy.interim_added_cjk_chars
                         // Corrections are revisions too: they need not add words.
-                        || !p.snapshot.text.starts_with(&p.last_sent_text))
+                        || !p.snapshot.text.starts_with(&p.last_sent_text)
+                        // When the words pause, the translation catches up with
+                        // a short tail too, so a paragraph cut off later by the
+                        // end of a video or an input switch is translated in full.
+                        || (now_ms.saturating_sub(p.changed_at) >= self.policy.debounce_ms
+                            && p.snapshot.text != p.last_sent_text))
             } else {
                 words >= self.policy.first_words
                     || cjk >= self.policy.first_cjk_chars
@@ -2027,6 +2032,31 @@ mod tests {
         assert!(a.is_inflight());
         assert!(!a.fail(&closed, 50));
         assert!(a.fail(&fresh, 50));
+    }
+
+    #[test]
+    fn a_pause_in_the_words_lets_the_translation_catch_up_with_a_short_tail() {
+        let mut a = Accumulator::new(stamp(SourceKind::Audio), roomy());
+        audio(
+            &mut a,
+            0,
+            "thanks for watching this short tip and please try it",
+            0,
+        );
+        let first = a.next_request(0).unwrap();
+        assert!(matches!(
+            a.accept(&first, "短いコツを見てくれてありがとう", 500),
+            Acceptance::Interim { .. }
+        ));
+        audio(&mut a, 1, "see you next time", 2_500);
+        assert!(
+            a.next_request(3_000).is_none(),
+            "four new words wait while the words may still continue"
+        );
+        let caught_up = a
+            .next_request(3_700)
+            .expect("the words paused, so the short tail is translated");
+        assert!(caught_up.snapshot.text.ends_with("see you next time"));
     }
 
     #[test]

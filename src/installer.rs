@@ -331,6 +331,37 @@ pub(crate) fn verify_file(path: &Path, artifact: &Artifact, cancel: &AtomicBool)
     Ok(())
 }
 
+/// What the installation record in a folder says, once the files it describes
+/// have passed their checks at the places this folder gives them.
+pub(crate) enum Saved<T> {
+    Absent,
+    Current(T),
+    /// The pinned release and the files agree, but the record still names the
+    /// folder they were in before they were moved or copied.
+    Moved,
+}
+
+impl<T> Saved<T> {
+    /// What a reader may use. Only an install rewrites a moved record, so a
+    /// reader gets `mismatch` as the error.
+    pub(crate) fn current(self, mismatch: &str) -> Result<Option<T>> {
+        match self {
+            Self::Absent => Ok(None),
+            Self::Current(installation) => Ok(Some(installation)),
+            Self::Moved => bail!("{mismatch}"),
+        }
+    }
+}
+
+/// Whether `saved` is the path `expected` under `root`, as it was written in the
+/// folder these files were in before: absolute, with the same part below it.
+pub(crate) fn relocated(root: &Path, expected: &Path, saved: &Path) -> bool {
+    saved.is_absolute()
+        && expected
+            .strip_prefix(root)
+            .is_ok_and(|below| saved.ends_with(below))
+}
+
 #[derive(Clone, Copy)]
 enum NetworkPolicy {
     Official,
@@ -1468,6 +1499,89 @@ pub fn install(
     Ok(result)
 }
 
+/// What the setup modules' tests share to lay out a small installation of a
+/// release of their own, since the pinned files cannot be rebuilt.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// A temporary folder under its canonical path, so no junction lies on the way.
+    pub(crate) struct Folder {
+        _guard: tempfile::TempDir,
+        pub(crate) path: PathBuf,
+    }
+    impl Folder {
+        pub(crate) fn new() -> Self {
+            let guard = tempfile::tempdir().unwrap();
+            let path = fs::canonicalize(guard.path()).unwrap();
+            Self {
+                _guard: guard,
+                path,
+            }
+        }
+    }
+
+    /// A pinned file of a test release. Its URL passes the official-host check,
+    /// and a test always has the file on disk already, so nothing is fetched.
+    pub(crate) fn artifact(name: &str, content: &[u8]) -> Artifact {
+        Artifact {
+            name: name.into(),
+            url: format!("https://github.com/pinned/test-release/releases/download/v1/{name}"),
+            bytes: content.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(content)),
+        }
+    }
+
+    pub(crate) fn write(path: &Path, content: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    /// Writes one file of a package below `directory` and returns its inventory line.
+    pub(crate) fn package_file(directory: &Path, path: &str, content: &[u8]) -> RuntimeFile {
+        write(&directory.join(path), content);
+        RuntimeFile {
+            path: path.into(),
+            bytes: content.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(content)),
+        }
+    }
+
+    /// Every file below `folder` with its bytes.
+    pub(crate) fn snapshot(folder: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        let mut pending = vec![folder.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.insert(
+                        path.strip_prefix(folder).unwrap().to_path_buf(),
+                        fs::read(&path).unwrap(),
+                    );
+                }
+            }
+        }
+        files
+    }
+
+    pub(crate) fn copy_tree(from: &Path, to: &Path) {
+        for (relative, bytes) in snapshot(from) {
+            write(&to.join(relative), &bytes);
+        }
+    }
+
+    /// The file keeps its size and loses its content.
+    pub(crate) fn corrupt(path: &Path) {
+        let mut bytes = fs::read(path).unwrap();
+        bytes[0] ^= 0xff;
+        fs::write(path, bytes).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2074,6 +2188,36 @@ mod tests {
         atomic_write(&path, b"old").unwrap();
         atomic_write(&path, b"new").unwrap();
         assert_eq!(fs::read(path).unwrap(), b"new");
+    }
+    #[test]
+    fn a_saved_path_is_the_expected_one_only_when_just_the_folder_in_front_differs() {
+        let root = Path::new(r"D:\data\nemotron");
+        let expected = root.join("models").join("rev").join("model.gguf");
+        for (saved, same_place) in [
+            (r"D:\data\nemotron\models\rev\model.gguf", true),
+            (r"E:\backup\data-2\nemotron\models\rev\model.gguf", true),
+            (r"\\?\E:\backup\nemotron\models\rev\model.gguf", true),
+            (r"E:\backup\nemotron\models\rev\other.gguf", false),
+            (r"E:\backup\nemotron\models\other\model.gguf", false),
+            (r"E:\backup\nemotron\model.gguf", false),
+            (r"models\rev\model.gguf", false),
+            (r"D:\data\nemotron\..\model.gguf", false),
+        ] {
+            assert_eq!(
+                relocated(root, &expected, Path::new(saved)),
+                same_place,
+                "{saved}"
+            );
+        }
+    }
+    #[test]
+    fn a_reader_takes_only_a_record_that_names_its_own_folder() {
+        assert_eq!(Saved::<u8>::Absent.current("moved").unwrap(), None);
+        assert_eq!(Saved::Current(7).current("moved").unwrap(), Some(7));
+        assert_eq!(
+            Saved::<u8>::Moved.current("moved").unwrap_err().to_string(),
+            "moved"
+        );
     }
     #[test]
     fn load_only_accepts_committed_contained_selected_paths() {

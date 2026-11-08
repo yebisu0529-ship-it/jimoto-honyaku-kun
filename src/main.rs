@@ -37,6 +37,7 @@ mod screen_feed;
 mod screen_ocr;
 mod services;
 mod setup;
+mod setup_chain;
 mod streaming;
 mod subtitle_window;
 mod theme;
@@ -1363,21 +1364,7 @@ impl App {
                 }
                 Event::GpuMemory(gpus) => self.accept_gpu_memory(gpus),
                 Event::InstallProgress(progress) => self.setup.progress = Some(progress),
-                Event::Installed(result) => {
-                    self.setup.installing = false;
-                    match result {
-                        Ok(result) => self.adopt_installation(result),
-                        Err(_) if self.setup.cancel.load(Ordering::Relaxed) => {
-                            self.setup.cancelled = true;
-                            self.setup.error.clear();
-                            self.setup.progress = None;
-                        }
-                        Err(error) => {
-                            self.setup.error = error;
-                            self.setup.progress = None;
-                        }
-                    }
-                }
+                Event::Installed(result) => self.translation_installed(result),
                 Event::ServiceStatus { translation, asr } => {
                     self.accept_service_status(translation, asr)
                 }
@@ -1386,28 +1373,7 @@ impl App {
                         self.audio_progress = Some(progress);
                     }
                 }
-                Event::AudioPrepared { backend, result } => {
-                    self.audio_installing = false;
-                    self.audio_progress = None;
-                    if backend != self.settings.asr_backend {
-                        continue;
-                    }
-                    match result {
-                        Ok(()) => {
-                            self.audio_confirmation = false;
-                            if let Err(error) = self.load_audio_installation() {
-                                self.service_error = error.to_string();
-                                self.audio_start_requested = false;
-                            } else {
-                                self.start_asr();
-                            }
-                        }
-                        Err(error) => {
-                            self.service_error = error;
-                            self.audio_start_requested = false;
-                        }
-                    }
-                }
+                Event::AudioPrepared { backend, result } => self.audio_prepared(backend, result),
             }
         }
         if let Some(text) = self.take_ready_ocr() {
@@ -1773,6 +1739,7 @@ impl eframe::App for App {
         }
         self.update_window_mode(ctx);
         self.process(ctx);
+        self.run_chain();
         self.tick_screen_feed(ctx);
         self.sync_capture_protection(ctx);
         self.poll_services();
@@ -1789,6 +1756,7 @@ impl eframe::App for App {
             self.restore_normal_view(ctx);
         }
         self.render_ui(ctx);
+        self.run_chain();
         self.audio_setup_ui(ctx);
         self.readout_setup_ui(ctx);
         self.screen_ocr_setup_ui(ctx);
@@ -2239,8 +2207,10 @@ fn demo_subtitle(youtube: bool, fixed: usize, forming: (&str, &str)) -> subtitle
     state
 }
 
-/// The model setup screen on several PCs, at the smallest window and at 4K.
-/// Memory figures are fixtures: previews never measure the machine.
+/// The model setup screen on several PCs, at the smallest window and at 4K,
+/// then the 「はじめる」 run on one of them: step 2 of 3, a failure at step 3, and
+/// the live screen it opens. Memory figures and what is saved are fixtures:
+/// previews never measure the machine or read its folders.
 fn render_setup_views(folder: &Path) -> Result<()> {
     use plamo_translate::{
         hardware::{Gpu, Hardware},
@@ -2274,6 +2244,34 @@ fn render_setup_views(folder: &Path) -> Result<()> {
     let model = |id: &str| catalog.models.iter().find(|m| m.id == id).cloned().unwrap();
     let loaded = model("plamo3-8b-q3_k_m");
     let (big, small) = ("NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4060");
+    let nothing_saved = tempfile::tempdir()?;
+    let fixture = |hardware: &Hardware, in_use: Option<&model_catalog::Model>, selected| {
+        let mut app = App::inert();
+        app.tab = Tab::Setup;
+        app.startup_decided = true;
+        app.status = "プレビュー · 接続や保存は行いません".into();
+        app.setup.hardware = Some(hardware.clone());
+        if let Some(model) = in_use {
+            app.settings.model = format!("models/{}", model.filename);
+            app.settings.gpu_layers = 99;
+            app.backend_ready = true;
+            app.setup.in_use = Some(model.clone());
+            app.setup.saved = ["plamo3-0.8b-q4_k_m", "plamo3-2b-q4_k_m", &model.id]
+                .map(String::from)
+                .into();
+        }
+        app.recalculate_recommendation();
+        if let Some(id) = selected {
+            app.setup.selected_id = id;
+        }
+        app.seed_plan(&setup_chain::Roots::under(nothing_saved.path()));
+        if in_use.is_some()
+            && let Some((_, plan)) = &mut app.setup.plan
+        {
+            plan.steps[0].1 = 0;
+        }
+        app
+    };
     for (name, hardware, in_use, selected) in [
         (
             "setup-a-24gb",
@@ -2314,24 +2312,61 @@ fn render_setup_views(folder: &Path) -> Result<()> {
         for (width, height) in [(860, 620), (2560, 1369)] {
             let ctx = egui::Context::default();
             ui::configure_theme(&ctx);
-            let mut app = App::inert();
-            app.tab = Tab::Setup;
-            app.startup_decided = true;
-            app.status = "プレビュー · 接続や保存は行いません".into();
-            app.setup.hardware = Some(hardware.clone());
-            if let Some(model) = in_use {
-                app.settings.model = format!("models/{}", model.filename);
-                app.settings.gpu_layers = 99;
-                app.backend_ready = true;
-                app.setup.in_use = Some(model.clone());
-                app.setup.saved = ["plamo3-0.8b-q4_k_m", "plamo3-2b-q4_k_m", &model.id]
-                    .map(String::from)
-                    .into();
-            }
-            app.recalculate_recommendation();
-            if let Some(id) = selected {
-                app.setup.selected_id = id.into();
-            }
+            let mut app = fixture(&hardware, in_use, selected.map(String::from));
+            preview::render(
+                &ctx,
+                &folder.join(format!("{name}-{width}x{height}.png")),
+                width,
+                height,
+                |ctx| app.render_ui(ctx),
+            )?;
+        }
+    }
+    let roomy = pc(Some((big, 24 * GIB, 5 * GIB)));
+    // The chain after `done` steps, with the next one started.
+    fn chain_after(app: &mut App, done: usize) -> setup_chain::Chain {
+        let mut chain = setup_chain::Chain::new(app.download_plan().unwrap().steps());
+        for _ in 0..done {
+            let step = chain.take_next().unwrap();
+            chain.complete(step);
+        }
+        chain.take_next();
+        chain
+    }
+    type Change = fn(&mut App);
+    let runs: [(&str, Change); 3] = [
+        ("setup-f-progress", |app| {
+            app.setup.chain = Some(chain_after(app, 1));
+            app.backend_loading = true;
+            app.paragraph_tools.progress = Some(plamo_translate::installer::Progress {
+                stage: "punctuation_download".into(),
+                downloaded_bytes: 41_000_000,
+                total_bytes: Some(64_717_756),
+                message: "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2を取得中".into(),
+            });
+        }),
+        ("setup-g-failed", |app| {
+            let mut chain = chain_after(app, 2);
+            chain.fail(
+                setup_chain::Step::Speech,
+                "nemotron-speech-streaming-en-0.6b.q8_0.ggufの取得に失敗しました（HTTP 503 Service Unavailable）。".into(),
+            );
+            app.setup.chain = Some(chain);
+            app.backend_ready = true;
+        }),
+        ("setup-h-finished", |app| {
+            app.tab = Tab::Live;
+            app.backend_ready = true;
+            app.asr_ready = true;
+            app.status = setup_chain::READY_STATUS.into();
+        }),
+    ];
+    for (name, change) in runs {
+        for (width, height) in [(860, 620), (2560, 1369)] {
+            let ctx = egui::Context::default();
+            ui::configure_theme(&ctx);
+            let mut app = fixture(&roomy, None, None);
+            change(&mut app);
             preview::render(
                 &ctx,
                 &folder.join(format!("{name}-{width}x{height}.png")),
@@ -2346,6 +2381,7 @@ fn render_setup_views(folder: &Path) -> Result<()> {
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
     render_setup_views(folder)?;
+    let nothing_saved = tempfile::tempdir()?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
         for (name, tab, filled) in [
             ("01-text-empty", Tab::Text, false),
@@ -2389,6 +2425,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     warnings: vec![],
                 });
                 app.recalculate_recommendation();
+                app.seed_plan(&setup_chain::Roots::under(nothing_saved.path()));
             }
             if filled {
                 app.input = "The meeting has been rescheduled for next Monday.\nPlease open the project dashboard.".into();

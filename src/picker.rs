@@ -302,7 +302,7 @@ impl App {
         let selected_row = self.setup_model().and_then(|m| picker.row_of(&m));
         let meter = self.meter_view();
         let force_cpu = self.setup.force_cpu;
-        let editable = !self.setup.installing;
+        let editable = !self.setup.installing();
         let mut clicked = None;
         let wide = ui.available_width() >= SIDE_BY_SIDE_MIN_WIDTH;
         let width = ui.available_width().min(PICKER_MAX_WIDTH);
@@ -332,7 +332,7 @@ impl App {
         });
         if let Some(id) = clicked {
             self.setup.selected_id = id;
-            self.setup.cancelled = false;
+            self.forget_stopped_chain();
         }
     }
 }

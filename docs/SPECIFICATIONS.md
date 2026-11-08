@@ -106,6 +106,7 @@ Windowsの既定出力で再生中の音声を取得します（マイク入力�
 | **Whisper base** | 多言語（CPU） | 4GiB | 対応GPUを確認できない環境向けの多言語モデル。 |
 
 - Qwen・Whisper 用の `uv`・管理Python 3.13・仮想環境はアプリ専用領域に作成し、システムのPython環境には影響しません。
+- **音の途切れの判定**：Nemotron は、Windowsが音のかたまりごとに付ける時刻が20 msより大きく飛んだときだけ、認識をやり直します。Windowsの途切れの印（`AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY`）は使いません。途切れのない音でも、すべてのかたまりにこの印が付くPCがあるためです。Qwen・Whisper の2〜4秒の区間も、この印では捨てません。
 
 ---
 

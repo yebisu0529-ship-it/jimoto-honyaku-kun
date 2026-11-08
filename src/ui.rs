@@ -565,7 +565,7 @@ fn parse_glossary(input: &str) -> std::result::Result<Vec<(String, String)>, Str
 fn live_messages<'a>(
     rows: &'a [Row],
     visible: Option<&'a Row>,
-    drafting: bool,
+    drafting: &'a str,
 ) -> Vec<chat::Message<'a>> {
     let mut messages: Vec<_> = rows
         .iter()
@@ -601,8 +601,8 @@ fn live_messages<'a>(
     let talking = messages.last().is_some_and(|last| {
         last.source == chat::Source::PcAudio && last.status == chat::Status::Forming
     });
-    if drafting && !talking {
-        messages.push(chat::Message::typing(chat::Source::PcAudio));
+    if !drafting.is_empty() && !talking {
+        messages.push(chat::Message::typing(chat::Source::PcAudio, drafting));
     }
     messages
 }
@@ -1513,11 +1513,7 @@ impl App {
                 self.ui_probe.reading_font = theme::reading_size(self.settings.font_size);
             }
             let visible = self.document_visible_row().cloned();
-            let messages = live_messages(
-                &self.rows,
-                visible.as_ref(),
-                !self.asr_partial.trim().is_empty(),
-            );
+            let messages = live_messages(&self.rows, visible.as_ref(), self.asr_partial.trim());
             let options = chat::Options {
                 text_size: theme::reading_size(self.settings.font_size),
                 show_originals: self.settings.live_show_original,
@@ -2255,7 +2251,7 @@ mod live_layout_tests {
         video.record.created_at = "2026-11-07T21:48:03+09:00".into();
         let rows = [fixed, open, pending, interrupted, failed, manual, video];
 
-        let messages = live_messages(&rows, None, false);
+        let messages = live_messages(&rows, None, "");
         assert_eq!(
             messages
                 .iter()
@@ -2297,7 +2293,7 @@ mod live_layout_tests {
         paragraph(&mut open, ParagraphState::Open);
         let rows = [row(1, false, false), open.clone()];
         open.record.translation = "分割前の訳文".into();
-        let messages = live_messages(&rows, Some(&open), false);
+        let messages = live_messages(&rows, Some(&open), "");
         assert_eq!(messages[1].target, "分割前の訳文");
         assert_eq!(messages[0].target, rows[0].record.translation);
     }
@@ -2313,25 +2309,27 @@ mod live_layout_tests {
                 .last()
                 .is_some_and(|message| message.id == chat::TYPING)
         };
-        assert!(typing(&live_messages(&[], None, true)));
+        let messages = live_messages(&[], None, "recognised");
+        assert!(typing(&messages));
+        assert_eq!(messages.last().unwrap().original, "recognised");
         assert!(typing(&live_messages(
             std::slice::from_ref(&fixed),
             None,
-            true
+            "recognised"
         )));
         assert!(!typing(&live_messages(
             std::slice::from_ref(&fixed),
             None,
-            false
+            ""
         )));
         assert!(
-            !typing(&live_messages(&[fixed.clone(), open], None, true)),
+            !typing(&live_messages(&[fixed.clone(), open], None, "recognised")),
             "the forming message already ends in dots"
         );
         let mut video = fixed;
         video.record.kind = "YouTube".into();
         assert!(
-            typing(&live_messages(&[video], None, true)),
+            typing(&live_messages(&[video], None, "recognised")),
             "recognised speech is PC audio, whatever came before"
         );
     }

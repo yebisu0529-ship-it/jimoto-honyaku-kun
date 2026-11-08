@@ -1,7 +1,7 @@
 //! A messenger-style transcript of what was said. The live page and the
 //! separate subtitle window both draw through this one component.
 
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::HashSet, sync::Arc, time::Duration};
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, TimeDelta};
 use eframe::egui::{self, Color32, CornerRadius, FontId, Galley, Pos2, Rect, Sense, Vec2};
@@ -134,13 +134,13 @@ pub struct Message<'a> {
     pub failure: Option<&'a str>,
 }
 
-impl Message<'_> {
-    pub fn typing(source: Source) -> Self {
+impl<'a> Message<'a> {
+    pub fn typing(source: Source, original: &'a str) -> Self {
         Message {
             id: TYPING,
             source,
             target: "",
-            original: "",
+            original,
             moment: Moment::default(),
             status: Status::Forming,
             failure: None,
@@ -557,15 +557,15 @@ impl State {
         }
 
         let key = (message.id, bubble.part);
-        let expandable = !bubble.original.is_empty();
+        let expandable = !bubble.original.is_empty() && !shows_original_as_body(bubble);
         let response = ui.interact(
             rect,
             ui.id().with(("bubble", key, bubble.piece)),
             Sense::click(),
         );
         focus_ring(ui, &response, radius);
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, bubble.text));
+        let label = bubble_display_text(bubble);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
         let mut action = None;
         response.context_menu(|ui| action = self.menu(ui, bubble, options));
         if expandable && response.hovered() {
@@ -745,25 +745,47 @@ struct Time {
     beside: bool,
 }
 
+fn shows_original_as_body(bubble: &Bubble<'_>) -> bool {
+    bubble.message.status == Status::Forming
+        && bubble.text.is_empty()
+        && !bubble.original.is_empty()
+}
+
+fn bubble_display_text<'a>(bubble: &'a Bubble<'_>) -> &'a str {
+    if shows_original_as_body(bubble) {
+        bubble.original.as_ref()
+    } else if bubble.message.status == Status::Forming {
+        bubble.text
+    } else if bubble.text.is_empty() {
+        "訳文はありません。"
+    } else {
+        bubble.text
+    }
+}
+
 fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics) -> Laid {
     let message = bubble.message;
     let forming = message.status == Status::Forming;
-    let (text, color) = if forming {
-        (bubble.text, theme::CHAT_TEXT_FORMING)
-    } else if bubble.text.is_empty() {
-        ("訳文はありません。", theme::CHAT_TEXT_MUTED)
+    let shows_original = shows_original_as_body(bubble);
+    let text = bubble_display_text(bubble);
+    let size = if shows_original {
+        theme::SIZE_LABEL
     } else {
-        (bubble.text, theme::CHAT_TEXT)
+        metrics.text
     };
-    let body = (!text.is_empty()).then(|| {
-        wrapped(
-            ui,
-            text,
-            (metrics.text, color),
-            metrics.wrap,
-            Some(metrics.line),
-        )
-    });
+    let color = if forming {
+        theme::CHAT_TEXT_FORMING
+    } else if bubble.text.is_empty() {
+        theme::CHAT_TEXT_MUTED
+    } else {
+        theme::CHAT_TEXT
+    };
+    let line = if shows_original {
+        None
+    } else {
+        Some(metrics.line)
+    };
+    let body = (!text.is_empty()).then(|| wrapped(ui, text, (size, color), metrics.wrap, line));
     let mut width = body.as_ref().map_or(0.0, |body| body.size().x);
     let mut height = body.as_ref().map_or(0.0, |body| body.size().y);
     if body.as_ref().is_some_and(|body| body.rows.len() > 1) {
@@ -785,12 +807,12 @@ fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics
         width = width.max(at.x + DOTS_WIDTH);
         dots = Some(at);
     }
-    let original = (expanded && bubble.last_in_part).then(|| {
+    let original = (expanded && bubble.last_in_part && !shows_original).then(|| {
         let rule = height + ORIGINAL_GAP;
         let text_y = rule + 1.0 + ORIGINAL_GAP;
         let text = wrapped(
             ui,
-            bubble.original,
+            &bubble.original,
             (theme::SIZE_LABEL, theme::CHAT_TEXT_MUTED),
             metrics.wrap,
             None,
@@ -870,7 +892,7 @@ struct Bubble<'a> {
     text: &'a str,
     /// All of the part's translation, which copying and reading take.
     whole: &'a str,
-    original: &'a str,
+    original: Cow<'a, str>,
     first_in_group: bool,
     last_in_part: bool,
     last_in_message: bool,
@@ -899,6 +921,15 @@ fn plan<'a>(messages: &[Message<'a>]) -> Vec<Entry<'a>> {
         }
         let originals = speaker_parts(message.original);
         let count = parts.len();
+        let fallback_original = if originals.len() == count {
+            None
+        } else if originals.is_empty() {
+            Some(Cow::Borrowed(""))
+        } else if originals.len() == 1 {
+            Some(Cow::Borrowed(originals[0]))
+        } else {
+            Some(Cow::Owned(originals.join("\n")))
+        };
         for (part, whole) in parts.into_iter().enumerate() {
             let texts = if message.status == Status::Forming {
                 vec![whole]
@@ -915,11 +946,10 @@ fn plan<'a>(messages: &[Message<'a>]) -> Vec<Entry<'a>> {
                     text,
                     whole,
                     // An original that does not split like its translation is
-                    // shown whole.
-                    original: if originals.len() == count {
-                        originals[part]
-                    } else {
-                        message.original.trim()
+                    // shown whole, with YouTube speaker markers removed.
+                    original: match &fallback_original {
+                        Some(fallback) => fallback.clone(),
+                        None => Cow::Borrowed(originals[part]),
                     },
                     first_in_group: std::mem::take(&mut lead),
                     last_in_part,
@@ -1942,11 +1972,171 @@ mod tests {
         let mut messages = talk(&spoken);
         chat.settle(&messages);
         chat.scroll_up(&messages, 300.0);
-        messages.push(Message::typing(Source::PcAudio));
+        messages.push(Message::typing(Source::PcAudio, ""));
         let output = chat.settle(&messages);
         assert!(
             !announces_new_messages(&output),
             "only the typing bubble arrived"
+        );
+    }
+
+    #[test]
+    fn a_forming_message_without_a_translation_shows_its_original_small_and_faint_with_dots() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let finished = message(1, Source::PcAudio, "Hello world.", at(21, 48, 0));
+        let forming = Message {
+            status: Status::Forming,
+            original: "Hello world.",
+            ..message(2, Source::PcAudio, "", at(21, 48, 30))
+        };
+        let output = chat.settle(&[finished, forming]);
+        let (finished_rect, _) = texts(&output)
+            .into_iter()
+            .find(|(text, _, color)| text == "Hello world." && *color == theme::CHAT_TEXT)
+            .map(|(_, rect, color)| (rect, color))
+            .expect("finished message text");
+        let (forming_rect, forming_color) = texts(&output)
+            .into_iter()
+            .find(|(text, _, color)| text == "Hello world." && *color == theme::CHAT_TEXT_FORMING)
+            .map(|(_, rect, color)| (rect, color))
+            .expect("forming message text");
+        assert_eq!(forming_color, theme::CHAT_TEXT_FORMING);
+        assert!(
+            forming_rect.width() < 0.9 * finished_rect.width(),
+            "smaller than the translation text of a finished message: {} vs {}",
+            forming_rect.width(),
+            finished_rect.width()
+        );
+        let bubble = filled(&output, theme::CHAT_BUBBLE)
+            .into_iter()
+            .find(|rect| rect.contains_rect(forming_rect))
+            .expect("forming bubble");
+        let dots = dots(&output);
+        assert_eq!(dots.len(), 3);
+        assert!(
+            dots.iter().all(|(center, _)| bubble.contains(*center)),
+            "the three dots are inside the same bubble"
+        );
+        assert!(
+            dots.iter()
+                .all(|(center, _)| center.x > forming_rect.right()),
+            "dots sit after the text"
+        );
+    }
+
+    #[test]
+    fn the_speaker_markers_are_not_shown_and_each_speaker_starts_on_a_line_of_their_own() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let message = Message {
+            status: Status::Forming,
+            original: ">> First speaker. ＞＞ Second speaker.",
+            ..message(1, Source::YouTube, "", at(21, 48, 0))
+        };
+        let output = chat.settle(&[message]);
+        assert!(!has_text_containing(&output, ">"));
+        assert!(!has_text_containing(&output, "＞"));
+        assert_eq!(
+            count_text(&output, "First speaker.\nSecond speaker."),
+            1,
+            "each speaker's words start on a line of their own"
+        );
+    }
+
+    #[test]
+    fn the_same_message_with_a_translation_shows_the_translation_and_not_the_original() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let mut message = Message {
+            status: Status::Forming,
+            original: "Hello world.",
+            ..message(1, Source::PcAudio, "", at(21, 48, 0))
+        };
+        let output = chat.settle(&[message]);
+        assert_eq!(count_text(&output, "Hello world."), 1);
+        assert_eq!(count_text(&output, "こんにちは世界。"), 0);
+
+        message.target = "こんにちは世界。";
+        let output = chat.settle(&[message]);
+        assert_eq!(count_text(&output, "こんにちは世界。"), 1);
+        assert_eq!(count_text(&output, "Hello world."), 0);
+    }
+
+    #[test]
+    fn clicking_a_forming_bubble_with_original_does_not_open_it_when_translated() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let mut message = Message {
+            status: Status::Forming,
+            original: "Hello world.",
+            ..message(1, Source::PcAudio, "", at(21, 48, 0))
+        };
+        let output = chat.settle(&[message]);
+        assert_eq!(count_text(&output, "Hello world."), 1);
+        let bubble = bubble_of(&output, "Hello world.");
+        let (over, _) = chat.frame(&[message], vec![Event::PointerMoved(bubble.center())]);
+        assert_eq!(
+            over.platform_output.cursor_icon,
+            egui::CursorIcon::Default,
+            "the pointer does not turn into a hand"
+        );
+        let (output, _) = chat.click(&[message], bubble.center(), PointerButton::Primary);
+        assert_eq!(count_text(&output, "Hello world."), 1);
+
+        message.target = "こんにちは世界。";
+        let output = chat.settle(&[message]);
+        assert_eq!(count_text(&output, "こんにちは世界。"), 1);
+        assert_eq!(
+            count_text(&output, "Hello world."),
+            0,
+            "the original is not shown under the translation"
+        );
+    }
+
+    #[test]
+    fn with_show_originals_on_a_forming_message_without_a_translation_shows_its_original_once() {
+        let mut chat = Chat::new(720.0, 460.0);
+        chat.options.show_originals = true;
+        let message = Message {
+            status: Status::Forming,
+            original: "Hello world.",
+            ..message(1, Source::PcAudio, "", at(21, 48, 0))
+        };
+        let output = chat.settle(&[message]);
+        assert_eq!(count_text(&output, "Hello world."), 1);
+    }
+
+    #[test]
+    fn typing_with_recognised_words_shows_them_small_and_faint() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let words = "recognised words";
+        let finished = message(1, Source::PcAudio, words, at(21, 48, 0));
+        let typing = Message::typing(Source::PcAudio, words);
+        let output = chat.settle(&[finished, typing]);
+        let (finished_rect, _) = texts(&output)
+            .into_iter()
+            .find(|(text, _, color)| text == words && *color == theme::CHAT_TEXT)
+            .map(|(_, rect, color)| (rect, color))
+            .expect("finished text");
+        let (typing_rect, typing_color) = texts(&output)
+            .into_iter()
+            .find(|(text, _, color)| text == words && *color == theme::CHAT_TEXT_FORMING)
+            .map(|(_, rect, color)| (rect, color))
+            .expect("typing text");
+        assert_eq!(typing_color, theme::CHAT_TEXT_FORMING);
+        assert!(
+            typing_rect.width() < 0.9 * finished_rect.width(),
+            "typing original is narrower than finished translation: {} vs {}",
+            typing_rect.width(),
+            finished_rect.width()
+        );
+        let bubble = filled(&output, theme::CHAT_BUBBLE)
+            .into_iter()
+            .find(|rect| rect.contains_rect(typing_rect))
+            .expect("typing bubble");
+        let dots = dots(&output);
+        assert_eq!(dots.len(), 3);
+        assert!(dots.iter().all(|(center, _)| bubble.contains(*center)));
+        assert!(
+            dots.iter()
+                .all(|(center, _)| center.x > typing_rect.right())
         );
     }
 

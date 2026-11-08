@@ -823,6 +823,38 @@ mod tests {
             "a part that becomes fixed is drawn once"
         );
     }
+    #[test]
+    fn a_long_fixed_part_is_cut_into_bubbles_as_in_the_chat_and_a_part_still_forming_is_not() {
+        let ctx = egui::Context::default();
+        let size = egui::vec2(720.0, 1600.0);
+        let bubbles =
+            |output: &egui::FullOutput| chat::testing::filled(output, theme::CHAT_BUBBLE).len();
+        let forming = View {
+            target: ("あ".repeat(39) + "。").repeat(3),
+            ..view(1, 1, Phase::Updating)
+        };
+        let mut state = State::default();
+        state.update(Some(&forming.stamp), Some(&forming), Playback::Running);
+        let mut output = paint(&mut state, &ctx, size);
+        for _ in 0..3 {
+            output = paint(&mut state, &ctx, size);
+        }
+        assert_eq!(bubbles(&output), 1, "a part still forming is one bubble");
+
+        let done = View {
+            phase: Phase::Final,
+            ..forming
+        };
+        state.update(None, Some(&done), Playback::Running);
+        state.set_history(vec![done]);
+        for _ in 0..4 {
+            output = paint(&mut state, &ctx, size);
+        }
+        assert!(
+            bubbles(&output) > 1,
+            "once fixed, it is cut at the ends of sentences"
+        );
+    }
     // Shapes inside the reading area are clipped to it; the header is not.
     fn cut_at_the_top(state: &State, output: &egui::FullOutput) -> bool {
         chat::testing::cut_at_the_top(output, state.chat.body().unwrap())

@@ -2004,11 +2004,45 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// One saved row of a preview talk, said at `clock` on 7 November.
+fn demo_row(
+    id: u64,
+    (kind, clock, start_ms, source, translation): (&str, &str, u64, &str, &str),
+    state: plamo_translate::journal::ParagraphState,
+) -> Row {
+    use plamo_translate::journal::ParagraphMeta;
+    Row {
+        record: Record {
+            id,
+            start_ms,
+            end_ms: start_ms + 4_000,
+            source: source.into(),
+            translation: translation.into(),
+            standard_translation: None,
+            kind: kind.into(),
+            video_id: if kind == "YouTube" {
+                "preview".into()
+            } else {
+                String::new()
+            },
+            created_at: format!("2026-11-07T{clock}+09:00"),
+            paragraph: Some(ParagraphMeta {
+                revision: 3,
+                state,
+                close_reason: None,
+            }),
+        },
+        pending: false,
+        error: None,
+        generation: 0,
+    }
+}
+
 /// A short talk for the live chat previews: a YouTube video with a change of
 /// speaker, then PC audio, ending in a paragraph that is still forming. The
 /// last row is the forming one.
 fn demo_talk(rows: usize) -> Vec<Row> {
-    use plamo_translate::journal::{ParagraphMeta, ParagraphState};
+    use plamo_translate::journal::ParagraphState;
     const FIXED: [(&str, &str, u64, &str, &str); 9] = [
         (
             "YouTube",
@@ -2074,33 +2108,6 @@ fn demo_talk(rows: usize) -> Vec<Row> {
             "ご質問があれば、スタッフにお声がけください。",
         ),
     ];
-    let row = |id: u64,
-               (kind, clock, start_ms, source, translation): (&str, &str, u64, &str, &str),
-               state| Row {
-        record: Record {
-            id,
-            start_ms,
-            end_ms: start_ms + 4_000,
-            source: source.into(),
-            translation: translation.into(),
-            standard_translation: None,
-            kind: kind.into(),
-            video_id: if kind == "YouTube" {
-                "preview".into()
-            } else {
-                String::new()
-            },
-            created_at: format!("2026-11-07T{clock}+09:00"),
-            paragraph: Some(ParagraphMeta {
-                revision: 3,
-                state,
-                close_reason: None,
-            }),
-        },
-        pending: false,
-        error: None,
-        generation: 0,
-    };
     let Some(fixed) = rows.checked_sub(1) else {
         return Vec::new();
     };
@@ -2108,9 +2115,9 @@ fn demo_talk(rows: usize) -> Vec<Row> {
         .iter()
         .take(fixed)
         .zip(1..)
-        .map(|(entry, id)| row(id, *entry, ParagraphState::Final))
+        .map(|(entry, id)| demo_row(id, *entry, ParagraphState::Final))
         .collect();
-    talk.push(row(
+    talk.push(demo_row(
         rows as u64,
         (
             "音声",
@@ -2133,13 +2140,42 @@ const FORMING_LONG: (&str, &str) = (
 const FORMING_SHORT: (&str, &str) = ("お名前は必要ありません。", "No name is required.");
 const FORMING_TINY: (&str, &str) = ("はい。", "Yes.");
 
+/// A finished paragraph of seven sentences: its translation, then its original.
+const LONG_PARAGRAPH: (&str, &str) = (
+    "とてもすごいですね。皆さん、こんにちは。今日のセッションへようこそ。今日は、自分のコンピューターでローカル翻訳がどのように動くのかについて話します。仕組みは簡単です。クラウドには何も送られません。すべて自分のコンピューターの中に残ります。",
+    "That is very impressive. Hello, everyone. Welcome to today's session. Today I will talk about how local translation works on your own computer. It is simple. Nothing is sent to the cloud. Everything stays on your own computer.",
+);
+
+/// A short talk for the chat previews that ends in `LONG_PARAGRAPH`.
+fn demo_long_talk() -> Vec<Row> {
+    use plamo_translate::journal::ParagraphState;
+    vec![
+        demo_row(
+            1,
+            (
+                "音声",
+                "21:49:30",
+                0,
+                "Each Friday staff will review the comments.",
+                "毎週金曜日にスタッフがご意見を確認します。",
+            ),
+            ParagraphState::Final,
+        ),
+        demo_row(
+            2,
+            ("音声", "21:50:20", 0, LONG_PARAGRAPH.1, LONG_PARAGRAPH.0),
+            ParagraphState::Final,
+        ),
+    ]
+}
+
 /// A subtitle window holding `fixed` parts and one still forming, filled the
 /// way the app fills it. A YouTube window gets a change of speaker and video
 /// times.
 fn demo_subtitle(youtube: bool, fixed: usize, forming: (&str, &str)) -> subtitle_window::State {
     use plamo_translate::live_text::{SourceKind, SourceStamp};
     use subtitle_window::{Phase, Playback, View};
-    const PARTS: [(&str, &str); 6] = [
+    const PARTS: [(&str, &str); 7] = [
         (
             "来館者はいつでも展示リストに戻れます。",
             "Visitors can return to the exhibit list whenever they wish.",
@@ -2161,6 +2197,7 @@ fn demo_subtitle(youtube: bool, fixed: usize, forming: (&str, &str)) -> subtitle
             "お名前や連絡先は必要ありません。",
             "No name or contact address is required.",
         ),
+        LONG_PARAGRAPH,
     ];
     let stamp = SourceStamp {
         kind: if youtube {
@@ -2210,7 +2247,8 @@ fn demo_subtitle(youtube: bool, fixed: usize, forming: (&str, &str)) -> subtitle
                 let clock = if key > fixed as u64 {
                     "21:49:52".to_owned()
                 } else {
-                    format!("21:46:{:02}", 10 + key * 12)
+                    // The seconds stay under 60, or the clock is not a time.
+                    format!("21:46:{:02}", 10 + key * 5)
                 };
                 (
                     key,
@@ -2421,6 +2459,7 @@ enum Listening {
 
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
+    render_long_paragraph_views(folder)?;
     render_setup_views(folder)?;
     let nothing_saved = tempfile::tempdir()?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
@@ -2927,6 +2966,56 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 });
             },
         )?;
+    }
+    Ok(())
+}
+
+/// `LONG_PARAGRAPH` in the chat and in the subtitle window, as it is shown
+/// and with its original opened, at the smallest window and at 4K.
+fn render_long_paragraph_views(folder: &Path) -> Result<()> {
+    for (width, height) in [(860, 620), (2560, 1369)] {
+        for (name, original) in [("long-paragraph", false), ("long-original", true)] {
+            let ctx = egui::Context::default();
+            ui::configure_theme(&ctx);
+            let mut app = App::inert();
+            app.tab = Tab::Live;
+            app.backend_ready = true;
+            app.asr_ready = true;
+            app.startup_decided = true;
+            app.audio_enabled = true;
+            app.status = "プレビュー · 接続や保存は行いません".into();
+            app.rows = demo_long_talk();
+            app.current_live_id = app.rows.last().map(|row| row.record.id);
+            if original {
+                app.live_chat.toggle_original(2, 0);
+            }
+            preview::render(
+                &ctx,
+                &folder.join(format!("36-live-{name}-{width}x{height}.png")),
+                width,
+                height,
+                |ctx| app.render_ui(ctx),
+            )?;
+
+            let ctx = egui::Context::default();
+            ui::configure_theme(&ctx);
+            let mut window = demo_subtitle(false, 7, FORMING_SHORT);
+            window.open = true;
+            if original {
+                window.chat.toggle_original(7, 0);
+            }
+            preview::render(
+                &ctx,
+                &folder.join(format!("37-subtitle-{name}-{width}x{height}.png")),
+                width,
+                height,
+                |ctx| {
+                    subtitle_window::State::panel().show(ctx, |ui| {
+                        window.paint(ui);
+                    });
+                },
+            )?;
+        }
     }
     Ok(())
 }

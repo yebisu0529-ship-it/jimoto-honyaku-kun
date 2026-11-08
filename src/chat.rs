@@ -44,6 +44,9 @@ const PILL_Y: f32 = 4.0;
 const NEW_PILL_X: f32 = 16.0;
 const NEW_PILL_Y: f32 = 7.0;
 const NEW_PILL_LIFT: f32 = 14.0;
+/// The most characters a bubble takes from a finished paragraph. A bubble holds
+/// whole sentences, so one longer sentence is a bubble of its own.
+const BUBBLE_CHARS: usize = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -181,6 +184,9 @@ pub struct State {
     body: Option<Rect>,
     #[cfg(test)]
     offset: f32,
+    /// What the reader copied. Tests read it instead of the system clipboard.
+    #[cfg(test)]
+    copied: Option<String>,
 }
 
 impl Default for State {
@@ -200,6 +206,8 @@ impl Default for State {
             body: None,
             #[cfg(test)]
             offset: 0.0,
+            #[cfg(test)]
+            copied: None,
         }
     }
 }
@@ -550,7 +558,11 @@ impl State {
 
         let key = (message.id, bubble.part);
         let expandable = !bubble.original.is_empty();
-        let response = ui.interact(rect, ui.id().with(("bubble", key)), Sense::click());
+        let response = ui.interact(
+            rect,
+            ui.id().with(("bubble", key, bubble.piece)),
+            Sense::click(),
+        );
         focus_ring(ui, &response, radius);
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, bubble.text));
@@ -566,8 +578,8 @@ impl State {
         action
     }
 
-    fn menu(&self, ui: &mut egui::Ui, bubble: &Bubble<'_>, options: Options) -> Option<Action> {
-        let text = bubble.text;
+    fn menu(&mut self, ui: &mut egui::Ui, bubble: &Bubble<'_>, options: Options) -> Option<Action> {
+        let text = bubble.whole;
         let readable = bubble.message.status == Status::Fixed && !text.is_empty();
         let mut action = None;
         if ui
@@ -575,9 +587,7 @@ impl State {
             .on_hover_text("PLaMoのクレジットを付けてコピーします")
             .clicked()
         {
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(credit::published(text));
-            }
+            self.copy(text);
             ui.close();
         }
         if let Some(speaking) = options.readout {
@@ -594,6 +604,18 @@ impl State {
             }
         }
         action
+    }
+
+    fn copy(&mut self, text: &str) {
+        let text = credit::published(text);
+        #[cfg(test)]
+        {
+            self.copied = Some(text);
+        }
+        #[cfg(not(test))]
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(text);
+        }
     }
 }
 
@@ -763,7 +785,7 @@ fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics
         width = width.max(at.x + DOTS_WIDTH);
         dots = Some(at);
     }
-    let original = expanded.then(|| {
+    let original = (expanded && bubble.last_in_part).then(|| {
         let rule = height + ORIGINAL_GAP;
         let text_y = rule + 1.0 + ORIGINAL_GAP;
         let text = wrapped(
@@ -841,16 +863,24 @@ enum Entry<'a> {
 
 struct Bubble<'a> {
     message: Message<'a>,
+    /// The speaker's share of the message. Its bubbles share one original.
     part: usize,
+    /// Which of the part's bubbles this is.
+    piece: usize,
     text: &'a str,
+    /// All of the part's translation, which copying and reading take.
+    whole: &'a str,
     original: &'a str,
     first_in_group: bool,
+    last_in_part: bool,
     last_in_message: bool,
     newest: bool,
 }
 
 /// Lines the messages up as date pills and bubbles. A message becomes one
-/// bubble per speaker.
+/// bubble per speaker, and a finished speaker's words are cut at the ends of
+/// sentences into bubbles of their own. Words still forming stay in one bubble,
+/// because they change as they grow and cut bubbles would jump.
 fn plan<'a>(messages: &[Message<'a>]) -> Vec<Entry<'a>> {
     let mut entries = Vec::new();
     let mut day = None;
@@ -869,22 +899,34 @@ fn plan<'a>(messages: &[Message<'a>]) -> Vec<Entry<'a>> {
         }
         let originals = speaker_parts(message.original);
         let count = parts.len();
-        for (part, text) in parts.into_iter().enumerate() {
-            entries.push(Entry::Bubble(Bubble {
-                message: *message,
-                part,
-                text,
-                // An original that does not split like its translation is
-                // shown whole.
-                original: if originals.len() == count {
-                    originals[part]
-                } else {
-                    message.original.trim()
-                },
-                first_in_group: std::mem::take(&mut lead),
-                last_in_message: part + 1 == count,
-                newest: index + 1 == messages.len(),
-            }));
+        for (part, whole) in parts.into_iter().enumerate() {
+            let texts = if message.status == Status::Forming {
+                vec![whole]
+            } else {
+                bubble_texts(whole)
+            };
+            let pieces = texts.len();
+            for (piece, text) in texts.into_iter().enumerate() {
+                let last_in_part = piece + 1 == pieces;
+                entries.push(Entry::Bubble(Bubble {
+                    message: *message,
+                    part,
+                    piece,
+                    text,
+                    whole,
+                    // An original that does not split like its translation is
+                    // shown whole.
+                    original: if originals.len() == count {
+                        originals[part]
+                    } else {
+                        message.original.trim()
+                    },
+                    first_in_group: std::mem::take(&mut lead),
+                    last_in_part,
+                    last_in_message: last_in_part && part + 1 == count,
+                    newest: index + 1 == messages.len(),
+                }));
+            }
         }
     }
     entries
@@ -934,6 +976,57 @@ fn speaker_parts(text: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .collect()
+}
+
+/// The texts of the bubbles one speaker's finished words are shown in. A bubble
+/// takes whole sentences while they fit in `BUBBLE_CHARS` characters.
+fn bubble_texts(words: &str) -> Vec<&str> {
+    let mut bubbles = Vec::new();
+    let (mut bubble_start, mut sentence_start, mut chars) = (0, 0, 0);
+    for sentence_end in sentence_ends(words) {
+        let length = words[sentence_start..sentence_end].chars().count();
+        if chars > 0 && chars + length > BUBBLE_CHARS {
+            bubbles.push(words[bubble_start..sentence_start].trim());
+            bubble_start = sentence_start;
+            chars = 0;
+        }
+        chars += length;
+        sentence_start = sentence_end;
+    }
+    bubbles.push(words[bubble_start..].trim());
+    bubbles
+}
+
+/// Where the sentences of `text` end, the last at the end of the text. A
+/// sentence ends after 。？！ or their half-width forms, together with any
+/// further such marks and closing brackets that follow. Nothing ends inside
+/// 「」, 『』 or （）.
+fn sentence_ends(text: &str) -> Vec<usize> {
+    let is_stop = |c| matches!(c, '。' | '｡' | '？' | '?' | '！' | '!');
+    let is_close = |c| matches!(c, '」' | '』' | '）');
+    let mut ends = Vec::new();
+    let mut open = 0usize;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if matches!(c, '「' | '『' | '（') {
+            open += 1;
+        } else if is_close(c) {
+            open = open.saturating_sub(1);
+        } else if is_stop(c) && open == 0 {
+            let mut end = at + c.len_utf8();
+            while let Some(&(next, mark)) = chars.peek()
+                && (is_stop(mark) || is_close(mark))
+            {
+                end = next + mark.len_utf8();
+                chars.next();
+            }
+            ends.push(end);
+        }
+    }
+    if ends.last() != Some(&text.len()) {
+        ends.push(text.len());
+    }
+    ends
 }
 
 fn clock_text(sent: NaiveDateTime) -> String {
@@ -1222,6 +1315,13 @@ mod tests {
         has_text_containing(output, "新しいメッセージ")
     }
 
+    /// The bubbles drawn, from the top.
+    fn bubbles(output: &egui::FullOutput) -> Vec<Rect> {
+        let mut bubbles = filled(output, theme::CHAT_BUBBLE);
+        bubbles.sort_by(|a, b| a.top().total_cmp(&b.top()));
+        bubbles
+    }
+
     #[test]
     fn a_speaker_marker_splits_a_translation_and_is_never_shown() {
         assert_eq!(
@@ -1235,6 +1335,101 @@ mod tests {
         );
         assert_eq!(speaker_parts(">> "), Vec::<&str>::new());
         assert_eq!(speaker_parts(""), Vec::<&str>::new());
+    }
+
+    /// Seven sentences, as a real talk once ran them together into one bubble.
+    const TALK: &str = "とてもすごいですね。皆さん、こんにちは。今日のセッションへようこそ。今日は、自分のコンピューターでローカル翻訳がどのように動くのかについて話します。仕組みは簡単です。クラウドには何も送られません。すべて自分のコンピューターの中に残ります。";
+
+    /// A sentence of a third of what a bubble takes.
+    fn third() -> String {
+        "あ".repeat(BUBBLE_CHARS / 3 - 1) + "。"
+    }
+
+    #[test]
+    fn a_finished_paragraph_is_cut_at_sentence_ends_into_bubbles_of_up_to_the_limit() {
+        let third = third();
+        assert_eq!(
+            bubble_texts(&third.repeat(3)),
+            [third.repeat(3)],
+            "three sentences fill a bubble"
+        );
+        assert_eq!(
+            bubble_texts(&third.repeat(4)),
+            [third.repeat(3), third.clone()],
+            "the fourth starts the next bubble"
+        );
+        let bubbles = bubble_texts(TALK);
+        assert!(bubbles.len() > 1);
+        assert_eq!(bubbles.concat(), TALK, "nothing is lost or added");
+        for bubble in &bubbles {
+            assert!(bubble.chars().count() <= BUBBLE_CHARS, "{bubble}");
+            assert!(
+                bubble.ends_with('。'),
+                "a bubble ends with a sentence: {bubble}"
+            );
+        }
+        assert_eq!(bubble_texts("はい。"), ["はい。"]);
+        assert_eq!(bubble_texts("まだ文の途中"), ["まだ文の途中"]);
+        assert_eq!(bubble_texts(""), [""]);
+    }
+
+    #[test]
+    fn a_sentence_longer_than_the_limit_stays_whole_in_a_bubble_of_its_own() {
+        let long = "い".repeat(2 * BUBBLE_CHARS) + "。";
+        assert_eq!(bubble_texts(&long), [long.as_str()]);
+        assert_eq!(
+            bubble_texts(&format!("はい。{long} {long}はい。")),
+            ["はい。", long.as_str(), long.as_str(), "はい。"]
+        );
+    }
+
+    #[test]
+    fn nothing_is_cut_inside_a_quote_a_title_or_an_aside() {
+        let half = BUBBLE_CHARS / 2;
+        let quoted = format!(
+            "彼は「{}。{}。」と言いました。",
+            "あ".repeat(half),
+            "い".repeat(half)
+        );
+        assert_eq!(bubble_texts(&quoted), [quoted.as_str()]);
+
+        let title = "映画『君の名は。』を見ました。";
+        let lead = "あ".repeat(BUBBLE_CHARS - 11) + "。";
+        assert_eq!(
+            bubble_texts(&format!("{lead}{title}")),
+            [lead.as_str(), title],
+            "the stop inside 『』 is not an end, though the bubble has room for it"
+        );
+
+        let aside = "例です（これは例です。ほかにもあります。）終わり。";
+        let lead = "あ".repeat(BUBBLE_CHARS - 12) + "。";
+        assert_eq!(
+            bubble_texts(&format!("{lead}{aside}")),
+            [lead.as_str(), aside]
+        );
+    }
+
+    #[test]
+    fn marks_after_a_stop_stay_with_their_sentence_and_half_width_stops_end_one() {
+        let lead = "あ".repeat(BUBBLE_CHARS - 3) + "。」";
+        assert_eq!(
+            bubble_texts(&format!("{lead}はい。")),
+            [lead.as_str(), "はい。"],
+            "a closing bracket is not the start of the next bubble"
+        );
+        let lead = "あ".repeat(BUBBLE_CHARS - 1) + "？！";
+        assert_eq!(
+            bubble_texts(&format!("{lead}はい。")),
+            [lead.as_str(), "はい。"],
+            "a run of marks ends one sentence"
+        );
+        let half = BUBBLE_CHARS / 2;
+        let [a, b, c] = [("あ", "?"), ("い", "!"), ("う", "｡")]
+            .map(|(letter, stop)| format!("{}{stop}", letter.repeat(half)));
+        assert_eq!(
+            bubble_texts(&format!("{a}{b}{c}")),
+            [a.as_str(), b.as_str(), c.as_str()]
+        );
     }
 
     #[test]
@@ -1523,6 +1718,175 @@ mod tests {
     }
 
     #[test]
+    fn the_bubbles_of_a_long_paragraph_share_one_avatar_one_name_and_one_time() {
+        let mut chat = Chat::new(720.0, 700.0);
+        let output = chat.settle(&[message(1, Source::PcAudio, TALK, at(21, 48, 10))]);
+        let shown = bubbles(&output);
+        assert!(shown.len() > 1, "a long paragraph is several bubbles");
+        assert_eq!(count_text(&output, "PC音声"), 1);
+        assert_eq!(count_text(&output, "音"), 1);
+        assert_eq!(tails(&output), 1, "one tail, on the first bubble");
+        for pair in shown.windows(2) {
+            assert_eq!(pair[0].left(), pair[1].left());
+            assert!(
+                (pair[1].top() - pair[0].bottom() - STACK_GAP).abs() < 0.5,
+                "bubbles of one paragraph stack closely"
+            );
+        }
+        assert_eq!(count_text(&output, "21:48"), 1, "one paragraph, one time");
+        let (time, _) = find_text(&output, "21:48");
+        let last = shown.last().unwrap();
+        assert!(
+            time.left() > last.right() && time.bottom() <= last.bottom() + 2.0,
+            "the time sits beside the bottom right of the last bubble"
+        );
+        let mut drawn: Vec<_> = texts(&output)
+            .into_iter()
+            .filter(|(text, _, _)| text.contains('。'))
+            .collect();
+        drawn.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));
+        let words: String = drawn.iter().map(|(text, _, _)| text.as_str()).collect();
+        assert_eq!(
+            words, TALK,
+            "read from the top, the bubbles are the paragraph"
+        );
+    }
+
+    #[test]
+    fn a_change_of_speaker_and_the_cuts_between_sentences_work_together() {
+        let mut chat = Chat::new(720.0, 700.0);
+        let said = format!(">> {TALK} >> はい。");
+        let output = chat.settle(&[message(1, Source::YouTube, &said, at(21, 48, 10))]);
+        let shown = bubbles(&output);
+        assert!(shown.len() > 2, "the first speaker's words are cut too");
+        assert_eq!(bubble_of(&output, "はい。"), *shown.last().unwrap());
+        assert_eq!(count_text(&output, "YouTube"), 1, "one group");
+        assert_eq!(tails(&output), 1);
+        assert!(
+            !has_text_containing(&output, ">"),
+            "the marker is not drawn"
+        );
+        assert_eq!(count_text(&output, "21:48"), 1, "one message, one time");
+        let (time, _) = find_text(&output, "21:48");
+        assert!(
+            time.left() > shown.last().unwrap().right(),
+            "the time is beside the last bubble of the last speaker"
+        );
+    }
+
+    #[test]
+    fn a_paragraph_still_forming_stays_one_bubble_until_it_is_fixed() {
+        let mut chat = Chat::new(720.0, 700.0);
+        let forming = Message {
+            status: Status::Forming,
+            ..message(1, Source::PcAudio, TALK, at(21, 48, 10))
+        };
+        let output = chat.settle(&[forming]);
+        assert_eq!(bubbles(&output).len(), 1);
+        assert_eq!(count_text(&output, TALK), 1);
+        assert_eq!(dots(&output).len(), 3);
+
+        let output = chat.settle(&[Message {
+            status: Status::Fixed,
+            ..forming
+        }]);
+        assert!(bubbles(&output).len() > 1, "fixed, it is cut");
+        assert!(dots(&output).is_empty());
+    }
+
+    #[test]
+    fn an_interrupted_paragraph_is_cut_and_its_note_is_under_the_last_bubble() {
+        let mut chat = Chat::new(720.0, 700.0);
+        let output = chat.settle(&[Message {
+            status: Status::Interrupted,
+            ..message(1, Source::PcAudio, TALK, at(21, 48, 10))
+        }]);
+        let shown = bubbles(&output);
+        assert!(shown.len() > 1);
+        assert_eq!(count_text(&output, "中断した文章 · 未確定"), 1);
+        let (note, _) = find_text(&output, "中断した文章 · 未確定");
+        assert!(note.top() >= shown.last().unwrap().bottom());
+    }
+
+    #[test]
+    fn clicking_any_bubble_of_a_paragraph_opens_its_original_under_the_last_one() {
+        const ORIGINAL: &str = "That is very impressive. Hello, everyone.";
+        let mut chat = Chat::new(720.0, 800.0);
+        let messages = [Message {
+            original: ORIGINAL,
+            ..message(
+                1,
+                Source::YouTube,
+                TALK,
+                Moment {
+                    video_ms: Some(754_000),
+                    ..at(21, 48, 10)
+                },
+            )
+        }];
+        let output = chat.settle(&messages);
+        let shown = bubbles(&output);
+        assert!(shown.len() > 1);
+        assert_eq!(count_text(&output, ORIGINAL), 0);
+
+        let (output, _) = chat.click(&messages, shown[0].center(), PointerButton::Primary);
+        let last = *bubbles(&output).last().unwrap();
+        assert_eq!(count_text(&output, ORIGINAL), 1, "shown once");
+        assert_eq!(bubble_of(&output, ORIGINAL), last, "inside the last bubble");
+        assert_eq!(count_text(&output, "動画 00:12:34"), 1);
+        assert_eq!(filled(&output, theme::CHAT_RULE).len(), 1);
+
+        let middle = bubbles(&output)[1];
+        let (output, _) = chat.click(&messages, middle.center(), PointerButton::Primary);
+        assert_eq!(
+            count_text(&output, ORIGINAL),
+            0,
+            "a click on another bubble of the paragraph closes it"
+        );
+        assert_eq!(count_text(&output, "動画 00:12:34"), 0);
+    }
+
+    #[test]
+    fn right_click_on_any_bubble_of_a_paragraph_copies_and_reads_the_whole_paragraph() {
+        let mut chat = Chat::new(720.0, 800.0);
+        chat.options.readout = Some(false);
+        let messages = [message(1, Source::PcAudio, TALK, at(21, 48, 10))];
+        let output = chat.settle(&messages);
+        let shown = bubbles(&output);
+        assert!(shown.len() > 1);
+
+        let (menu, _) = chat.click(&messages, shown[0].center(), PointerButton::Secondary);
+        let (copy, _) = find_text(&menu, "コピー");
+        chat.click(&messages, copy.center(), PointerButton::Primary);
+        let copied = chat.state.copied.as_deref().expect("コピー was clicked");
+        assert!(copied.starts_with(TALK) && copied.contains(credit::CREDIT));
+
+        let last = *shown.last().unwrap();
+        let (menu, _) = chat.click(&messages, last.center(), PointerButton::Secondary);
+        let (read, _) = find_text(&menu, "読み上げ");
+        let (_, action) = chat.click(&messages, read.center(), PointerButton::Primary);
+        assert!(matches!(action, Some(Action::Read(text)) if text == TALK));
+    }
+
+    #[test]
+    fn new_messages_are_counted_by_paragraph_not_by_bubble() {
+        let mut chat = Chat::new(720.0, 300.0);
+        let spoken = lines(6);
+        let mut messages = talk(&spoken);
+        chat.settle(&messages);
+        chat.scroll_up(&messages, 150.0);
+        messages.push(message(7, Source::PcAudio, TALK, at(21, 49, 7)));
+        messages.push(message(8, Source::PcAudio, TALK, at(21, 49, 8)));
+        let arrived = plan(&messages)
+            .into_iter()
+            .filter(|entry| matches!(entry, Entry::Bubble(bubble) if bubble.message.id > 6))
+            .count();
+        assert!(arrived > 2, "two paragraphs came in as {arrived} bubbles");
+        let output = chat.settle(&messages);
+        assert_eq!(count_text(&output, "↓ 新しいメッセージ 2件"), 1);
+    }
+
+    #[test]
     fn a_message_still_forming_is_lighter_and_ends_in_three_moving_dots() {
         let mut chat = Chat::new(720.0, 460.0);
         let forming = Message {
@@ -1792,6 +2156,23 @@ mod tests {
             matches!(action, Some(Action::Read(text)) if text == "やあ。"),
             "the text of the bubble itself is read, without the marker"
         );
+    }
+
+    #[test]
+    fn copying_a_bubble_takes_its_translation_with_the_credit() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let messages = [message(1, Source::PcAudio, "はじめまして。", at(21, 48, 0))];
+        let output = chat.settle(&messages);
+        let bubble = bubble_of(&output, "はじめまして。");
+        let (menu, _) = chat.click(&messages, bubble.center(), PointerButton::Secondary);
+        let (copy, _) = find_text(&menu, "コピー");
+        assert!(
+            chat.state.copied.is_none(),
+            "nothing is copied by opening the menu"
+        );
+        chat.click(&messages, copy.center(), PointerButton::Primary);
+        let copied = chat.state.copied.as_deref().expect("コピー was clicked");
+        assert!(copied.starts_with("はじめまして。") && copied.contains(credit::CREDIT));
     }
 
     #[test]

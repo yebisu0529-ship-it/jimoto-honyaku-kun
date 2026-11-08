@@ -33,7 +33,7 @@ async function request(path, payload) {
     });
     if (!response.ok) {
       const detail = response.status === 401 || response.status === 403
-        ? "認証に失敗しました。アプリのトークンを貼り直してください。"
+        ? "接続キーが合いません。アプリの「接続キーをコピー」で貼り直してください。"
         : `アプリが HTTP ${response.status} を返しました。`;
       await status("error", detail); return { ok: false };
     }
@@ -41,7 +41,7 @@ async function request(path, payload) {
     return { ok: true };
   } catch (error) {
     if (!controller.signal.aborted || controller.signal.reason === "timeout") {
-      await status("offline", "接続できません。PLaMoアプリでブラウザー連携を開始してください。");
+      await status("offline", "接続できません。Talk風Live翻訳が起動しているか確かめてください。");
     }
     return { ok: false };
   } finally {
@@ -51,12 +51,12 @@ async function request(path, payload) {
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return false;
-  if (message?.type === "health" && !sender.tab) {
+  let origin;
+  try { origin = new URL(sender.url || "").origin; } catch (_) { return false; }
+  if (message?.type === "health" && origin === new URL(chrome.runtime.getURL("")).origin) {
     request("/health").then(reply); return true;
   }
   if (message?.type === "caption" && sender.tab && validCaption(message.payload)) {
-    let origin;
-    try { origin = new URL(sender.url || "").origin; } catch (_) { return false; }
     if (!["https://www.youtube.com", "https://m.youtube.com"].includes(origin)) return false;
     request("/caption", message.payload).then(reply); return true;
   }
@@ -68,6 +68,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     activeRequest?.abort();
     lastStatus = "";
     status(changes.bridgeToken.newValue ? "unchecked" : "missing-token",
-      changes.bridgeToken.newValue ? "接続確認を押してください。" : "アプリの接続キーを設定してください。");
+      changes.bridgeToken.newValue ? "「接続確認」を押してください。" : "アプリの接続キーを設定してください。");
   }
 });

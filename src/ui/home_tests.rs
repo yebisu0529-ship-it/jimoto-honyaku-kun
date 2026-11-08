@@ -159,7 +159,7 @@ fn the_app_opens_on_the_chat_with_its_name_one_menu_and_the_listen_button() {
         let mut window = Window::new(width, height);
         window.settle(&mut app);
         for shown in [
-            "地元翻訳くん",
+            "Talk風Live翻訳",
             "PC内で翻訳",
             "⋯ その他",
             "● 聞く",
@@ -305,7 +305,7 @@ fn each_screen_in_the_menu_opens_and_the_back_button_returns_to_the_chat() {
         window.click(&mut app, item);
         assert!(app.tab == screen, "{item} did not open its screen");
         assert!(
-            !window.has("地元翻訳くん"),
+            !window.has("Talk風Live翻訳"),
             "{item}: the chat is still shown"
         );
         assert!(
@@ -318,7 +318,7 @@ fn each_screen_in_the_menu_opens_and_the_back_button_returns_to_the_chat() {
             app.tab == Tab::Live,
             "{item}: the back button did not return"
         );
-        assert!(window.has("地元翻訳くん"));
+        assert!(window.has("Talk風Live翻訳"));
         assert!(!window.has("← チャットに戻る"));
     }
 }

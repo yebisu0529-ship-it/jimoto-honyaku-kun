@@ -46,7 +46,7 @@ try {
         & (Join-Path $taskAppRoot 'scripts/setup-audio.ps1') -InstallRoot $taskAudioRoot -Backend $taskProbe.recommendation.asr_backend -Device $taskProbe.recommendation.asr_device
         if ($LASTEXITCODE -ne 0) { throw '音声認識の準備に失敗しました。翻訳モデルは保持しています。' }
     }
-    Write-Host '準備が完了しました。地元翻訳くん.cmdで起動できます。'
+    Write-Host '準備が完了しました。Talk風Live翻訳.cmdで起動できます。'
 } finally {
     $OutputEncoding = $taskOldOutputEncoding
     [Console]::OutputEncoding = $taskOldConsoleEncoding

@@ -490,8 +490,10 @@ impl App {
                     .clicked()
                     && let Some(folder) = rfd::FileDialog::new().pick_folder()
                 {
-                    self.settings.model_store =
-                        folder.join("地元翻訳くん/engine").to_string_lossy().into();
+                    self.settings.model_store = folder
+                        .join("Talk風Live翻訳/engine")
+                        .to_string_lossy()
+                        .into();
                     self.detect_capacity();
                 }
                 if ui

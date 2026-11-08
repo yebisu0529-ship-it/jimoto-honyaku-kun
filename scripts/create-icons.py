@@ -23,7 +23,7 @@ def glyph(char, x, baseline, size, color):
     return f'<path fill="{color}" transform="translate({x-advance*scale/2:.3f} {baseline}) scale({scale:.5f} {-scale:.5f})" d="{pen.getCommands()}"/>'
 
 svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">'
-       '<title>地元翻訳くん</title><rect width="128" height="128" rx="28" fill="#3CBFA4"/>'
+       '<title>Talk風Live翻訳</title><rect width="128" height="128" rx="28" fill="#3CBFA4"/>'
        '<rect x="15" y="18" width="62" height="57" rx="13" fill="#F4FAF8"/>'
        '<path d="M24 67v18l19-15" fill="#F4FAF8"/>'
        + glyph("A", 46, 61, 40, "#142029")

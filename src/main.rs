@@ -3040,13 +3040,13 @@ fn main() -> eframe::Result {
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/icon-256.png"))
                     .expect("Bundled application icon"),
             )
-            .with_title("地元翻訳くん | translated by PLaMo")
+            .with_title("Talk風Live翻訳 | translated by PLaMo")
             .with_inner_size([1180.0, 800.0])
             .with_min_inner_size([860.0, 620.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "地元翻訳くん",
+        "Talk風Live翻訳",
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )

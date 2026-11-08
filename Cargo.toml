@@ -3,7 +3,7 @@ name = "plamo-translate"
 version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
-description = "地元翻訳くん - translated by PLaMo. Local screen, text and live audio translation."
+description = "Talk風Live翻訳 - translated by PLaMo. Local screen, text and live audio translation."
 license = "MIT"
 default-run = "plamo-translate"
 

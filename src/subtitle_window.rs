@@ -217,7 +217,7 @@ impl State {
 
     pub fn builder(&self) -> egui::ViewportBuilder {
         let mut builder = egui::ViewportBuilder::default()
-            .with_title("地元翻訳くん · 字幕ウィンドウ")
+            .with_title("Talk風Live翻訳 · 字幕ウィンドウ")
             .with_inner_size(self.native_size)
             .with_min_inner_size([360.0, 220.0])
             .with_resizable(true)

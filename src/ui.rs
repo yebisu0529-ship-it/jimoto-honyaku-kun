@@ -1482,7 +1482,7 @@ impl App {
 
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
-            self.page_header(ui, "地元翻訳くん", "PC内で翻訳", |_| {});
+            self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |_| {});
             ui.add_space(theme::SPACE_2);
             self.live_status_line(ui);
             ui.add_space(theme::SPACE_1);

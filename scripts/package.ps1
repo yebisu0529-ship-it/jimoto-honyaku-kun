@@ -24,7 +24,7 @@ $taskManifestOut = Join-Path $taskOutFull ($taskName + '.manifest.json')
 $taskFiles = @(
     @{ Source = 'target/x86_64-pc-windows-msvc/release/plamo-translate.exe'; Entry = 'plamo-translate.exe' },
     @{ Source = 'target/x86_64-pc-windows-msvc/release/jimoto-setup.exe'; Entry = 'jimoto-setup.exe' },
-    @{ Source = '地元翻訳くん.cmd'; Entry = '地元翻訳くん.cmd' },
+    @{ Source = 'Talk風Live翻訳.cmd'; Entry = 'Talk風Live翻訳.cmd' },
     @{ Source = 'start.cmd'; Entry = 'start.cmd' },
     @{ Source = 'start.ps1'; Entry = 'start.ps1' },
     @{ Source = 'setup.ps1'; Entry = 'setup.ps1' },

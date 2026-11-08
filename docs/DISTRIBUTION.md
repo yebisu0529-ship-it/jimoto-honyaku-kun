@@ -4,7 +4,7 @@
 
 Windows 10 / 11（x64）向けのポータブル版です。
 
-1. ZIPを任意のフォルダに展開し、`地元翻訳くん.cmd` を開きます（RustやシステムPythonの事前導入は不要です）。
+1. ZIPを任意のフォルダに展開し、`Talk風Live翻訳.cmd` を開きます（RustやシステムPythonの事前導入は不要です）。
 2. 未導入のPCでは、翻訳エンジンの実行に必要な [Microsoft Visual C++ v14 再頒布可能パッケージ（x64）](https://learn.microsoft.com/ja-jp/cpp/windows/latest-supported-vc-redist?view=msvc-170) をインストールしてください。
 3. 初回起動時の画面で、PCの空き容量に応じた翻訳モデルを選択してダウンロードします。
 

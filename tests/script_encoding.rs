@@ -1,6 +1,6 @@
 //! Windows PowerShell 5.1 reads a script that has no byte order mark in the
 //! system ANSI code page (932 on Japanese Windows). Any non-ASCII text in a
-//! script it runs, such as the `地元翻訳くん.cmd` file name in `package.ps1`,
+//! script it runs, such as the `Talk風Live翻訳.cmd` file name in `package.ps1`,
 //! must therefore be saved as UTF-8 with a BOM.
 
 use std::path::Path;

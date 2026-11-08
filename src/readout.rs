@@ -488,7 +488,7 @@ impl App {
                 }
             } else if ui.button("声を試す").clicked() {
                 self.read_japanese_text(
-                    "こんにちは。地元翻訳くんの読み上げテストです。".into(),
+                    "こんにちは。トーク風ライブ翻訳の読み上げテストです。".into(),
                     false,
                 );
             }

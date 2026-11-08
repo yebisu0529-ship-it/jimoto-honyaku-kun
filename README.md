@@ -1,10 +1,12 @@
-# 地元翻訳くん
+# Talk風Live翻訳
 
-<img src="assets/icons/jimoto.svg" alt="地元翻訳くんのアイコン" width="96" height="96">
+旧名：地元翻訳くん
+
+<img src="assets/icons/jimoto.svg" alt="Talk風Live翻訳のアイコン" width="96" height="96">
 
 translated by PLaMo
 
-文章・画面の範囲・YouTube字幕・PCの再生音声を、すべてPC内で翻訳できるWindows用ローカル翻訳アプリです。
+英語の音声やYouTube字幕を、このPC内でやさしい日本語にライブ翻訳し、トーク風のチャット画面に表示するWindows用ローカル翻訳アプリです。入力した文章や画面の選択範囲も、このPC内で翻訳できます。
 
 **[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/jimoto-honyaku-kun/releases)** · **プレビュー版 0.5.0**
 
@@ -22,7 +24,7 @@ translated by PLaMo
 
 ## はじめかた
 
-1. **起動する**：配布ZIPを展開し、`地元翻訳くん.cmd` を開きます（PythonやRustの事前導入は不要です）。
+1. **起動する**：配布ZIPを展開し、`Talk風Live翻訳.cmd` を開きます（PythonやRustの事前導入は不要です）。
    - ※未導入のPCでは、翻訳エンジンの実行に [Microsoft Visual C++ 再頒布可能パッケージ（x64）](https://learn.microsoft.com/ja-jp/cpp/windows/latest-supported-vc-redist?view=msvc-170) が必要です。
 2. **「はじめる」を押す**：初回画面で、0.8B・2B・8B・31B の大きさを選びます。大きいほど自然に訳せますが、GPUのメモリを多く使います。GPUメモリのグラフに、いまの使用量と、選んだモデルが足す量が出ます。このPCに合う大きさが最初から選ばれているので、そのまま「はじめる」を押せます。ボタンには、これから取得する量の合計が出ます。
    - 押すと、翻訳モデル、英語の文章区切り補助（チェックを外すと省きます）、英語のPC音声の認識（Nemotron Speech）を、順に準備します。「2/3 英語の文章区切り補助を準備中」のように、いまの段階が出ます。

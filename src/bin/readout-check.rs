@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     let suppress = Arc::new(AtomicBool::new(false));
     let engine = TtsEngine::start(config, suppress.clone())?;
     let mut trace = Vec::new();
-    engine.speak("こんにちは。地元翻訳くんの読み上げテストです。".into());
+    engine.speak("こんにちは。トーク風ライブ翻訳の読み上げテストです。".into());
     ensure!(
         wait(&engine, &suppress, &mut trace)?,
         "Capture was not suppressed during playback"

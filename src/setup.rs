@@ -382,13 +382,7 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt("model-setup-scroll")
             .show(ui, |ui| {
-                ui.label(theme::title("このPCに合うモデルを準備"));
-                ui.label(theme::caption(
-                    "大きいモデルほど自然に訳せますが、GPUのメモリを多く使います。",
-                ));
-                ui.add_space(theme::SPACE_4);
                 self.setup_steps(ui);
-                ui.add_space(theme::SPACE_4);
                 if self.setup.detecting {
                     ui.horizontal(|ui| {
                         ui.spinner();

@@ -499,7 +499,7 @@ enum MenuChoice {
     Models,
     Settings,
     Details,
-    NewSession,
+    Clear,
     Export,
 }
 
@@ -816,7 +816,6 @@ impl App {
                     })
                     .inner
                     .flatten();
-                row(ui, MenuChoice::NewSession, "新しく始める", "", "", true);
                 row(ui, MenuChoice::Export, "書き出し", "", "", has_rows);
                 ui.menu_button(RichText::new("表示").size(theme::SIZE_LABEL), |ui| {
                     toggle(ui, &mut self.settings.live_show_original, "原文をすべて表示");
@@ -868,16 +867,24 @@ impl App {
             MenuChoice::Models => self.open_setup(),
             MenuChoice::Settings => self.tab = Tab::Settings,
             MenuChoice::Details => self.details_open = true,
-            MenuChoice::NewSession => match Journal::new(&data_root().join("sessions")) {
-                Ok(journal) => {
-                    self.document_shutdown();
-                    self.journal = Some(journal);
-                    self.journal_error.clear();
-                    self.rows.clear();
-                    self.invalidate_timeline();
+            MenuChoice::Clear => {
+                let dir = self
+                    .journal
+                    .as_ref()
+                    .and_then(|j| j.path.parent())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| data_root().join("sessions"));
+                match Journal::new(&dir) {
+                    Ok(journal) => {
+                        self.document_shutdown();
+                        self.journal = Some(journal);
+                        self.journal_error.clear();
+                        self.rows.clear();
+                        self.invalidate_timeline();
+                    }
+                    Err(error) => self.status = error.to_string(),
                 }
-                Err(error) => self.status = error.to_string(),
-            },
+            }
             MenuChoice::Export => self.export_history(),
         }
     }
@@ -1482,7 +1489,22 @@ impl App {
 
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
-            self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |_| {});
+            let can_clear = !self.rows.is_empty() || !self.asr_partial.trim().is_empty();
+            let mut clear = false;
+            self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |ui| {
+                if ui
+                    .add_enabled(can_clear, standard("クリア"))
+                    .on_hover_text(
+                        "表示中の会話を消して、新しく始めます。消した会話は「履歴」に残ります。",
+                    )
+                    .clicked()
+                {
+                    clear = true;
+                }
+            });
+            if clear {
+                self.follow(ui.ctx(), MenuChoice::Clear);
+            }
             ui.add_space(theme::SPACE_2);
             self.live_status_line(ui);
             ui.add_space(theme::SPACE_1);

@@ -161,6 +161,7 @@ fn the_app_opens_on_the_chat_with_its_name_one_menu_and_the_listen_button() {
         for shown in [
             "Talk風Live翻訳",
             "PC内で翻訳",
+            "クリア",
             "⋯ その他",
             "● 聞く",
             "止まっています",
@@ -187,7 +188,6 @@ fn the_app_opens_on_the_chat_with_its_name_one_menu_and_the_listen_button() {
             "状態の詳細",
             "表示",
             "その他",
-            "新しく始める",
             "書き出し",
             "ライブ翻訳",
         ] {
@@ -268,8 +268,12 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
             "{item} has no shortcut to show"
         );
     }
+    assert!(
+        !window.has("新しく始める"),
+        "新しく始める is still in the menu"
+    );
     let last = window.at("状態の詳細").bottom();
-    for item in ["新しく始める", "書き出し", "入力の切り替え", "表示"] {
+    for item in ["書き出し", "入力の切り替え", "表示"] {
         assert!(
             window.at(item).top() > last,
             "{item} is not below the screens"
@@ -288,7 +292,7 @@ fn the_menu_on_another_screen_has_the_screens_and_not_what_belongs_to_the_chat()
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
     assert!(window.has("設定") && window.has("字幕ウィンドウ"));
-    for chat_only in ["新しく始める", "入力の切り替え", "表示"] {
+    for chat_only in ["入力の切り替え", "表示"] {
         assert!(
             !window.has(chat_only),
             "{chat_only} is in the menu of another screen"
@@ -376,7 +380,6 @@ fn items_that_need_the_model_are_faded_until_it_is_ready_and_the_others_never_ar
             "モデル",
             "設定",
             "状態の詳細",
-            "新しく始める",
             "入力の切り替え",
             "表示",
         ]
@@ -806,4 +809,133 @@ fn the_details_close_on_escape_and_when_another_item_is_chosen() {
     window.open_menu(&mut app);
     window.click(&mut app, "設定");
     assert!(!app.details_open);
+}
+
+#[test]
+fn the_chat_header_shows_clear_to_the_left_of_the_menu_and_enables_with_content() {
+    let mut app = chat();
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+
+    let (clear, menu) = (window.at("クリア"), window.at("⋯ その他"));
+    assert!(
+        clear.right() < menu.left(),
+        "クリア must sit to the left of ⋯ その他"
+    );
+    assert!(
+        (clear.center().y - menu.center().y).abs() < 2.0,
+        "クリア must be on the same row as ⋯ その他"
+    );
+
+    // Disabled while the chat is empty and no speech is being recognised.
+    let empty_ink = window.ink("クリア");
+
+    // Enabled when the chat has a row.
+    app.rows.push(Row {
+        record: Record {
+            id: 1,
+            start_ms: 0,
+            end_ms: 1000,
+            source: "Hello".into(),
+            translation: "こんにちは".into(),
+            standard_translation: None,
+            kind: "音声".into(),
+            video_id: String::new(),
+            created_at: String::new(),
+            paragraph: None,
+        },
+        pending: false,
+        error: None,
+        generation: 0,
+    });
+    window.settle(&mut app);
+    let enabled_ink = window.ink("クリア");
+    assert_ne!(
+        empty_ink, enabled_ink,
+        "クリア should be enabled when the chat has a row"
+    );
+
+    window.hover(&mut app, "クリア");
+    assert!(
+        texts(&window.output).iter().any(|(text, _, _)| text
+            .contains("表示中の会話を消して、新しく始めます。消した会話は「履歴」に残ります。")),
+        "hover text is missing or does not match"
+    );
+
+    // Enabled when speech is being recognised even if rows are empty.
+    app.rows.clear();
+    app.asr_partial = " recognizing... ".into();
+    window.settle(&mut app);
+    assert_eq!(
+        window.ink("クリア"),
+        enabled_ink,
+        "クリア should be enabled while speech is recognised"
+    );
+
+    // Disabled when asr_partial is empty after trim.
+    app.asr_partial = "   ".into();
+    window.settle(&mut app);
+    assert_eq!(
+        window.ink("クリア"),
+        empty_ink,
+        "クリア should be disabled when asr_partial is empty after trim"
+    );
+}
+
+#[test]
+fn clicking_clear_empties_the_chat_and_starts_a_new_session_preserving_earlier_records() {
+    let mut app = chat();
+    let session_dir = std::env::temp_dir().join(format!("jimoto-test-{}", uuid::Uuid::new_v4()));
+    let initial_journal = Journal::new(&session_dir).expect("creates initial test journal");
+    let initial_path = initial_journal.path.clone();
+
+    let record = Record {
+        id: 1,
+        start_ms: 0,
+        end_ms: 1000,
+        source: "Hello world.".into(),
+        translation: "こんにちは世界。".into(),
+        standard_translation: None,
+        kind: "音声".into(),
+        video_id: String::new(),
+        created_at: "2026-11-08T10:00:00+09:00".into(),
+        paragraph: None,
+    };
+    initial_journal
+        .append(&record)
+        .expect("appends record to initial journal");
+
+    app.journal = Some(initial_journal);
+    app.rows = vec![Row {
+        record,
+        pending: false,
+        error: None,
+        generation: 0,
+    }];
+
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    assert!(!app.rows.is_empty());
+
+    window.click(&mut app, "クリア");
+
+    assert!(app.rows.is_empty(), "chat rows must be emptied");
+    let new_journal = app.journal.as_ref().expect("a new session is started");
+    assert_ne!(
+        new_journal.path, initial_path,
+        "the journal must be a different session"
+    );
+    assert_eq!(
+        new_journal.path.parent(),
+        Some(session_dir.as_path()),
+        "the new session file must be in the same folder"
+    );
+
+    let prior_contents = fs::read_to_string(&initial_path).expect("earlier session file remains");
+    assert!(
+        prior_contents.contains("Hello world."),
+        "earlier session file still holds its records"
+    );
+
+    let _ = fs::remove_dir_all(&session_dir);
 }

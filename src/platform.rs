@@ -332,10 +332,10 @@ pub fn capture_loopback_suppressing(
     use windows::{
         Win32::{
             Media::Audio::{
-                AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
-                AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-                AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-                IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
+                AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_LOOPBACK,
+                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, IAudioClient,
+                IMMDeviceEnumerator, MMDeviceEnumerator,
             },
             System::Com::{CLSCTX_ALL, CoCreateInstance},
         },
@@ -427,10 +427,9 @@ pub fn capture_loopback_suppressing(
                 if frames == 0 {
                     return Ok(());
                 }
-                if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
-                    samples.clear();
-                    first_sample_ms = None;
-                }
+                // AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY does not clear the window:
+                // Windows can set it on every packet of a contiguous loopback stream,
+                // which would discard all audio. One window is one ASR request.
                 let now_ms = started.elapsed().as_millis() as u64;
                 let duration_ms = frames as u64 * 1_000 / RATE as u64;
                 first_sample_ms.get_or_insert(now_ms.saturating_sub(duration_ms));
@@ -569,13 +568,32 @@ struct StreamingPacketClock {
 
 #[cfg(any(windows, test))]
 impl StreamingPacketClock {
-    fn position(
+    /// Places one WASAPI loopback packet. The read time stands in only when
+    /// Windows reports no valid timestamp.
+    ///
+    /// AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY is not a reset: Windows can set it
+    /// on every packet of a contiguous loopback stream, and resetting the
+    /// recognizer on each packet stops all recognition. A real gap moves the
+    /// timestamp, which `position` detects.
+    #[cfg(windows)]
+    fn place(
         &mut self,
-        _device: u64,
-        clock_sample: i64,
+        flags: u32,
+        timestamp_sample: i64,
+        read_sample: i64,
         count: u32,
-        reset: bool,
     ) -> (i64, bool) {
+        use windows::Win32::Media::Audio::AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR;
+        let invalid_time = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
+        let sample = if invalid_time {
+            read_sample - count as i64
+        } else {
+            timestamp_sample
+        };
+        self.position(sample, count, invalid_time)
+    }
+
+    fn position(&mut self, clock_sample: i64, count: u32, reset: bool) -> (i64, bool) {
         // The shared engine can convert device-rate frames to the requested
         // 16kHz format. Advance by the returned packet's frame count, never by
         // the device-position delta (which need not have the same rate).
@@ -703,8 +721,7 @@ pub fn capture_loopback_streaming(
     use windows::{
         Win32::{
             Media::Audio::{
-                AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
-                AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
                 AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_LOOPBACK,
                 AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, IAudioClient,
                 IMMDeviceEnumerator, MMDeviceEnumerator,
@@ -794,32 +811,20 @@ pub fn capture_loopback_streaming(
         frames.suppress(suppress.load(Ordering::Acquire));
         while !stop.load(Ordering::Acquire) && unsafe { capture.GetNextPacketSize() }? > 0 {
             let mut pointer = std::ptr::null_mut();
-            let (mut count, mut flags, mut qpc, mut device) = (0, 0, 0, 0);
+            let (mut count, mut flags, mut qpc) = (0, 0, 0);
             unsafe {
-                capture.GetBuffer(
-                    &mut pointer,
-                    &mut count,
-                    &mut flags,
-                    Some(&mut device),
-                    Some(&mut qpc),
-                )
+                capture.GetBuffer(&mut pointer, &mut count, &mut flags, None, Some(&mut qpc))
             }?;
             let packet = Packet {
                 capture: &capture,
                 count,
             };
             frames.suppress(suppress.load(Ordering::Acquire));
-            let invalid_time = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
-            let clock_sample = if invalid_time {
-                (started.elapsed().as_nanos() * 16_000 / 1_000_000_000) as i64 - count as i64
-            } else {
-                ((qpc as i128 - origin_100ns) * 16_000 / 10_000_000) as i64
-            };
-            let (start, reset) = packet_clock.position(
-                device,
-                clock_sample,
+            let (start, reset) = packet_clock.place(
+                flags,
+                ((qpc as i128 - origin_100ns) * 16_000 / 10_000_000) as i64,
+                (started.elapsed().as_nanos() * 16_000 / 1_000_000_000) as i64,
                 count,
-                invalid_time || flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0,
             );
             anyhow::ensure!(
                 count <= 32_000,
@@ -925,12 +930,12 @@ mod tests {
     #[test]
     fn streaming_clock_has_no_packet_rounding_loss_and_recovers_a_pause() {
         let mut clock = StreamingPacketClock::default();
-        assert_eq!(clock.position(0, 17, 441, false), (17, false));
+        assert_eq!(clock.position(17, 441, false), (17, false));
         // Timestamp rounding/jitter must not change consecutive sample positions.
-        assert_eq!(clock.position(1323, 457, 441, false), (458, false));
-        assert_eq!(clock.position(2646, 900, 441, false), (899, false));
-        assert_eq!(clock.position(3969, 4800, 441, false), (4800, true));
-        assert_eq!(clock.position(5292, 5240, 441, false), (5241, false));
+        assert_eq!(clock.position(457, 441, false), (458, false));
+        assert_eq!(clock.position(900, 441, false), (899, false));
+        assert_eq!(clock.position(4800, 441, false), (4800, true));
+        assert_eq!(clock.position(5240, 441, false), (5241, false));
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         let mut stream = StreamingFrames::new(80).unwrap();
         stream.packet(160_000, &[42; 1280], true);
@@ -940,6 +945,38 @@ mod tests {
         assert_eq!(frame.start_ms, 10_000);
         assert!(frame.discontinuity);
         assert_eq!(frame.samples, vec![42; 1280]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn loopback_packets_flagged_discontinuous_on_every_packet_stay_one_stream() {
+        use windows::Win32::Media::Audio::{
+            AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
+        };
+        let flagged = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
+        let mut clock = StreamingPacketClock::default();
+        // 10 ms packets whose timestamps wander by up to 31 samples (2 ms), as
+        // measured on a Windows loopback stream that flagged every packet.
+        let placed: Vec<_> = [0, 191, 303, 488]
+            .into_iter()
+            .map(|timestamp| clock.place(flagged, timestamp, 0, 160))
+            .collect();
+        assert_eq!(
+            placed,
+            [(0, false), (160, false), (320, false), (480, false)],
+            "flagged packets with continuing timestamps stay one stream"
+        );
+        assert_eq!(
+            clock.place(flagged, 1_120, 0, 160),
+            (1_120, true),
+            "a timestamp jump is a real gap"
+        );
+        let missing = AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32;
+        assert_eq!(
+            clock.place(missing, 0, 5_000, 160),
+            (4_840, true),
+            "without a timestamp the read time places the packet and the stream resets"
+        );
     }
 
     #[cfg(windows)]

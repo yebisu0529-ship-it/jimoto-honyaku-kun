@@ -5,15 +5,15 @@ use plamo_translate::hardware::Hardware;
 
 /// One window whose egui state lasts from frame to frame, so a menu that has
 /// been opened stays open.
-struct Window {
+pub(super) struct Window {
     context: egui::Context,
     size: egui::Vec2,
     frame: u32,
-    output: egui::FullOutput,
+    pub(super) output: egui::FullOutput,
 }
 
 impl Window {
-    fn new(width: f32, height: f32) -> Self {
+    pub(super) fn new(width: f32, height: f32) -> Self {
         let context = egui::Context::default();
         configure_theme(&context);
         Self {
@@ -24,7 +24,7 @@ impl Window {
         }
     }
 
-    fn draw(&mut self, app: &mut App, events: Vec<egui::Event>) {
+    pub(super) fn draw(&mut self, app: &mut App, events: Vec<egui::Event>) {
         self.frame += 1;
         self.output = self.context.run(
             egui::RawInput {
@@ -37,18 +37,18 @@ impl Window {
         );
     }
 
-    fn settle(&mut self, app: &mut App) {
+    pub(super) fn settle(&mut self, app: &mut App) {
         for _ in 0..4 {
             self.draw(app, vec![]);
         }
     }
 
-    fn has(&self, label: &str) -> bool {
+    pub(super) fn has(&self, label: &str) -> bool {
         texts(&self.output).iter().any(|(text, _, _)| text == label)
     }
 
     /// Where the one text drawn exactly as `label` is.
-    fn at(&self, label: &str) -> egui::Rect {
+    pub(super) fn at(&self, label: &str) -> egui::Rect {
         let found: Vec<_> = texts(&self.output)
             .into_iter()
             .filter(|(text, _, _)| text == label)
@@ -64,7 +64,7 @@ impl Window {
 
     /// The colour the first letter of the text is painted in. A disabled
     /// control paints its text paler than the colour it was given.
-    fn ink(&self, label: &str) -> Color32 {
+    pub(super) fn ink(&self, label: &str) -> Color32 {
         fn visit(shape: &egui::epaint::Shape, label: &str, out: &mut Vec<Color32>) {
             match shape {
                 egui::epaint::Shape::Text(text) if text.galley.text() == label => {
@@ -90,7 +90,7 @@ impl Window {
     }
 
     /// Presses and releases over the centre of the text, the way a pointer does.
-    fn click(&mut self, app: &mut App, label: &str) {
+    pub(super) fn click(&mut self, app: &mut App, label: &str) {
         let at = self.at(label).center();
         self.draw(app, vec![egui::Event::PointerMoved(at)]);
         self.draw(app, vec![press(at, egui::PointerButton::Primary, true)]);
@@ -98,13 +98,22 @@ impl Window {
         self.settle(app);
     }
 
-    fn open_menu(&mut self, app: &mut App) {
+    pub(super) fn open_menu(&mut self, app: &mut App) {
         self.settle(app);
         self.click(app, "⋯ その他");
     }
+
+    /// Rests the pointer over the text, long enough for its hover text.
+    pub(super) fn hover(&mut self, app: &mut App, label: &str) {
+        self.context
+            .style_mut(|style| style.interaction.tooltip_delay = 0.0);
+        let at = self.at(label).center();
+        self.draw(app, vec![egui::Event::PointerMoved(at)]);
+        self.settle(app);
+    }
 }
 
-fn hardware() -> Hardware {
+pub(super) fn hardware() -> Hardware {
     Hardware {
         os_arch: "windows-x86_64".into(),
         cpu_logical: 16,
@@ -119,7 +128,7 @@ fn hardware() -> Hardware {
 
 /// The chat with the translation model ready. Opening the model screen asks
 /// for the PC's capacity, so that answer is already in.
-fn chat() -> App {
+pub(super) fn chat() -> App {
     let mut app = App::inert();
     app.backend_ready = true;
     app.setup.hardware = Some(hardware());
@@ -143,13 +152,20 @@ const HEADERED: [(Tab, &str); 5] = [
 ];
 
 #[test]
-fn the_app_opens_on_the_chat_with_its_name_and_one_menu_and_nothing_else() {
+fn the_app_opens_on_the_chat_with_its_name_one_menu_and_the_listen_button() {
     assert!(Tab::default() == Tab::Live);
     for (width, height) in [(860.0, 620.0), (2560.0, 1369.0)] {
         let mut app = chat();
         let mut window = Window::new(width, height);
         window.settle(&mut app);
-        for shown in ["地元翻訳くん", "PC内で翻訳", "⋯ その他", credit::LABEL] {
+        for shown in [
+            "地元翻訳くん",
+            "PC内で翻訳",
+            "⋯ その他",
+            "● 聞く",
+            "止まっています",
+            credit::LABEL,
+        ] {
             assert!(
                 window.has(shown),
                 "{shown} is not drawn at {width}x{height}"
@@ -253,7 +269,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
         );
     }
     let last = window.at("状態の詳細").bottom();
-    for item in ["新しく始める", "書き出し", "表示"] {
+    for item in ["新しく始める", "書き出し", "入力の切り替え", "表示"] {
         assert!(
             window.at(item).top() > last,
             "{item} is not below the screens"
@@ -272,7 +288,7 @@ fn the_menu_on_another_screen_has_the_screens_and_not_what_belongs_to_the_chat()
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
     assert!(window.has("設定") && window.has("字幕ウィンドウ"));
-    for chat_only in ["新しく始める", "表示"] {
+    for chat_only in ["新しく始める", "入力の切り替え", "表示"] {
         assert!(
             !window.has(chat_only),
             "{chat_only} is in the menu of another screen"
@@ -361,6 +377,7 @@ fn items_that_need_the_model_are_faded_until_it_is_ready_and_the_others_never_ar
             "設定",
             "状態の詳細",
             "新しく始める",
+            "入力の切り替え",
             "表示",
         ]
         .map(|item| (item, window.ink(item)))
@@ -421,14 +438,32 @@ fn the_display_options_moved_into_the_menu_and_still_work() {
 }
 
 #[test]
-fn the_readout_switch_stays_beside_the_menu() {
+fn the_readout_switch_is_in_the_bar_on_the_chat_and_beside_the_menu_on_the_other_screens() {
     let mut app = chat();
     app.settings.readout_enabled = true;
     let mut window = Window::new(860.0, 620.0);
     window.settle(&mut app);
-    let (switch, menu) = (window.at("自動読み上げ"), window.at("⋯ その他"));
-    assert!(switch.right() < menu.left());
-    assert!((switch.center().y - menu.center().y).abs() < 2.0);
+    let (switch, menu, listen) = (
+        window.at("自動読み上げ"),
+        window.at("⋯ その他"),
+        window.at("● 聞く"),
+    );
+    let bar = app.ui_probe.listen_bar.expect("the bar is drawn");
+    assert!(bar.contains_rect(switch), "the switch is not in the bar");
+    assert!(switch.top() > menu.bottom(), "the header still has it");
+    assert!(listen.right() < switch.left());
+    assert!((switch.center().y - listen.center().y).abs() < 2.0);
+
+    for tab in [Tab::Text, Tab::Files, Tab::Settings, Tab::Setup] {
+        let mut app = chat();
+        app.tab = tab;
+        app.settings.readout_enabled = true;
+        let mut window = Window::new(860.0, 620.0);
+        window.settle(&mut app);
+        let (switch, menu) = (window.at("自動読み上げ"), window.at("⋯ その他"));
+        assert!(switch.right() < menu.left());
+        assert!((switch.center().y - menu.center().y).abs() < 2.0);
+    }
 }
 
 #[test]
@@ -611,10 +646,16 @@ fn the_chat_shows_one_state_where_the_four_models_were() {
     only(&window, "準備が必要です");
     assert!(window.has("モデルの準備"));
 
-    // An error stands in the state's place, in red and in its own words.
+    // An error is beside the button, in red and in its own words, and only
+    // there. The row keeps the state of the models.
     let window = draw(|app| app.service_error = LOAD_FAILED.into());
-    only(&window, "");
-    assert_eq!(find_text(&window.output, LOAD_FAILED).1, theme::ERROR);
+    only(&window, "準備完了");
+    let (rect, color) = find_text(&window.output, LOAD_FAILED);
+    assert_eq!(color, theme::ERROR);
+    assert!(
+        rect.bottom() < 620.0 - theme::CONTROL_H,
+        "the error is in the status row, not beside the button"
+    );
     assert_eq!(
         texts(&window.output)
             .iter()

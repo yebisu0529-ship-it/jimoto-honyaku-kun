@@ -310,6 +310,7 @@ mod tests {
             ("muted/surface", TEXT_MUTED, SURFACE, 4.5),
             ("accent/canvas", ACCENT, CANVAS, 4.5),
             ("on-accent/accent", ON_ACCENT, ACCENT, 4.5),
+            ("on-accent/stop button", ON_ACCENT, ERROR, 4.5),
             ("error/surface", ERROR, SURFACE, 4.5),
             ("warning/surface", WARNING, SURFACE, 4.5),
             ("success/surface", SUCCESS, SURFACE, 4.5),

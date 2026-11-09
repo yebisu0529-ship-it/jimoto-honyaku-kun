@@ -156,6 +156,9 @@ pub struct Options {
     pub follow: bool,
     /// Some(speaking) while readout is in use. None keeps its commands out.
     pub readout: Option<bool>,
+    /// What the chat says while it has no message: what it is for, or what
+    /// to do next.
+    pub empty: &'static str,
 }
 
 pub enum Action {
@@ -272,7 +275,7 @@ impl State {
             self.at_end = true;
             self.seen = 0;
             self.flipped.clear();
-            empty_hint(ui, inner);
+            empty_hint(ui, inner, options.empty);
             return None;
         }
         let mut body = ui.new_child(
@@ -683,9 +686,13 @@ fn focus_ring(ui: &egui::Ui, response: &egui::Response, radius: CornerRadius) {
     }
 }
 
-fn empty_hint(ui: &egui::Ui, inner: Rect) {
+/// What an empty chat is for. A window that knows what to do next says that
+/// as well.
+pub const EMPTY_HINT: &str = "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。";
+
+fn empty_hint(ui: &egui::Ui, inner: Rect, text: &str) {
     let mut job = egui::text::LayoutJob::simple(
-        "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。".to_owned(),
+        text.to_owned(),
         FontId::proportional(theme::SIZE_BODY),
         theme::CHAT_META,
         (inner.width() - 48.0).max(MIN_ROOM),
@@ -1246,6 +1253,7 @@ pub(super) mod testing {
                     show_originals: false,
                     follow: true,
                     readout: None,
+                    empty: EMPTY_HINT,
                 },
                 time: 0.0,
             }
@@ -2285,6 +2293,15 @@ mod tests {
         assert!((text.center().y - panel.center().y).abs() < 6.0);
         assert_eq!(color, theme::CHAT_META);
         assert!(!filled(&output, theme::CHAT_BACKGROUND).is_empty());
+
+        // The window may say what to do next, on a line of its own.
+        chat.options.empty = "ここに訳が出ます。\n下のボタンを押すと始まります。";
+        let output = chat.settle(&[]);
+        assert_eq!(count_text(&output, hint), 0);
+        let (text, _) = find_text(&output, chat.options.empty);
+        assert!((text.center().x - panel.center().x).abs() < 1.0);
+        assert!((text.center().y - panel.center().y).abs() < 6.0);
+        assert!(panel.contains_rect(text));
     }
 
     #[test]

@@ -703,6 +703,42 @@ fn the_state_belongs_to_the_chat_and_the_other_screens_leave_the_row_to_the_mess
 }
 
 #[test]
+fn the_history_screen_says_what_its_language_row_is_for() {
+    let mut app = chat();
+    app.tab = Tab::Files;
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    let label = window.at("ファイル翻訳の言語");
+    let source = window.at("自動判定");
+    assert!(label.right() < source.left(), "{label:?} {source:?}");
+    assert!(
+        (label.center().y - source.center().y).abs() < 3.0,
+        "{label:?} {source:?}"
+    );
+
+    // On the 文章 screen the same row is beside its own 翻訳する button.
+    app.tab = Tab::Text;
+    window.settle(&mut app);
+    assert!(window.has("自動判定") && !window.has("ファイル翻訳の言語"));
+}
+
+#[test]
+fn the_chat_calls_what_it_saves_the_history_as_the_menu_does() {
+    let mut app = chat();
+    let session_dir = std::env::temp_dir().join(format!("jimoto-test-{}", uuid::Uuid::new_v4()));
+    app.journal = Some(Journal::new(&session_dir).expect("creates a test journal"));
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    assert!(window.has("履歴に自動保存"));
+    assert!(
+        !texts(&window.output)
+            .iter()
+            .any(|(text, _, _)| text.contains("タイムライン"))
+    );
+    let _ = fs::remove_dir_all(&session_dir);
+}
+
+#[test]
 fn only_the_translation_model_can_make_the_chat_need_preparation() {
     let mut app = chat();
     // Speech recognition starts with the first audio, and readout is off.

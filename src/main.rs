@@ -1556,7 +1556,7 @@ impl App {
             _ => credit::published(&timeline_txt(&records)),
         };
         match fs::write(path, content) {
-            Ok(()) => self.status = "タイムラインを書き出しました。".into(),
+            Ok(()) => self.status = "履歴を書き出しました。".into(),
             Err(e) => self.status = e.to_string(),
         }
     }

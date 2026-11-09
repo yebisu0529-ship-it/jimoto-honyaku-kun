@@ -536,6 +536,31 @@ fn auto_read_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
     choice_button(ui, "自動読み上げ", on).on_hover_text(readout::AUTO_READ_HINT)
 }
 
+/// What the status row says after the 金融 button: what went in, what did not
+/// fit, and what to do next.
+fn glossary_preset_status(added: &glossary::Added) -> String {
+    let mut message = String::new();
+    if added.entries > 0 {
+        message += &format!(
+            "金融（FOMC記者会見）の用語を{}件入れました。",
+            added.entries
+        );
+    } else if added.left_out == 0 {
+        message += "金融（FOMC記者会見）の用語は、すべて用語集にあります。";
+    }
+    if added.left_out > 0 {
+        message += &format!(
+            "用語集は{}項目までのため、{}件は入れていません。",
+            glossary::MAX_ENTRIES,
+            added.left_out
+        );
+    }
+    if added.entries > 0 {
+        message += "「設定を保存」を押すと翻訳に使います。ほかの話題を訳すときは、この行を消してください。";
+    }
+    message
+}
+
 /// The live rows as chat messages, oldest first. `visible` is the coherent
 /// pair of the current paragraph, which stands in for its row while a split
 /// leaves the row's own translation out of date. `drafting` is speech still
@@ -1848,6 +1873,14 @@ impl App {
             .default_open(false)
             .show(ui, |ui| {
                 secondary(ui, "1行に「原語 = 訳語」を入力します。例: inference = 推論");
+                if ui
+                    .add(standard("金融（FOMC記者会見）の用語を入れる"))
+                    .on_hover_text("FRBの記者会見でよく出る用語を、用語集の最後に足します。今ある行はそのまま残ります。ほかの話題を訳すときは消してください。")
+                    .clicked()
+                {
+                    let added = glossary::add(&mut self.glossary_input, glossary::FOMC);
+                    self.status = glossary_preset_status(&added);
+                }
                 ui.add_sized(
                     [ui.available_width(), 160.0],
                     egui::TextEdit::multiline(&mut self.glossary_input)
@@ -2178,6 +2211,8 @@ impl App {
 mod home_tests;
 #[cfg(test)]
 mod listen_tests;
+#[cfg(test)]
+mod settings_tests;
 #[cfg(test)]
 mod live_layout_tests {
     use super::*;

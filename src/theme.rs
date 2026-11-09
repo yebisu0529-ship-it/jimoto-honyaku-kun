@@ -402,6 +402,7 @@ mod tests {
         for (file, source) in [
             ("chat.rs", include_str!("chat.rs")),
             ("ui.rs", include_str!("ui.rs")),
+            ("ui/youtube.rs", include_str!("ui/youtube.rs")),
             ("mini.rs", include_str!("mini.rs")),
             ("setup.rs", include_str!("setup.rs")),
             ("picker.rs", include_str!("picker.rs")),

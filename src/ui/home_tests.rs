@@ -135,20 +135,22 @@ pub(super) fn chat() -> App {
     app
 }
 
-const SCREENS: [(Tab, &str); 4] = [
+const SCREENS: [(Tab, &str); 5] = [
     (Tab::Text, "文章を翻訳"),
     (Tab::Files, "履歴"),
     (Tab::Settings, "設定"),
     (Tab::Setup, "モデル"),
+    (Tab::YouTube, "YouTube字幕の接続"),
 ];
 
-/// Every screen that has the page header: the chat and the four behind the menu.
-const HEADERED: [(Tab, &str); 5] = [
+/// Every screen that has the page header: the chat and the five behind the menu.
+const HEADERED: [(Tab, &str); 6] = [
     (Tab::Text, "文章"),
     (Tab::Live, "チャット"),
     (Tab::Files, "履歴"),
     (Tab::Settings, "設定"),
     (Tab::Setup, "モデル"),
+    (Tab::YouTube, "YouTube字幕の接続"),
 ];
 
 #[test]
@@ -232,6 +234,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
         "ファイルを翻訳",
         "履歴",
         "モデル",
+        "YouTube字幕の接続",
         "設定",
         "状態の詳細",
     ];
@@ -258,6 +261,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
         ("画面の文字を翻訳", "Ctrl"),
         ("ファイルを翻訳", "Ctrl"),
         ("モデル", "Ctrl"),
+        ("YouTube字幕の接続", "Ctrl"),
         ("状態の詳細", "Ctrl"),
     ] {
         let row = window.at(item);
@@ -378,6 +382,7 @@ fn items_that_need_the_model_are_faded_until_it_is_ready_and_the_others_never_ar
             "ファイルを翻訳",
             "履歴",
             "モデル",
+            "YouTube字幕の接続",
             "設定",
             "状態の詳細",
             "入力の切り替え",
@@ -457,7 +462,13 @@ fn the_readout_switch_is_in_the_bar_on_the_chat_and_beside_the_menu_on_the_other
     assert!(listen.right() < switch.left());
     assert!((switch.center().y - listen.center().y).abs() < 2.0);
 
-    for tab in [Tab::Text, Tab::Files, Tab::Settings, Tab::Setup] {
+    for tab in [
+        Tab::Text,
+        Tab::Files,
+        Tab::Settings,
+        Tab::Setup,
+        Tab::YouTube,
+    ] {
         let mut app = chat();
         app.tab = tab;
         app.settings.readout_enabled = true;
@@ -524,6 +535,7 @@ fn each_screen_behind_the_menu_has_its_title_on_the_row_of_the_back_button_and_t
         (Tab::Files, "履歴"),
         (Tab::Settings, "設定"),
         (Tab::Setup, "このPCに合うモデルを準備"),
+        (Tab::YouTube, "YouTube字幕の接続"),
     ] {
         let mut app = chat();
         app.tab = tab;
@@ -554,6 +566,7 @@ fn the_credit_stays_at_the_bottom_right_of_every_screen() {
             (Tab::Files, "履歴"),
             (Tab::Settings, "設定"),
             (Tab::Setup, "モデル"),
+            (Tab::YouTube, "YouTube字幕の接続"),
         ] {
             let mut app = chat();
             app.tab = tab;

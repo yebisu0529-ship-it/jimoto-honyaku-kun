@@ -1490,7 +1490,11 @@ impl App {
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
             let can_clear = !self.rows.is_empty() || !self.asr_partial.trim().is_empty();
-            let mut clear = false;
+            let can_copy = self
+                .rows
+                .iter()
+                .any(|row| !row.record.translation.trim().is_empty());
+            let (mut clear, mut copy_all) = (false, false);
             self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |ui| {
                 if ui
                     .add_enabled(can_clear, standard("クリア"))
@@ -1501,6 +1505,10 @@ impl App {
                 {
                     clear = true;
                 }
+                copy_all = ui
+                    .add_enabled(can_copy, standard("全文コピー"))
+                    .on_hover_text("表示中の会話をすべて、PLaMoのクレジットを付けてコピーします。")
+                    .clicked();
             });
             if clear {
                 self.follow(ui.ctx(), MenuChoice::Clear);
@@ -1530,6 +1538,9 @@ impl App {
                     self.live_chat.show(ui, "live-chat", &messages, options)
                 })
                 .inner;
+            if copy_all {
+                self.live_chat.copy_all(&messages);
+            }
             self.listen_bar(ui);
             match action {
                 Some(chat::Action::Read(text)) => self.read_translation(text),

@@ -204,6 +204,35 @@ impl MiniWindowState {
         })]
     }
 
+    /// A normal window far below its minimum was opened from a place saved
+    /// while it was minimized: Windows reports no size for a minimized window,
+    /// and eframe then opens the next start 64 points square. Returns the
+    /// commands that give it the default size in the middle of its monitor.
+    /// Nothing else makes a normal window that small: the minimum stops a resize.
+    pub fn repair(&self, info: &ViewportInfo) -> Vec<ViewportCommand> {
+        if !self.normal_geometry_restored()
+            || info.minimized == Some(true)
+            || info.maximized == Some(true)
+            || info.fullscreen == Some(true)
+        {
+            return Vec::new();
+        }
+        let Some(size) = info.inner_rect.and_then(|r| valid_size(r.size())) else {
+            return Vec::new();
+        };
+        let size = size * self.zoom;
+        if size.x >= NORMAL_MIN.x / 2.0 && size.y >= NORMAL_MIN.y / 2.0 {
+            return Vec::new();
+        }
+        let target = NORMAL_SIZE / self.zoom;
+        let mut commands = vec![ViewportCommand::InnerSize(target)];
+        if let Some(monitor) = info.monitor_size.and_then(valid_size) {
+            let corner = ((monitor - target) / 2.0).max(Vec2::ZERO);
+            commands.push(ViewportCommand::OuterPosition(corner.to_pos2()));
+        }
+        commands
+    }
+
     fn geometry_commands(
         &self,
         size: Vec2,
@@ -456,5 +485,72 @@ mod tests {
             let remembered = state.mini_size();
             assert!(remembered.x >= 400.0 && remembered.y >= 260.0);
         }
+    }
+
+    /// The window eframe opens from a place saved while minimized: 64 points
+    /// square at the corner of a 2048 by 1152 point monitor.
+    fn speck() -> ViewportInfo {
+        ViewportInfo {
+            minimized: Some(false),
+            monitor_size: Some(Vec2::new(2048.0, 1152.0)),
+            ..info(Pos2::ZERO, Vec2::splat(64.0), false, false, 1.25)
+        }
+    }
+
+    #[test]
+    fn a_window_opened_as_a_speck_gets_the_default_size_in_the_middle_of_its_monitor() {
+        for zoom in [1.0, 1.1] {
+            let mut state = MiniWindowState::default();
+            state.observe_with_zoom(&speck(), zoom);
+            let size = NORMAL_SIZE / zoom;
+            assert_eq!(
+                state.repair(&speck()),
+                [
+                    ViewportCommand::InnerSize(size),
+                    ViewportCommand::OuterPosition(
+                        ((Vec2::new(2048.0, 1152.0) - size) / 2.0).to_pos2()
+                    ),
+                ],
+                "zoom {zoom}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_of_a_usable_size_is_left_where_it_is() {
+        let mut state = MiniWindowState::default();
+        for size in [NORMAL_MIN, NORMAL_SIZE, Vec2::new(2560.0, 1369.0)] {
+            let usable = ViewportInfo {
+                inner_rect: Some(eframe::egui::Rect::from_min_size(Pos2::ZERO, size)),
+                ..speck()
+            };
+            state.observe_with_zoom(&usable, 1.0);
+            assert!(state.repair(&usable).is_empty(), "{size:?}");
+        }
+    }
+
+    #[test]
+    fn a_minimized_window_and_the_mini_view_are_not_repaired() {
+        let mut state = MiniWindowState::default();
+        let minimized = ViewportInfo {
+            minimized: Some(true),
+            ..speck()
+        };
+        state.observe_with_zoom(&minimized, 1.0);
+        assert!(state.repair(&minimized).is_empty());
+
+        // The mini view is smaller than half the normal minimum, and so is a
+        // window on its way back from it.
+        let normal = info(Pos2::ZERO, NORMAL_SIZE, false, false, 1.0);
+        state.observe_with_zoom(&normal, 1.0);
+        state.enter(&normal);
+        let mini = ViewportInfo {
+            minimized: Some(false),
+            ..info(Pos2::ZERO, MINI_MIN, false, false, 1.0)
+        };
+        state.observe_with_zoom(&mini, 1.0);
+        assert!(state.repair(&mini).is_empty(), "the mini view");
+        state.leave(&mini);
+        assert!(state.repair(&mini).is_empty(), "on the way back");
     }
 }

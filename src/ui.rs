@@ -1045,6 +1045,33 @@ impl App {
         }
     }
 
+    /// What the chat says while it has no message: what to do next, in the
+    /// order the line beside the 聞く button decides what is going on.
+    fn empty_chat_hint(&self) -> &'static str {
+        match self.translation_readiness() {
+            Readiness::Missing => {
+                return "翻訳モデルの準備が、まだできていません。\nいちばん下の「モデルの準備」を押すと、準備の画面が開きます。";
+            }
+            Readiness::Preparing => {
+                return "翻訳モデルを準備しています。\n終わると、下の「● 聞く」を押せます。";
+            }
+            Readiness::Ready => {}
+        }
+        match self.current_input() {
+            None => {
+                "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n下の「● 聞く」を押すと始まります。"
+            }
+            Some(LiveSourceMode::Screen) => "選んだ範囲の文字が変わると、ここに訳が出ます。",
+            Some(LiveSourceMode::Captions) => {
+                "YouTubeで動画を開き、字幕（CC）をオンにして再生してください。\n字幕の訳が、ここに出ます。"
+            }
+            Some(_) if self.audio_start_requested && !(self.audio_enabled && self.asr_ready) => {
+                "音声認識を準備しています。\n終わると、英語の動画や音声の訳がここに出ます。"
+            }
+            Some(_) => "英語の動画や音声を再生してください。\n訳が、ここに出ます。",
+        }
+    }
+
     /// The bar under the chat, where a messenger puts its message box: one
     /// large button that listens and stops, and one line about what is going
     /// on. The readout switch is here too when readout is used.
@@ -1135,7 +1162,7 @@ impl App {
             let saved = if !self.journal_error.is_empty() {
                 ("", TEXT_MUTED)
             } else if self.journal.is_some() {
-                ("タイムラインへ自動保存", theme::SUCCESS)
+                ("履歴に自動保存", theme::SUCCESS)
             } else {
                 ("プレビュー · 保存されません", TEXT_MUTED)
             };
@@ -1539,6 +1566,7 @@ impl App {
                 show_originals: self.settings.live_show_original,
                 follow: self.settings.auto_scroll,
                 readout: self.settings.readout_enabled.then(|| self.readout_busy()),
+                empty: self.empty_chat_hint(),
             };
             // The chat takes the room the bar under it leaves.
             let chat = Vec2::new(
@@ -1590,7 +1618,16 @@ impl App {
             }
             ui.add_space(theme::SPACE_2);
             live_region(ui, "files-languages", 36.0, |ui| {
-                self.languages(ui);
+                // The row belongs to the button in the header, not to the
+                // search under it, so it says so.
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(0.0, theme::CONTROL_H),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| ui.label(theme::caption("ファイル翻訳の言語")),
+                    );
+                    self.languages(ui);
+                });
             });
             self.backend_notice(ui);
             if self.file_busy {

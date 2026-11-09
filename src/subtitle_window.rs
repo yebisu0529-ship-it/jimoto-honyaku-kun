@@ -344,6 +344,7 @@ impl State {
                 show_originals: self.show_source,
                 follow: true,
                 readout: None,
+                empty: chat::EMPTY_HINT,
             },
         );
         if closed {

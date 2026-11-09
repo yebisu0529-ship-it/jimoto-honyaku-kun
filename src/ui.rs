@@ -541,22 +541,19 @@ fn auto_read_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
 fn glossary_preset_status(added: &glossary::Added) -> String {
     let mut message = String::new();
     if added.entries > 0 {
-        message += &format!(
-            "金融（FOMC記者会見）の用語を{}件入れました。",
-            added.entries
-        );
+        message += &format!("金融の用語を{}件入れました。", added.entries);
     } else if added.left_out == 0 {
-        message += "金融（FOMC記者会見）の用語は、すべて用語集にあります。";
+        message += "金融の用語は、すべて用語集にあります。";
     }
     if added.left_out > 0 {
         message += &format!(
-            "用語集は{}項目までのため、{}件は入れていません。",
+            "{}項目を超える{}件は入れていません。",
             glossary::MAX_ENTRIES,
             added.left_out
         );
     }
     if added.entries > 0 {
-        message += "「設定を保存」を押すと翻訳に使います。ほかの話題を訳すときは、この行を消してください。";
+        message += "「設定を保存」で使います。ほかの話題では消してください。";
     }
     message
 }

@@ -16,7 +16,13 @@ if (-not (Test-Path -LiteralPath $taskHelper)) {
     & cargo build --release --locked --bin jimoto-setup --target x86_64-pc-windows-msvc
     if ($LASTEXITCODE -ne 0) { throw '初期設定ツールのビルドに失敗しました。' }
 }
-$taskDataRoot = Join-Path $env:LOCALAPPDATA 'LocalTools/PlamoTranslate/data'
+# The same choice as storage::data_root: the unzipped folder's data, unless a PC
+# prepared by an earlier version keeps its data under Local AppData.
+$taskDataRoot = Join-Path $taskAppRoot 'data'
+$taskEarlierRoot = Join-Path $env:LOCALAPPDATA 'LocalTools/PlamoTranslate/data'
+if (-not (Test-Path -LiteralPath $taskDataRoot -PathType Container) -and (Test-Path -LiteralPath $taskEarlierRoot -PathType Container)) {
+    $taskDataRoot = $taskEarlierRoot
+}
 if ($env:PLAMO_DATA_DIR -and $env:PLAMO_DATA_DIR -match '^(?:[A-Za-z]:[\\/]|\\\\)') {
     $taskDataRoot = [IO.Path]::GetFullPath($env:PLAMO_DATA_DIR)
 }

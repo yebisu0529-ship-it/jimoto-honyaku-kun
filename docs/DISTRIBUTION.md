@@ -12,8 +12,9 @@ Windows 10 / 11（x64）向けのポータブル版です。
 
 ### データの保存場所
 
-- 設定・翻訳履歴・ダウンロードしたモデルやランタイムは、既定でユーザーの `Local AppData` 配下に保存されます（実際のパスはアプリ内で確認できます）。
-- 配布ZIPを展開したフォルダを削除しても、`Local AppData` 内のモデルや履歴は消えません。
+- 設定・翻訳履歴・ダウンロードしたモデルやランタイムは、ZIPを展開したフォルダの `data` に保存されます（実際のパスはアプリ内で確認できます）。フォルダごと削除すると、モデルや履歴もすべて消えます。
+- 0.5以前の版で準備したPC（`Local AppData\LocalTools\PlamoTranslate\data` があるPC）では、その場所をそのまま使います。モデルをダウンロードし直すことはありません。展開したフォルダに `data` を作ると、そちらを使います。
+- 展開したフォルダに書き込めないとき（`Program Files` の中など）は、`Local AppData` に保存します。
 
 ---
 
@@ -49,16 +50,16 @@ cargo run --release --locked --bin download-check
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -PreflightOnly
 
 # 配布用ZIPの作成
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Version 0.5.0
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Version 0.6.0
 ```
 
 ### 4. 出力ファイルと収録ルール
 
 `dist/`（または `-OutDir` で指定した先）に以下の3ファイルを出力します。同名ファイルが既にある場合は上書きせず終了します。
 
-- `Jimoto-Honyaku-kun-0.5.0-win-x64.zip`
-- `Jimoto-Honyaku-kun-0.5.0-win-x64.zip.sha256`
-- `Jimoto-Honyaku-kun-0.5.0-win-x64.manifest.json`
+- `Jimoto-Honyaku-kun-0.6.0-win-x64.zip`
+- `Jimoto-Honyaku-kun-0.6.0-win-x64.zip.sha256`
+- `Jimoto-Honyaku-kun-0.6.0-win-x64.manifest.json`
 
 **収録対象（ホワイトリスト方式）**
 - アプリ本体（GUI）・セットアップCLI・起動スクリプト
@@ -69,5 +70,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -V
 
 **除外対象（ZIPに含めないもの）**
 - モデル重み、ダウンロード済みランタイム、Python仮想環境（`.venv`）、固定声GGUF、参照WAV
-- ユーザー設定、翻訳履歴、接続トークン、ログ、検証用データ、Gitメタデータ
+- ユーザー設定、翻訳履歴、接続キー、ログ、検証用データ、Gitメタデータ
 - `package-manifest.json` には相対パスとSHA-256のみを記録し、PC名・ユーザー名・絶対パスは含めません。

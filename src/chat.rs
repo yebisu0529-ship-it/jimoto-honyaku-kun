@@ -1,10 +1,19 @@
 //! A messenger-style transcript of what was said. The live page and the
 //! separate subtitle window both draw through this one component.
 
-use std::{borrow::Cow, collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, TimeDelta};
-use eframe::egui::{self, Color32, CornerRadius, FontId, Galley, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontId, Galley, PointerButton, Pos2, Rect, Sense, Vec2,
+    text::CCursor,
+    text_selection::{CCursorRange, visuals::paint_text_selection},
+};
 use plamo_translate::credit;
 
 use super::theme;
@@ -47,6 +56,12 @@ const NEW_PILL_LIFT: f32 = 14.0;
 /// The most characters a bubble takes from a finished paragraph. A bubble holds
 /// whole sentences, so one longer sentence is a bubble of its own.
 const BUBBLE_CHARS: usize = 60;
+/// A drag selecting text scrolls the chat once the pointer is this close to
+/// its top or bottom edge, or past it.
+const SCROLL_ZONE: f32 = 24.0;
+/// Points a second the chat scrolls for each point the pointer is into that zone.
+const SCROLL_RATE: f32 = 12.0;
+const SCROLL_MAX: f32 = 1600.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -166,6 +181,70 @@ pub enum Action {
     StopReadout,
 }
 
+/// Which of a speaker's texts a place is in. A translation is read before its
+/// original.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Field {
+    Translation,
+    Original,
+}
+
+/// A place between two characters of what the chat shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Spot {
+    /// The message and the speaker's part of it.
+    part: (u64, usize),
+    field: Field,
+    /// Characters before the place in the field's text.
+    char: usize,
+}
+
+/// A place in reading order: where its part comes in the chat, then the field
+/// and the character.
+type Rank = (usize, Field, usize);
+
+/// Text the reader has dragged over. It stays while its messages are in the
+/// chat, scrolled out of sight or not.
+#[derive(Clone, Copy, Debug)]
+struct Selection {
+    /// Where the drag began.
+    anchor: Spot,
+    /// Where the drag has got to.
+    focus: Spot,
+    /// The button is still held.
+    dragging: bool,
+}
+
+impl Selection {
+    /// Its two ends in reading order, or None when a message it touches is
+    /// no longer in the chat.
+    fn ends(&self, order: &HashMap<(u64, usize), usize>) -> Option<(Rank, Rank)> {
+        let rank = |spot: Spot| order.get(&spot.part).map(|at| (*at, spot.field, spot.char));
+        let (a, b) = (rank(self.anchor)?, rank(self.focus)?);
+        Some(if a <= b { (a, b) } else { (b, a) })
+    }
+}
+
+/// A text drawn this frame that a drag can select.
+#[derive(Clone, Debug)]
+struct Hit {
+    /// The message, the speaker's part and the bubble of the part.
+    bubble: (u64, usize, usize),
+    galley: Arc<Galley>,
+    /// Where the galley was drawn.
+    at: Pos2,
+    field: Field,
+    /// Characters of the field's text before the galley's first.
+    start: usize,
+}
+
+/// Where a bubble's part comes in the chat, and the selection to show.
+#[derive(Clone, Copy)]
+struct Place {
+    at: usize,
+    ends: Option<(Rank, Rank)>,
+}
+
 /// What the reader has done with the transcript, kept between frames.
 #[derive(Clone, Debug)]
 pub struct State {
@@ -181,6 +260,11 @@ pub struct State {
     content_height: f32,
     start_at_top: bool,
     jump_to_end: bool,
+    selection: Option<Selection>,
+    /// The selectable texts drawn this frame, where a drag finds its place.
+    hits: Vec<Hit>,
+    /// The menu asked for the selection to be copied.
+    copy_selection: bool,
     #[cfg(test)]
     panel: Option<Rect>,
     #[cfg(test)]
@@ -203,6 +287,9 @@ impl Default for State {
             content_height: 0.0,
             start_at_top: false,
             jump_to_end: false,
+            selection: None,
+            hits: Vec::new(),
+            copy_selection: false,
             #[cfg(test)]
             panel: None,
             #[cfg(test)]
@@ -234,6 +321,21 @@ impl State {
     /// Forget everything about the reader, as when a new talk begins.
     pub fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    /// Copies all the chat shows, from the first message to the last, with
+    /// the credit.
+    pub fn copy_all(&mut self, messages: &[Message<'_>]) {
+        let entries = plan(messages);
+        let text = self.text(&entries, None);
+        if !text.is_empty() {
+            self.copy(&text);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn copied(&self) -> Option<&str> {
+        self.copied.as_deref()
     }
 
     #[cfg(test)]
@@ -275,6 +377,7 @@ impl State {
             self.at_end = true;
             self.seen = 0;
             self.flipped.clear();
+            self.selection = None;
             empty_hint(ui, inner, options.empty);
             return None;
         }
@@ -291,7 +394,9 @@ impl State {
         visuals.widgets.inactive.bg_fill = theme::CHAT_PILL;
         visuals.widgets.hovered.bg_fill = theme::CHAT_PILL_HOVER;
         visuals.widgets.active.bg_fill = theme::CHAT_META;
-        let following = options.follow && self.at_end;
+        // While text is being selected, the words under the pointer stay put.
+        let selecting = self.selection.is_some_and(|selection| selection.dragging);
+        let following = options.follow && self.at_end && !selecting;
         let mut area = egui::ScrollArea::vertical()
             .id_salt("scroll")
             .auto_shrink([false, false])
@@ -332,7 +437,90 @@ impl State {
         if unseen > 0 && !self.at_end {
             self.new_messages_pill(ui, id, output.inner_rect, unseen);
         }
+        let (copy_keys, escape) = ui.input(|input| {
+            (
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Copy)),
+                input.key_pressed(egui::Key::Escape),
+            )
+        });
+        let copy_keys = copy_keys && !ui.ctx().wants_keyboard_input();
+        if std::mem::take(&mut self.copy_selection) || copy_keys {
+            self.copy_selected(messages);
+        }
+        if escape {
+            self.selection = None;
+        }
         output.inner
+    }
+
+    fn copy_selected(&mut self, messages: &[Message<'_>]) {
+        let entries = plan(messages);
+        let Some(ends) = self
+            .selection
+            .and_then(|selection| selection.ends(&part_order(&entries)))
+        else {
+            return;
+        };
+        let text = self.text(&entries, Some(ends));
+        if !text.is_empty() {
+            self.copy(&text);
+        }
+    }
+
+    /// What the chat shows between two places, or all of it: each speaker's
+    /// part in turn, its translation and, when shown, its original. Speech
+    /// still being recognised and the chat's own labels are left out.
+    fn text(&self, entries: &[Entry<'_>], ends: Option<(Rank, Rank)>) -> String {
+        let order = part_order(entries);
+        let mut text = String::new();
+        let mut last = None;
+        for entry in entries {
+            let Entry::Bubble(bubble) = entry else {
+                continue;
+            };
+            if bubble.message.id == TYPING || !bubble.last_in_part {
+                continue;
+            }
+            let part = (bubble.message.id, bubble.part);
+            let fields = if shows_original_as_body(bubble) {
+                [None, Some((Field::Original, bubble.original.as_ref()))]
+            } else {
+                [
+                    (!bubble.whole.is_empty()).then_some((Field::Translation, bubble.whole)),
+                    self.expanded(bubble)
+                        .then_some((Field::Original, bubble.original.as_ref())),
+                ]
+            };
+            for (field, words) in fields.into_iter().flatten() {
+                let length = words.chars().count();
+                let (from, to) = match ends {
+                    None => (0, length),
+                    Some(_) => match covered(ends, order[&part], (field, 0), length) {
+                        Some(range) => range,
+                        None => continue,
+                    },
+                };
+                let piece = char_slice(words, from, to).trim();
+                if piece.is_empty() {
+                    continue;
+                }
+                if let Some(before) = last {
+                    text.push_str(if before == part { "\n" } else { "\n\n" });
+                }
+                text.push_str(piece);
+                last = Some(part);
+            }
+        }
+        text
+    }
+
+    /// The original of `bubble`'s part is shown.
+    fn expanded(&self, bubble: &Bubble<'_>) -> bool {
+        self.all_originals != self.flipped.contains(&(bubble.message.id, bubble.part))
+            && !bubble.original.is_empty()
     }
 
     fn follow_options(&mut self, options: Options) {
@@ -406,8 +594,15 @@ impl State {
         let whole = |rect: Rect| !following || rect.top() >= visible_top - 0.5;
         let mut action = None;
         let mut after_day = false;
+        let entries = plan(messages);
+        let order = part_order(&entries);
+        let ends = self.selection.and_then(|selection| selection.ends(&order));
+        if ends.is_none() {
+            self.selection = None;
+        }
+        self.hits.clear();
         ui.add_space(EDGE);
-        for (index, entry) in plan(messages).into_iter().enumerate() {
+        for (index, entry) in entries.into_iter().enumerate() {
             match entry {
                 Entry::Day(date) => {
                     if index > 0 {
@@ -441,10 +636,7 @@ impl State {
                         _ => STACK_GAP,
                     });
                     after_day = false;
-                    let key = (bubble.message.id, bubble.part);
-                    let expanded = options.show_originals != self.flipped.contains(&key)
-                        && !bubble.original.is_empty();
-                    let laid = lay_out(ui, &bubble, expanded, &metrics);
+                    let laid = lay_out(ui, &bubble, self.expanded(&bubble), &metrics);
                     let header = if bubble.first_in_group { NAME_H } else { 0.0 };
                     let (_, rect) = ui.allocate_space(egui::vec2(
                         metrics.width,
@@ -452,7 +644,12 @@ impl State {
                     ));
                     if ui.is_rect_visible(rect) && (whole(rect) || bubble.newest) {
                         let header = whole(rect);
-                        let reply = self.paint_bubble(ui, rect, (&bubble, header), &laid, options);
+                        let place = Place {
+                            at: order[&(bubble.message.id, bubble.part)],
+                            ends,
+                        };
+                        let reply =
+                            self.paint_bubble(ui, rect, (&bubble, header), &laid, options, place);
                         action = action.or(reply);
                     }
                 }
@@ -462,7 +659,61 @@ impl State {
         if std::mem::take(&mut self.jump_to_end) {
             ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
         }
+        self.drag_selection(ui);
         action
+    }
+
+    /// Moves the end of a selection being dragged to the pointer, and scrolls
+    /// while the pointer is at the top or bottom of the chat or past it. A
+    /// click on the chat around the bubbles lets the selection go.
+    fn drag_selection(&mut self, ui: &egui::Ui) {
+        let view = ui.clip_rect();
+        let (down, clicked, pointer, dt) = ui.input(|input| {
+            (
+                input.pointer.primary_down(),
+                input.pointer.primary_clicked(),
+                input.pointer.interact_pos(),
+                input.stable_dt.min(0.1),
+            )
+        });
+        if clicked
+            && ui
+                .ctx()
+                .interaction_snapshot(|snapshot| snapshot.clicked.is_none())
+            && pointer.is_some_and(|at| {
+                view.contains(at) && ui.ctx().layer_id_at(at) == Some(ui.layer_id())
+            })
+        {
+            self.selection = None;
+        }
+        let Some(selection) = self
+            .selection
+            .as_mut()
+            .filter(|selection| selection.dragging)
+        else {
+            return;
+        };
+        if !down {
+            selection.dragging = false;
+            return;
+        }
+        let Some(pointer) = pointer else {
+            return;
+        };
+        if let Some(spot) = spot_at(&self.hits, pointer) {
+            selection.focus = spot;
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        let into = (view.top() + SCROLL_ZONE - pointer.y).max(0.0)
+            - (pointer.y - (view.bottom() - SCROLL_ZONE)).max(0.0);
+        if into != 0.0 {
+            let speed = (into * SCROLL_RATE).clamp(-SCROLL_MAX, SCROLL_MAX);
+            ui.scroll_with_delta_animation(
+                egui::vec2(0.0, speed * dt),
+                egui::style::ScrollAnimation::none(),
+            );
+            ui.ctx().request_repaint();
+        }
     }
 
     fn paint_bubble(
@@ -472,8 +723,10 @@ impl State {
         (bubble, with_header): (&Bubble<'_>, bool),
         laid: &Laid,
         options: Options,
+        place: Place,
     ) -> Option<Action> {
         let message = bubble.message;
+        let piece = (message.id, bubble.part, bubble.piece);
         let top = item.top() + if bubble.first_in_group { NAME_H } else { 0.0 };
         let rect = Rect::from_min_size(egui::pos2(item.left() + BUBBLE_X, top), laid.size);
         let painter = ui.painter();
@@ -512,7 +765,21 @@ impl State {
         painter.rect_filled(rect, radius, theme::CHAT_BUBBLE);
         let content = rect.min + egui::vec2(MARGIN_X, MARGIN_Y);
         if let Some(body) = &laid.body {
-            painter.galley(content, body.clone(), theme::CHAT_TEXT);
+            let galley = match body_field(bubble) {
+                Some((field, start)) => self.selectable(
+                    ui,
+                    Hit {
+                        bubble: piece,
+                        galley: body.clone(),
+                        at: content,
+                        field,
+                        start,
+                    },
+                    place,
+                ),
+                None => body.clone(),
+            };
+            painter.galley(content, galley, theme::CHAT_TEXT);
         }
         if let Some(dots) = laid.dots {
             paint_dots(ui, content + dots.to_vec2());
@@ -527,11 +794,19 @@ impl State {
                 0,
                 theme::CHAT_RULE,
             );
-            painter.galley(
-                content + egui::vec2(0.0, original.text_y),
-                original.text.clone(),
-                theme::CHAT_TEXT_MUTED,
+            let at = content + egui::vec2(0.0, original.text_y);
+            let galley = self.selectable(
+                ui,
+                Hit {
+                    bubble: piece,
+                    galley: original.text.clone(),
+                    at,
+                    field: Field::Original,
+                    start: 0,
+                },
+                place,
             );
+            painter.galley(at, galley, theme::CHAT_TEXT_MUTED);
             if let Some((video, y)) = &original.video {
                 painter.galley(
                     content + egui::vec2(0.0, *y),
@@ -561,30 +836,84 @@ impl State {
 
         let key = (message.id, bubble.part);
         let expandable = !bubble.original.is_empty() && !shows_original_as_body(bubble);
-        let response = ui.interact(
-            rect,
-            ui.id().with(("bubble", key, bubble.piece)),
-            Sense::click(),
-        );
+        // On a touch screen a drag scrolls the chat instead.
+        let sense = if ui.input(|input| input.has_touch_screen()) {
+            Sense::click()
+        } else {
+            Sense::click_and_drag()
+        };
+        let response = ui.interact(rect, ui.id().with(("bubble", key, bubble.piece)), sense);
         focus_ring(ui, &response, radius);
         let label = bubble_display_text(bubble);
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        if response.drag_started_by(PointerButton::Primary)
+            && let Some(origin) = ui.input(|input| input.pointer.press_origin())
+            && let Some(spot) = spot_at(self.hits.iter().filter(|hit| hit.bubble == piece), origin)
+        {
+            self.selection = Some(Selection {
+                anchor: spot,
+                focus: spot,
+                dragging: true,
+            });
+        }
+        let selected = place.ends.is_some_and(|(low, high)| low < high);
         let mut action = None;
-        response.context_menu(|ui| action = self.menu(ui, bubble, options));
+        response.context_menu(|ui| action = self.menu(ui, bubble, options, selected));
         if expandable && response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        if expandable && response.clicked() {
-            self.toggle_original(key.0, key.1);
+        if response.clicked() {
+            self.selection = None;
+            if expandable {
+                self.toggle_original(key.0, key.1);
+            }
             ui.ctx().request_repaint();
         }
         action
     }
 
-    fn menu(&mut self, ui: &mut egui::Ui, bubble: &Bubble<'_>, options: Options) -> Option<Action> {
+    /// Notes a text a drag can select, and returns it with the selection on it.
+    fn selectable(&mut self, ui: &egui::Ui, hit: Hit, place: Place) -> Arc<Galley> {
+        let mut galley = hit.galley.clone();
+        if let Some((from, to)) = covered(
+            place.ends,
+            place.at,
+            (hit.field, hit.start),
+            galley.end().index,
+        ) {
+            let mut visuals = ui.visuals().clone();
+            visuals.selection.bg_fill = theme::CHAT_SELECTION;
+            visuals.selection.stroke.color = theme::CHAT_TEXT;
+            paint_text_selection(
+                &mut galley,
+                &visuals,
+                &CCursorRange::two(CCursor::new(from), CCursor::new(to)),
+                None,
+            );
+        }
+        self.hits.push(hit);
+        galley
+    }
+
+    fn menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        bubble: &Bubble<'_>,
+        options: Options,
+        selected: bool,
+    ) -> Option<Action> {
         let text = bubble.whole;
         let readable = bubble.message.status == Status::Fixed && !text.is_empty();
         let mut action = None;
+        if selected
+            && ui
+                .button("選択範囲をコピー")
+                .on_hover_text("ドラッグで選んだ文章を、PLaMoのクレジットを付けてコピーします")
+                .clicked()
+        {
+            self.copy_selection = true;
+            ui.close();
+        }
         if ui
             .add_enabled(!text.is_empty(), egui::Button::new("コピー"))
             .on_hover_text("PLaMoのクレジットを付けてコピーします")
@@ -770,6 +1099,84 @@ fn bubble_display_text<'a>(bubble: &'a Bubble<'_>) -> &'a str {
     }
 }
 
+/// The field a bubble's body shows and its first character's place there,
+/// when the body can be selected: the translation, or the original while the
+/// translation is still coming. Speech still being recognised and the note
+/// for a missing translation cannot.
+fn body_field(bubble: &Bubble<'_>) -> Option<(Field, usize)> {
+    if bubble.message.id == TYPING {
+        None
+    } else if shows_original_as_body(bubble) {
+        Some((Field::Original, 0))
+    } else if bubble.text.is_empty() {
+        None
+    } else {
+        Some((Field::Translation, bubble.start))
+    }
+}
+
+/// Where each speaker's part comes in the chat, from the top.
+fn part_order(entries: &[Entry<'_>]) -> HashMap<(u64, usize), usize> {
+    let mut order = HashMap::new();
+    for entry in entries {
+        if let Entry::Bubble(bubble) = entry {
+            let next = order.len();
+            order
+                .entry((bubble.message.id, bubble.part))
+                .or_insert(next);
+        }
+    }
+    order
+}
+
+/// The characters of a text that the selection covers, counted from the
+/// text's first. The text is `length` characters of a field from `start`, in
+/// the part that comes `at`-th.
+fn covered(
+    ends: Option<(Rank, Rank)>,
+    at: usize,
+    (field, start): (Field, usize),
+    length: usize,
+) -> Option<(usize, usize)> {
+    let (low, high) = ends?;
+    let from = low.max((at, field, start));
+    let to = high.min((at, field, start + length));
+    (from < to).then(|| (from.2 - start, to.2 - start))
+}
+
+/// The place in the drawn texts nearest the pointer, looking up and down first.
+fn spot_at<'a>(hits: impl IntoIterator<Item = &'a Hit>, pointer: Pos2) -> Option<Spot> {
+    let away = |hit: &Hit| {
+        let rect = hit.galley.rect.translate(hit.at.to_vec2());
+        let y = (rect.top() - pointer.y)
+            .max(pointer.y - rect.bottom())
+            .max(0.0);
+        let x = (rect.left() - pointer.x)
+            .max(pointer.x - rect.right())
+            .max(0.0);
+        (y, x)
+    };
+    let hit = hits.into_iter().min_by(|a, b| {
+        let (a, b) = (away(a), away(b));
+        a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+    })?;
+    let cursor = hit.galley.cursor_from_pos(pointer - hit.at);
+    Some(Spot {
+        part: (hit.bubble.0, hit.bubble.1),
+        field: hit.field,
+        char: hit.start + cursor.index,
+    })
+}
+
+fn char_slice(text: &str, from: usize, to: usize) -> &str {
+    let byte = |chars: usize| {
+        text.char_indices()
+            .nth(chars)
+            .map_or(text.len(), |(at, _)| at)
+    };
+    &text[byte(from)..byte(to)]
+}
+
 fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics) -> Laid {
     let message = bubble.message;
     let forming = message.status == Status::Forming;
@@ -899,6 +1306,8 @@ struct Bubble<'a> {
     text: &'a str,
     /// All of the part's translation, which copying and reading take.
     whole: &'a str,
+    /// Characters of `whole` before `text`.
+    start: usize,
     original: Cow<'a, str>,
     first_in_group: bool,
     last_in_part: bool,
@@ -944,14 +1353,20 @@ fn plan<'a>(messages: &[Message<'a>]) -> Vec<Entry<'a>> {
                 bubble_texts(whole)
             };
             let pieces = texts.len();
+            let mut from = 0;
             for (piece, text) in texts.into_iter().enumerate() {
                 let last_in_part = piece + 1 == pieces;
+                let at = whole[from..]
+                    .find(text)
+                    .map_or(from, |offset| from + offset);
+                from = at + text.len();
                 entries.push(Entry::Bubble(Bubble {
                     message: *message,
                     part,
                     piece,
                     text,
                     whole,
+                    start: whole[..at].chars().count(),
                     // An original that does not split like its translation is
                     // shown whole, with YouTube speaker markers removed.
                     original: match &fallback_original {
@@ -1196,6 +1611,28 @@ pub(super) mod testing {
             .count()
     }
 
+    /// The painted texts with a selection on them.
+    pub fn selected(output: &FullOutput) -> Vec<String> {
+        shapes(output)
+            .into_iter()
+            .filter_map(|(_, shape)| match shape {
+                Shape::Text(text)
+                    if text.galley.rows.iter().any(|row| {
+                        row.row
+                            .visuals
+                            .mesh
+                            .vertices
+                            .iter()
+                            .any(|vertex| vertex.color == theme::CHAT_SELECTION)
+                    }) =>
+                {
+                    Some(text.galley.text().to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn dots(output: &FullOutput) -> Vec<(Pos2, Color32)> {
         shapes(output)
             .into_iter()
@@ -1296,6 +1733,23 @@ pub(super) mod testing {
             let (_, released) = self.frame(messages, vec![press(at, button, false)]);
             let (output, later) = self.frame(messages, vec![]);
             (output, released.or(later))
+        }
+
+        /// Press at `from`, move to `to` in steps, release there, then draw once more.
+        pub fn drag(&mut self, messages: &[Message<'_>], from: Pos2, to: Pos2) -> FullOutput {
+            self.frame(messages, vec![Event::PointerMoved(from)]);
+            self.frame(messages, vec![press(from, PointerButton::Primary, true)]);
+            for step in 1..=4 {
+                let at = from + (to - from) * (step as f32 / 4.0);
+                self.frame(messages, vec![Event::PointerMoved(at)]);
+            }
+            self.frame(messages, vec![press(to, PointerButton::Primary, false)]);
+            self.frame(messages, vec![]).0
+        }
+
+        /// Ctrl+C, as the system passes it on.
+        pub fn copy_keys(&mut self, messages: &[Message<'_>]) {
+            self.frame(messages, vec![Event::Copy]);
         }
 
         /// A wheel turn over the chat, then frames until the scrolling stops.
@@ -2401,5 +2855,255 @@ mod tests {
         let (read, _) = find_text(&menu, "読み上げ");
         let (_, action) = chat.click(&messages, read.center(), PointerButton::Primary);
         assert!(action.is_none());
+    }
+
+    fn three() -> [Message<'static>; 3] {
+        [
+            message(1, Source::PcAudio, "はじめまして。", at(21, 48, 0)),
+            message(2, Source::PcAudio, "よろしくお願いします。", at(21, 48, 1)),
+            message(3, Source::PcAudio, "今日は晴れです。", at(21, 48, 2)),
+        ]
+    }
+
+    /// Just before the first character of a drawn text, and just after its last.
+    fn ends_of(output: &egui::FullOutput, text: &str) -> (Pos2, Pos2) {
+        let (rect, _) = find_text(output, text);
+        (
+            egui::pos2(rect.left() - 4.0, rect.top() + 4.0),
+            egui::pos2(rect.right() + 4.0, rect.bottom() - 4.0),
+        )
+    }
+
+    #[test]
+    fn dragging_over_bubbles_selects_their_text_and_ctrl_c_copies_it_with_the_credit() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let messages = three();
+        let output = chat.settle(&messages);
+        let (from, _) = ends_of(&output, "はじめまして。");
+        let (_, to) = ends_of(&output, "よろしくお願いします。");
+        let output = chat.drag(&messages, from, to);
+        assert_eq!(
+            selected(&output),
+            ["はじめまして。", "よろしくお願いします。"]
+        );
+        assert!(chat.state.copied.is_none(), "selecting copies nothing yet");
+        chat.copy_keys(&messages);
+        assert_eq!(
+            chat.state.copied.as_deref(),
+            Some(credit::published("はじめまして。\n\nよろしくお願いします。").as_str())
+        );
+    }
+
+    #[test]
+    fn a_selection_may_begin_and_end_inside_a_bubble() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let messages = three();
+        let output = chat.settle(&messages);
+        let (first, _) = find_text(&output, "はじめまして。");
+        let (second, _) = find_text(&output, "よろしくお願いします。");
+        chat.drag(&messages, first.center(), second.center());
+        chat.copy_keys(&messages);
+        let copied = chat.state.copied.clone().expect("the selection is copied");
+        let words = copied
+            .strip_suffix(&format!("\n\n---\n{}", credit::CREDIT))
+            .expect("the credit comes last");
+        let (head, tail) = words.split_once("\n\n").expect("two messages");
+        assert!(
+            !head.is_empty() && head != "はじめまして。" && "はじめまして。".ends_with(head),
+            "the end of the first message: {head}"
+        );
+        assert!(
+            !tail.is_empty()
+                && tail != "よろしくお願いします。"
+                && "よろしくお願いします。".starts_with(tail),
+            "the start of the second message: {tail}"
+        );
+    }
+
+    #[test]
+    fn the_menu_offers_to_copy_the_selection_only_when_there_is_one() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let messages = three();
+        let output = chat.settle(&messages);
+        let second = bubble_of(&output, "よろしくお願いします。");
+        let (menu, _) = chat.click(&messages, second.center(), PointerButton::Secondary);
+        assert_eq!(
+            count_text(&menu, "選択範囲をコピー"),
+            0,
+            "nothing is selected"
+        );
+        chat.click(&messages, egui::pos2(5.0, 5.0), PointerButton::Primary);
+
+        let (from, _) = ends_of(&output, "はじめまして。");
+        let (_, to) = ends_of(&output, "よろしくお願いします。");
+        chat.drag(&messages, from, to);
+        let (menu, _) = chat.click(&messages, second.center(), PointerButton::Secondary);
+        assert_eq!(
+            count_text(&menu, "コピー"),
+            1,
+            "the bubble's own copy stays"
+        );
+        let (item, _) = find_text(&menu, "選択範囲をコピー");
+        let (output, _) = chat.click(&messages, item.center(), PointerButton::Primary);
+        assert_eq!(
+            chat.state.copied.as_deref(),
+            Some(credit::published("はじめまして。\n\nよろしくお願いします。").as_str())
+        );
+        assert_eq!(
+            selected(&output).len(),
+            2,
+            "the selection stays after copying"
+        );
+    }
+
+    #[test]
+    fn a_click_or_escape_lets_the_selection_go() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let messages = three();
+        let output = chat.settle(&messages);
+        let (from, _) = ends_of(&output, "はじめまして。");
+        let (_, to) = ends_of(&output, "よろしくお願いします。");
+
+        chat.drag(&messages, from, to);
+        let third = bubble_of(&output, "今日は晴れです。");
+        let (output, _) = chat.click(&messages, third.center(), PointerButton::Primary);
+        assert!(selected(&output).is_empty(), "a click on a bubble");
+        chat.copy_keys(&messages);
+        assert!(chat.state.copied.is_none(), "there is nothing to copy");
+
+        chat.drag(&messages, from, to);
+        let body = chat.state.body().expect("the chat has been drawn");
+        let beside = egui::pos2(body.center().x, body.bottom() - 8.0);
+        let (output, _) = chat.click(&messages, beside, PointerButton::Primary);
+        assert!(selected(&output).is_empty(), "a click beside the bubbles");
+
+        chat.drag(&messages, from, to);
+        chat.frame(
+            &messages,
+            vec![Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let (output, _) = chat.frame(&messages, vec![]);
+        assert!(selected(&output).is_empty(), "Escape");
+    }
+
+    #[test]
+    fn a_selection_outlives_scrolling_out_of_sight() {
+        let lines = lines(30);
+        let messages = talk(&lines);
+        let mut chat = Chat::new(600.0, 400.0);
+        let output = chat.settle(&messages);
+        let (from, _) = ends_of(&output, &lines[27]);
+        let (_, to) = ends_of(&output, &lines[29]);
+        chat.drag(&messages, from, to);
+        let output = chat.scroll_up(&messages, 3000.0);
+        assert!(
+            !has_text_containing(&output, &lines[27]),
+            "the selection is out of sight"
+        );
+        chat.copy_keys(&messages);
+        assert_eq!(
+            chat.state.copied.as_deref(),
+            Some(credit::published(&lines[27..].join("\n\n")).as_str())
+        );
+    }
+
+    #[test]
+    fn dragging_above_the_chat_scrolls_it_and_selects_what_comes_into_sight() {
+        let lines = lines(30);
+        let messages = talk(&lines);
+        let mut chat = Chat::new(600.0, 400.0);
+        let output = chat.settle(&messages);
+        let shown: Vec<&String> = lines
+            .iter()
+            .filter(|line| count_text(&output, line) == 1)
+            .collect();
+        let body = chat.state.body().expect("the chat has been drawn");
+        let offset = chat.state.offset();
+        let (_, start) = ends_of(&output, &lines[29]);
+        let above = egui::pos2(start.x, body.top() - 30.0);
+        chat.frame(&messages, vec![Event::PointerMoved(start)]);
+        chat.frame(&messages, vec![press(start, PointerButton::Primary, true)]);
+        for _ in 0..30 {
+            chat.frame(&messages, vec![Event::PointerMoved(above)]);
+        }
+        chat.frame(&messages, vec![press(above, PointerButton::Primary, false)]);
+        chat.frame(&messages, vec![]);
+        assert!(
+            chat.state.offset() < offset - 200.0,
+            "the chat scrolled up: {offset} -> {}",
+            chat.state.offset()
+        );
+        chat.copy_keys(&messages);
+        let copied = chat.state.copied.clone().expect("the selection is copied");
+        let first = copied.split("\n\n").next().expect("a first message");
+        assert!(
+            !shown.iter().any(|line| line.as_str() == first),
+            "it begins with a message that was out of sight: {first}"
+        );
+        assert!(copied.contains(lines[29].as_str()));
+    }
+
+    #[test]
+    fn a_selection_over_the_bubbles_of_one_paragraph_copies_it_unbroken() {
+        let mut chat = Chat::new(720.0, 700.0);
+        let messages = [message(1, Source::PcAudio, TALK, at(21, 48, 0))];
+        let pieces = bubble_texts(TALK);
+        assert!(pieces.len() >= 3, "the paragraph takes several bubbles");
+        let output = chat.settle(&messages);
+        let (from, _) = ends_of(&output, pieces[0]);
+        let (_, to) = ends_of(&output, pieces[1]);
+        chat.drag(&messages, from, to);
+        chat.copy_keys(&messages);
+        assert_eq!(
+            chat.state.copied.as_deref(),
+            Some(credit::published(&format!("{}{}", pieces[0], pieces[1])).as_str())
+        );
+    }
+
+    #[test]
+    fn copying_everything_takes_each_part_in_turn_and_the_originals_shown() {
+        let mut chat = Chat::new(720.0, 460.0);
+        let messages = [
+            Message {
+                original: "Nice to meet you.",
+                ..message(1, Source::YouTube, "はじめまして。", at(21, 48, 0))
+            },
+            Message {
+                original: ">> Hello. >> Hi.",
+                ..message(
+                    2,
+                    Source::YouTube,
+                    ">> こんにちは。>> やあ。",
+                    at(21, 48, 1),
+                )
+            },
+            Message::typing(Source::PcAudio, "and so"),
+        ];
+        chat.settle(&messages);
+        chat.state.copy_all(&messages);
+        assert_eq!(
+            chat.state.copied.as_deref(),
+            Some(credit::published("はじめまして。\n\nこんにちは。\n\nやあ。").as_str()),
+            "speech still being recognised is left out"
+        );
+
+        chat.options.show_originals = true;
+        chat.settle(&messages);
+        chat.state.copy_all(&messages);
+        assert_eq!(
+            chat.state.copied.as_deref(),
+            Some(
+                credit::published(
+                    "はじめまして。\nNice to meet you.\n\nこんにちは。\nHello.\n\nやあ。\nHi."
+                )
+                .as_str()
+            )
+        );
     }
 }

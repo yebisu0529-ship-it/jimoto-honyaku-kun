@@ -10,7 +10,7 @@ translated by PLaMo
 
 **[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/jimoto-honyaku-kun/releases)** · **プレビュー版 0.5.0**
 
-![初回のモデル準備画面](assets/screenshots/first-run.png)
+![チャットの画面。YouTube字幕とPC音声の訳が、吹き出しになって上から並ぶ](assets/screenshots/live.png)
 
 ## できること
 
@@ -30,6 +30,8 @@ translated by PLaMo
    - 押すと、翻訳モデル、英語の文章区切り補助（チェックを外すと省きます）、英語のPC音声の認識（Nemotron Speech）を、順に準備します。「2/3 英語の文章区切り補助を準備中」のように、いまの段階が出ます。
    - 「中止」で止められます。途中で失敗しても、できたところは残ります。「もう一度」で、失敗したところから続けられます。
    - GPUのメモリに入らない大きさは選べません。GPUがないPC（CPUかNPUだけのPC）では、0.8Bだけを選べます。
+
+   ![初回のモデル準備画面](assets/screenshots/first-run.png)
 3. **使い始める**：準備が終わると、チャットが開きます。下の「● 聞く」を押すと翻訳が始まり、「■ 止める」を押すと止まります（`Ctrl+Alt+L` でも同じです）。YouTube字幕が届いている間は字幕を、届いていないときはPCの音声を訳します。準備が終わっただけでは、音声の取得は始まりません。
 
 ## 画面の構成

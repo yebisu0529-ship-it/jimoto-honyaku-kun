@@ -2516,6 +2516,167 @@ enum Listening {
     Both,
 }
 
+/// What a preview of the mini view shows.
+#[derive(Clone, Copy, PartialEq)]
+enum MiniScene {
+    /// Listening, with a paragraph still forming at the end of the talk.
+    Live,
+    /// Speech that is still being recognised.
+    Draft,
+    /// A message whose translation is still coming.
+    Translating,
+    ServiceError,
+    Stopped,
+    Readout,
+    /// The reader is at the first message while new ones come in.
+    NewMessages,
+    Menu,
+    /// The menu, with the submenu of the row 入力の切り替え open.
+    InputMenu,
+    /// The result card: with a translation, while a picture is read, and
+    /// after a reading that found no text.
+    Result,
+    Reading,
+    Failure,
+}
+
+/// The mini view in each of its states, at the size it opens at and at its
+/// smallest. The screens are fixtures, because previews never look at the
+/// machine.
+fn render_mini_views(folder: &Path) -> Result<()> {
+    let usual = window_mode::MiniWindowState::default().mini_size();
+    let smallest = window_mode::MINI_MIN;
+    for (name, size, scene) in [
+        ("06-mini-live", usual, MiniScene::Live),
+        ("07-mini-draft", usual, MiniScene::Draft),
+        ("08-mini-screen", usual, MiniScene::Result),
+        ("09-mini-minimum", smallest, MiniScene::Draft),
+        ("10-mini-service-error", usual, MiniScene::ServiceError),
+        ("11-mini-translating", usual, MiniScene::Translating),
+        ("39-mini-stopped", usual, MiniScene::Stopped),
+        ("40-mini-menu", smallest, MiniScene::Menu),
+        ("41-mini-input-menu", usual, MiniScene::InputMenu),
+        ("42-mini-readout", usual, MiniScene::Readout),
+        ("43-mini-reading", usual, MiniScene::Reading),
+        ("44-mini-failure", usual, MiniScene::Failure),
+        ("45-mini-new-messages", usual, MiniScene::NewMessages),
+        ("46-mini-input-menu-minimum", smallest, MiniScene::InputMenu),
+    ] {
+        let ctx = egui::Context::default();
+        ui::configure_theme(&ctx);
+        let mut app = App::inert();
+        app.backend_ready = true;
+        app.asr_ready = true;
+        app.startup_decided = true;
+        app.window_mode.enter(&egui::ViewportInfo::default());
+        // Three messages from a video, then one from the PC's audio that is
+        // still forming. The small window has room for the last two.
+        app.rows = demo_talk(4);
+        app.current_live_id = Some(4);
+        let mut listening = true;
+        let mut pointer = None;
+        let open_menu = |ctx: &egui::Context| egui::Popup::open_id(ctx, egui::Id::new(mini::MENU));
+        match scene {
+            MiniScene::Live => {}
+            MiniScene::Draft => {
+                app.rows.pop();
+                app.current_live_id = None;
+                app.asr_partial =
+                    "The next sentence is being recognized while you read the previous translation."
+                        .into();
+            }
+            MiniScene::Translating => {
+                let row = app.rows.last_mut().expect("the talk has a last message");
+                row.record.source = "The next sentence is still being translated.".into();
+                row.record.translation = "次の文は、まだ翻訳の".into();
+                row.record.paragraph = None;
+                row.pending = true;
+                app.live_busy = Some(row.record.id);
+            }
+            MiniScene::ServiceError => {
+                app.backend_ready = false;
+                app.service_error = "翻訳モデルへの接続が切れました。".into();
+            }
+            MiniScene::Stopped => {
+                listening = false;
+                app.rows.clear();
+                app.current_live_id = None;
+            }
+            MiniScene::Readout => {
+                app.settings.readout_enabled = true;
+                app.settings.auto_read = true;
+            }
+            MiniScene::NewMessages => {
+                app.rows = demo_talk(10);
+                app.current_live_id = Some(10);
+                app.live_chat.reading_from_start(7);
+            }
+            MiniScene::Menu | MiniScene::InputMenu => {
+                app.screens = [(1, "DISPLAY1"), (2, "DISPLAY2")]
+                    .map(|(id, name)| platform::Screen {
+                        id,
+                        name: name.into(),
+                        x: 0,
+                        y: 0,
+                        width: 1920,
+                        height: 1080,
+                        scale: 1.0,
+                    })
+                    .into();
+                // The menu fades in; the picture shows it after it has.
+                ctx.style_mut(|style| style.animation_time = 0.0);
+                if scene == MiniScene::InputMenu {
+                    // A context of its own finds the row, so that the pointer
+                    // can rest on it and open the submenu.
+                    let probe = egui::Context::default();
+                    ui::configure_theme(&probe);
+                    open_menu(&probe);
+                    pointer = preview::locate(
+                        &probe,
+                        size.x as u32,
+                        size.y as u32,
+                        "入力の切り替え",
+                        |ctx| app.render_ui(ctx),
+                    );
+                }
+                open_menu(&ctx);
+            }
+            MiniScene::Result => {
+                app.output = "管理画面にスケジュールが表示されます。動画を一時停止してから、再度再生してください。".into();
+                app.tab = Tab::Text;
+                app.open_mini();
+            }
+            MiniScene::Reading => {
+                // A picture given while another is being read waits its turn,
+                // so nothing is read here.
+                app.ocr.busy = Some(app.ocr.generation);
+                app.do_ocr(image::RgbaImage::new(2, 2));
+            }
+            MiniScene::Failure => {
+                // The recogniser answers that the picture has no text.
+                let _ = app.tx.send(Event::Ocr {
+                    generation: app.ocr.generation,
+                    result: Ok(String::new()),
+                });
+                app.process(&ctx);
+            }
+        }
+        if listening {
+            app.caption_enabled = true;
+            app.audio_enabled = true;
+        }
+        preview::render_hovering(
+            &ctx,
+            &folder.join(format!("{name}.png")),
+            size.x as u32,
+            size.y as u32,
+            pointer,
+            |ctx| app.render_ui(ctx),
+        )?;
+    }
+    Ok(())
+}
+
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
     render_long_paragraph_views(folder)?;
@@ -2774,96 +2935,12 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             )?;
         }
     }
+    render_mini_views(folder)?;
     let mini_default = window_mode::MiniWindowState::default().mini_size();
-    for (name, size, draft, manual, ready) in [
-        ("06-mini-live", mini_default, false, false, true),
-        ("07-mini-draft", mini_default, true, false, true),
-        ("08-mini-screen", mini_default, false, true, true),
-        (
-            "09-mini-minimum",
-            Vec2::new(400.0, 260.0),
-            true,
-            false,
-            true,
-        ),
-        ("10-mini-service-error", mini_default, false, false, false),
-        ("11-mini-translating", mini_default, false, false, true),
-    ] {
-        let ctx = egui::Context::default();
-        ui::configure_theme(&ctx);
-        let mut app = App::inert();
-        app.backend_ready = ready;
-        app.caption_enabled = true;
-        app.audio_enabled = true;
-        app.tab = Tab::Live;
-        app.startup_decided = true;
-        app.window_mode.enter(&egui::ViewportInfo::default());
-        app.rows.push(Row {
-            record: Record {
-                id: 1,
-                start_ms: 12500,
-                end_ms: 16000,
-                source: "The translations stay on your computer, so you can read them again later.".into(),
-                translation: "翻訳はこのPCに保存されるので、あとから読み返せます。画面を小さくしても、翻訳と保存は続きます。".into(),
-                standard_translation: None,
-                kind: "YouTube".into(),
-                video_id: "preview".into(),
-                created_at: "2026-11-05T12:00:00+09:00".into(),
-                paragraph: None,
-            },
-            pending: false,
-            error: None,
-            generation: 0,
-        });
-        app.current_live_id = Some(1);
-        if name == "11-mini-translating" {
-            app.rows.push(Row {
-                record: Record {
-                    id: 2,
-                    start_ms: 16500,
-                    end_ms: 20000,
-                    source: "The next sentence is still being translated.".into(),
-                    translation: "次の文は、まだ翻訳の".into(),
-                    standard_translation: None,
-                    kind: "音声".into(),
-                    video_id: String::new(),
-                    created_at: String::new(),
-                    paragraph: None,
-                },
-                pending: true,
-                error: None,
-                generation: 0,
-            });
-            app.current_live_id = Some(2);
-            app.live_busy = Some(2);
-        }
-        if draft {
-            app.asr_partial =
-                "The next sentence is being recognized while you read the previous translation."
-                    .into();
-        }
-        if manual {
-            app.input =
-                "The dashboard shows the schedule. Pause the video, then play it again.".into();
-            app.output = "管理画面にスケジュールが表示されます。動画を一時停止してから、再度再生してください。".into();
-            app.tab = Tab::Text;
-            app.open_mini();
-        }
-        if !ready {
-            app.service_error = "翻訳モデルへの接続が切れました。".into();
-        }
-        preview::render(
-            &ctx,
-            &folder.join(format!("{name}.png")),
-            size.x as u32,
-            size.y as u32,
-            |ctx| app.render_ui(ctx),
-        )?;
-    }
     for (name, size, interrupted) in [
         ("12-continuous-live", Vec2::new(1280.0, 880.0), false),
         ("13-continuous-mini", mini_default, false),
-        ("14-continuous-mini-minimum", Vec2::new(400.0, 260.0), false),
+        ("14-continuous-mini-minimum", window_mode::MINI_MIN, false),
         ("15-continuous-interrupted", Vec2::new(1280.0, 880.0), true),
     ] {
         use plamo_translate::journal::{ParagraphMeta, ParagraphState};

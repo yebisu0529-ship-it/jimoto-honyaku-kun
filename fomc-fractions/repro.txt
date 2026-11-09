@@ -1,0 +1,8 @@
+8b   main-corpus           vs kit corpus-A  : 21/21 identical (standard and shown)
+8b   main-probe            vs kit probe-A   : 44/44 identical (standard and shown)
+8b   main-corpus-glossary  vs kit corpus-V4 : 21/21 identical (standard and shown)
+8b   main-probe-glossary   vs kit probe-V4  : 44/44 identical (standard and shown)
+08b  main-corpus           vs kit corpus-A  : 21/21 identical (standard and shown)
+08b  main-probe            vs kit probe-A   : 44/44 identical (standard and shown)
+08b  main-corpus-glossary  vs kit corpus-V4 : 21/21 identical (standard and shown)
+08b  main-probe-glossary   vs kit probe-V4  : 44/44 identical (standard and shown)

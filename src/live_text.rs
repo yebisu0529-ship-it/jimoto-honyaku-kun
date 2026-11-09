@@ -1427,6 +1427,76 @@ fn is_filler(token: &str, previous: &str) -> bool {
         .any(|filler| word.eq_ignore_ascii_case(filler) && word[1..] == filler[1..])
 }
 
+const FRACTIONS: [(&str, &str); 3] = [("1/4", ".25"), ("1/2", ".5"), ("3/4", ".75")];
+
+/// Writes a rate given in quarters or halves as a decimal, so "3 and 3/4 to 4%"
+/// and "3-3/4 to 4 percent" read "3.75 to 4%" and "3.75 to 4 percent". PLaMo
+/// keeps 「3と3/4」, and a glossary line for it made the 0.8B model write a
+/// different number.
+pub fn with_decimal_fractions(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (at, _) in text.char_indices() {
+        if at < copied {
+            continue;
+        }
+        if let Some((whole, decimal, end)) = decimal_at(text, at) {
+            out.push_str(&text[copied..at]);
+            out.push_str(whole);
+            out.push_str(decimal);
+            copied = end;
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+/// The rate written at `at`: the whole part and the decimal digits to write in
+/// its place, and the offset where it ends.
+fn decimal_at(text: &str, at: usize) -> Option<(&str, &'static str, usize)> {
+    // Before it, these make it part of a longer word, number or date.
+    let runs_into = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | ',' | '/' | '-');
+    if text[..at].ends_with(runs_into) {
+        return None;
+    }
+    let rest = &text[at..];
+    let digits = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (number, tail) = rest.split_at(digits);
+    // "0 and 1/4" is a range and "2026-1/2" a year, not a rate.
+    if (1..=2).contains(&digits) && !number.starts_with('0') {
+        let joined = tail
+            .strip_prefix(" and ")
+            .or_else(|| tail.strip_prefix('-'));
+        if let Some((decimal, after)) = joined.and_then(take_fraction) {
+            return Some((number, decimal, text.len() - after.len()));
+        }
+    }
+    // Alone "3/4" may be a date; before a percent it is a rate.
+    let (decimal, after) = take_fraction(rest)?;
+    let percent = after.starts_with('%') || after.starts_with(" percent");
+    percent.then_some(("0", decimal, text.len() - after.len()))
+}
+
+/// The decimal for the fraction the text starts with, and the text after it.
+/// A fraction that is part of a longer word, number or date has none.
+fn take_fraction(text: &str) -> Option<(&'static str, &str)> {
+    let &(written, decimal) = FRACTIONS
+        .iter()
+        .find(|(fraction, _)| text.starts_with(fraction))?;
+    let after = &text[written.len()..];
+    let mut next = after.chars();
+    let ends = match next.next() {
+        None => true,
+        Some(c) if c.is_ascii_alphanumeric() || c == '/' => false,
+        // "3/4.5" is a longer number; "3/4." and "3/4, then" end the fraction.
+        Some('.' | ',') => !next.next().is_some_and(|c| c.is_ascii_digit()),
+        Some(_) => true,
+    };
+    ends.then_some((decimal, after))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2595,6 +2665,114 @@ mod tests {
             "  padded  ",
         ] {
             assert_eq!(without_fillers(text), text);
+        }
+    }
+
+    #[test]
+    fn rates_in_quarters_and_halves_are_written_as_decimals() {
+        for (text, expected) in [
+            (
+                "maintain the target rate for the federal funds rate at 3 and 3/4 to 4%.",
+                "maintain the target rate for the federal funds rate at 3.75 to 4%.",
+            ),
+            (
+                "We lowered the target range to 4 and 1/4 to 4 and 1/2 percent.",
+                "We lowered the target range to 4.25 to 4.5 percent.",
+            ),
+            (
+                "decided to lower the target range for the federal funds rate by 1/4 percentage point to 3-3/4 to 4 percent.",
+                "decided to lower the target range for the federal funds rate by 0.25 percentage point to 3.75 to 4 percent.",
+            ),
+            (
+                "lower the target range for the federal funds rate to 0 to 1/4 percent.",
+                "lower the target range for the federal funds rate to 0 to 0.25 percent.",
+            ),
+            (
+                "by 1/2 percentage point to 4-3/4 to 5 percent",
+                "by 0.5 percentage point to 4.75 to 5 percent",
+            ),
+            ("by 3/4 percentage point", "by 0.75 percentage point"),
+            ("by 1/2 percentage points", "by 0.5 percentage points"),
+            ("between 0 and 1/4 percent", "between 0 and 0.25 percent"),
+            ("(5-1/4 to 5-1/2 percent)", "(5.25 to 5.5 percent)"),
+            ("10 and 1/2 percent", "10.5 percent"),
+            ("99 and 3/4", "99.75"),
+            ("12-1/2", "12.5"),
+            ("$3 and 1/2", "$3.5"),
+            ("3 and 3/4%", "3.75%"),
+            ("at 3 and 3/4.", "at 3.75."),
+            ("3-3/4, then", "3.75, then"),
+            ("3 and 3/4\n次の行", "3.75\n次の行"),
+            ("3 and 3/4から", "3.75から"),
+            ("あ1/4%", "あ0.25%"),
+            (
+                "On 3/4 the Committee cut 1/4 percentage point to 3-3/4 to 4 percent, from 4 and 1/4 to 4 and 1/2.",
+                "On 3/4 the Committee cut 0.25 percentage point to 3.75 to 4 percent, from 4.25 to 4.5.",
+            ),
+            ("  at 3 and 3/4\tpercent\n", "  at 3.75\tpercent\n"),
+        ] {
+            assert_eq!(with_decimal_fractions(text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn text_that_is_not_a_rate_in_quarters_or_halves_comes_back_byte_for_byte() {
+        for text in [
+            // Dates and fractions of a thing.
+            "on 1/4 and on 3/4",
+            "on 11/4 at 2 pm",
+            "1/2/2026",
+            "3/4/26",
+            "1/4 point",
+            "1/2 of the",
+            // Other fractions.
+            "3 and 1/3",
+            "2-2/3",
+            "1/8 percentage point",
+            "2 and 2/4",
+            // Joiners written another way.
+            "3 And 3/4",
+            "3 and  3/4",
+            "3  and 3/4",
+            "3 - 3/4",
+            // A number or a fraction that something runs into.
+            "1.3 and 3/4",
+            "1,3 and 3/4",
+            "B3 and 1/4",
+            "1/3 and 1/4",
+            "11/4",
+            "11/4 percent",
+            "21/2%",
+            "-1/4 percent",
+            "3 and 3/4ths",
+            "3/45",
+            "3 and 3/45",
+            "3-3/45",
+            "3 and 3/4.5",
+            "3 and 3/4,5",
+            "3 and 1/4/26",
+            "3-1/2/2026",
+            // A range from zero, a year, numbers too long for a rate, and no number at all.
+            "0 and 1/4",
+            "05 and 1/2",
+            "2026-1/2",
+            "2025 and 1/2",
+            "100 and 1/2",
+            "3% and 1/2",
+            ") and 1/2",
+            // No fraction, or a caption cut off before it is complete.
+            "",
+            "The Committee left the range unchanged.",
+            "  padded  3/4  ",
+            "at 3 and",
+            "at 3 and 3/",
+            "3-",
+            // Non-ASCII text around and instead of the joiner and the digits.
+            "３ and 3/4",
+            "3と3/4",
+            "あ1/4 point",
+        ] {
+            assert_eq!(with_decimal_fractions(text), text);
         }
     }
 }

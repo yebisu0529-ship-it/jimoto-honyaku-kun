@@ -323,6 +323,12 @@ impl State {
         *self = Self::default();
     }
 
+    /// Take the reader to the newest message, wherever they had scrolled to.
+    pub fn go_to_end(&mut self) {
+        self.jump_to_end = true;
+        self.at_end = true;
+    }
+
     /// Copies all the chat shows, from the first message to the last, with
     /// the credit.
     pub fn copy_all(&mut self, messages: &[Message<'_>]) {
@@ -529,8 +535,7 @@ impl State {
             self.flipped.clear();
         }
         if options.follow && !self.follow_was_on {
-            self.jump_to_end = true;
-            self.at_end = true;
+            self.go_to_end();
         }
         self.follow_was_on = options.follow;
     }
@@ -570,8 +575,7 @@ impl State {
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked()
         {
-            self.jump_to_end = true;
-            self.at_end = true;
+            self.go_to_end();
             ui.ctx().request_repaint();
         }
     }
@@ -2665,6 +2669,48 @@ mod tests {
         );
         assert_eq!(count_text(&output, "10番目に確定した部分です。"), 1);
         assert!(!announces_new_messages(&output));
+    }
+
+    #[test]
+    fn going_to_the_end_shows_the_newest_message_wherever_the_reader_was() {
+        let mut chat = Chat::new(720.0, 300.0);
+        let spoken = lines(8);
+        let mut messages = talk(&spoken[..6]);
+        chat.settle(&messages);
+        chat.scroll_up(&messages, 150.0);
+        let reading = chat.state.offset();
+        messages = talk(&spoken[..7]);
+        let output = chat.settle(&messages);
+        assert_eq!(count_text(&output, "↓ 新しいメッセージ 1件"), 1);
+
+        chat.state.go_to_end();
+        let output = chat.settle(&messages);
+        assert!(
+            chat.state.offset() > reading + 50.0,
+            "the view moved from {reading} to {}",
+            chat.state.offset()
+        );
+        assert_eq!(count_text(&output, "7番目に確定した部分です。"), 1);
+        assert!(!announces_new_messages(&output));
+
+        // A chat that does not follow starts at its first message.
+        let mut chat = Chat::new(720.0, 300.0);
+        chat.options.follow = false;
+        let output = chat.settle(&messages);
+        assert_eq!(chat.state.offset(), 0.0);
+        assert_eq!(count_text(&output, "7番目に確定した部分です。"), 0);
+        chat.state.go_to_end();
+        let output = chat.settle(&messages);
+        assert_eq!(count_text(&output, "7番目に確定した部分です。"), 1);
+        let end = chat.state.offset();
+        messages = talk(&spoken[..8]);
+        let output = chat.settle(&messages);
+        assert_eq!(
+            chat.state.offset(),
+            end,
+            "it went to the end once and does not follow"
+        );
+        assert_eq!(count_text(&output, "↓ 新しいメッセージ 1件"), 1);
     }
 
     #[test]

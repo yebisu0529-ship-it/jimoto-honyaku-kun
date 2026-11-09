@@ -4,6 +4,7 @@ use super::theme::{
 };
 use super::*;
 use plamo_translate::credit;
+use plamo_translate::glossary;
 use plamo_translate::journal::ParagraphState;
 
 /// Height reserved for the page title and its actions.
@@ -533,29 +534,6 @@ fn choice_button(ui: &mut egui::Ui, label: &str, chosen: bool) -> egui::Response
 /// under the chat.
 fn auto_read_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
     choice_button(ui, "自動読み上げ", on).on_hover_text(readout::AUTO_READ_HINT)
-}
-
-fn parse_glossary(input: &str) -> std::result::Result<Vec<(String, String)>, String> {
-    let mut entries = Vec::new();
-    for (index, line) in input.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Some((source, target)) = line.split_once('\t').or_else(|| line.split_once('=')) else {
-            return Err(format!(
-                "{}行目: 原語と訳語を = またはタブで区切ってください。",
-                index + 1
-            ));
-        };
-        if source.trim().is_empty() || target.trim().is_empty() {
-            return Err(format!(
-                "{}行目: 原語と訳語の両方を入力してください。",
-                index + 1
-            ));
-        }
-        entries.push((source.trim().to_owned(), target.trim().to_owned()));
-    }
-    Ok(entries)
 }
 
 /// The live rows as chat messages, oldest first. `visible` is the coherent
@@ -1876,7 +1854,7 @@ impl App {
                         .desired_width(f32::INFINITY)
                         .margin(12.0),
                 );
-                if let Err(error) = parse_glossary(&self.glossary_input) {
+                if let Err(error) = glossary::parse(&self.glossary_input) {
                     ui.colored_label(ERROR, error);
                 }
                 ui.label(RichText::new("文脈（翻訳する文章の背景）").size(theme::SIZE_LABEL));
@@ -1990,12 +1968,12 @@ impl App {
             ui.painter()
                 .hline(ui.max_rect().x_range(), line, theme::hairline());
             ui.add_space(theme::SPACE_3);
-            let glossary = parse_glossary(&self.glossary_input);
+            let parsed = glossary::parse(&self.glossary_input);
             if ui
-                .add_enabled(glossary.is_ok(), primary("設定を保存"))
+                .add_enabled(parsed.is_ok(), primary("設定を保存"))
                 .clicked()
             {
-                match glossary {
+                match parsed {
                     Ok(glossary) => {
                         self.settings.translation.glossary = glossary;
                         match self.persist_preferences() {

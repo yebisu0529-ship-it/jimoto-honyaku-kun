@@ -157,8 +157,8 @@ impl App {
         });
     }
 
-    /// The 「⋯」 menu: what the chat's own menu and header offer that a small
-    /// window over other work has a use for.
+    /// The 「⋯」 menu holds what the chat's own menu and header offer that a
+    /// small window over other work has a use for.
     fn menu(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let id = egui::Id::new(MENU);
@@ -248,8 +248,8 @@ impl App {
             .id_salt("body")
             .auto_shrink([false, false])
             .show_viewport(&mut card, |ui, viewport| {
-                // Whole lines only: a line cut in half would hang at the
-                // bottom edge of the smallest window.
+                // A line cut in half would hang at the bottom edge of the
+                // smallest window, so only whole lines are in view.
                 let seen = viewport.translate(ui.max_rect().min.to_vec2());
                 let lines = (seen.height() / line).floor().max(1.0);
                 ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::from_min_size(
@@ -274,8 +274,8 @@ impl App {
         }
     }
 
-    /// One line: a failure to save first, then what the line beside the 聞く
-    /// button says in the main window, then a failure to read aloud.
+    /// One line. A failure to save comes first, then what the line beside the
+    /// 聞く button says in the main window, then a failure to read aloud.
     fn status_row(&self, ui: &mut egui::Ui) {
         ui::live_region(ui, "mini-status", STATUS_ROW, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -913,7 +913,8 @@ impl App {
         }
     }
 
-    /// 範囲翻訳 can start: the model is ready and no screen is being taken.
+    /// 範囲翻訳 can start once the model is ready, unless a screen is being
+    /// taken for it already.
     pub(super) fn can_read_range(&self) -> bool {
         self.backend_ready && !self.capture_busy
     }
@@ -1690,7 +1691,7 @@ impl App {
             .any(|row| !row.record.translation.trim().is_empty())
     }
 
-    /// 全文コピー: all the chat shows, with the credit.
+    /// 全文コピー copies all the chat shows, with the credit.
     pub(super) fn copy_talk(&mut self) {
         self.with_talk(|chat, messages| chat.copy_all(messages));
     }

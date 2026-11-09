@@ -50,16 +50,16 @@ cargo run --release --locked --bin download-check
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -PreflightOnly
 
 # 配布用ZIPの作成
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Version 0.5.0
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Version 0.6.0
 ```
 
 ### 4. 出力ファイルと収録ルール
 
 `dist/`（または `-OutDir` で指定した先）に以下の3ファイルを出力します。同名ファイルが既にある場合は上書きせず終了します。
 
-- `Jimoto-Honyaku-kun-0.5.0-win-x64.zip`
-- `Jimoto-Honyaku-kun-0.5.0-win-x64.zip.sha256`
-- `Jimoto-Honyaku-kun-0.5.0-win-x64.manifest.json`
+- `Jimoto-Honyaku-kun-0.6.0-win-x64.zip`
+- `Jimoto-Honyaku-kun-0.6.0-win-x64.zip.sha256`
+- `Jimoto-Honyaku-kun-0.6.0-win-x64.manifest.json`
 
 **収録対象（ホワイトリスト方式）**
 - アプリ本体（GUI）・セットアップCLI・起動スクリプト

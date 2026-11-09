@@ -70,5 +70,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1 -V
 
 **除外対象（ZIPに含めないもの）**
 - モデル重み、ダウンロード済みランタイム、Python仮想環境（`.venv`）、固定声GGUF、参照WAV
-- ユーザー設定、翻訳履歴、接続トークン、ログ、検証用データ、Gitメタデータ
+- ユーザー設定、翻訳履歴、接続キー、ログ、検証用データ、Gitメタデータ
 - `package-manifest.json` には相対パスとSHA-256のみを記録し、PC名・ユーザー名・絶対パスは含めません。

@@ -421,9 +421,9 @@ pub(super) fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::
     .inner
 }
 
-fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
+fn badge(ui: &mut egui::Ui, text: &str, color: Color32, fill: Color32) {
     egui::Frame::new()
-        .fill(ACCENT_SOFT)
+        .fill(fill)
         .stroke(egui::Stroke::new(1.0_f32, color))
         .corner_radius(4)
         .inner_margin(egui::Margin::symmetric(6, 2))
@@ -498,6 +498,7 @@ enum MenuChoice {
     File,
     History,
     Models,
+    YouTube,
     Settings,
     Details,
     Clear,
@@ -606,6 +607,8 @@ fn live_messages<'a>(
     }
     messages
 }
+
+mod youtube;
 
 impl App {
     /// The top row of every page. The chat is the home screen and shows the
@@ -783,6 +786,14 @@ impl App {
             );
             row(
                 ui,
+                MenuChoice::YouTube,
+                "YouTube字幕の接続",
+                "",
+                "ChromeやEdgeの拡張機能とつなぎ、YouTubeの字幕を受け取ります。",
+                true,
+            );
+            row(
+                ui,
                 MenuChoice::Settings,
                 "設定",
                 &page_shortcut(Tab::Settings),
@@ -865,6 +876,7 @@ impl App {
             }
             MenuChoice::History => self.tab = Tab::Files,
             MenuChoice::Models => self.open_setup(),
+            MenuChoice::YouTube => self.tab = Tab::YouTube,
             MenuChoice::Settings => self.tab = Tab::Settings,
             MenuChoice::Details => self.details_open = true,
             MenuChoice::Clear => {
@@ -1010,7 +1022,7 @@ impl App {
             && !self.caption_paused
             && self
                 .last_caption
-                .is_some_and(|time| time.elapsed() < Duration::from_secs(8))
+                .is_some_and(|time| time.elapsed() < youtube::ARRIVING_WITHIN)
     }
 
     /// The line beside the 聞く button: what is wrong, or what is going on.
@@ -1783,96 +1795,17 @@ impl App {
     }
 
     fn settings_youtube_card(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("YouTube字幕の接続").strong());
-        let (state, color) = if self.captions_arriving() {
-            ("字幕を受信中", theme::SUCCESS)
-        } else if self.caption_enabled {
-            ("接続待ち", WARNING)
-        } else {
-            ("停止中", TEXT_MUTED)
-        };
-        ui.horizontal_wrapped(|ui| {
-            badge(ui, state, color);
-            if self.caption_enabled {
-                if ui.add(standard("停止")).clicked() {
-                    self.set_caption_enabled(false);
-                }
-            } else if ui.add(standard("字幕を受け取る")).clicked() {
-                self.set_caption_enabled(true);
-            }
-        });
-        ui.add_space(theme::SPACE_2);
-        for (number, text) in [
-            (
-                1,
-                "上の「字幕を受け取る」を押します。チャットの「聞く」でも、字幕を受け取れます。",
-            ),
-            (
-                2,
-                "Chromeは chrome://extensions、Edgeは edge://extensions を開き、開発者モードをオンにします。",
-            ),
-            (
-                3,
-                "「パッケージ化されていない拡張機能を読み込む」で、下の「字幕連携フォルダー」を選びます。",
-            ),
-            (
-                4,
-                "拡張機能の設定画面に接続キーを貼り付け、「保存」→「接続確認」を押します。",
-            ),
-            (
-                5,
-                "YouTubeで動画を開き、CCをオンにして英語などの字幕を選びます。表示中の字幕が約300msごとに届きます。",
-            ),
-        ] {
-            ui.horizontal_top(|ui| {
-                ui.add_sized(
-                    [20.0, 18.0],
-                    egui::Label::new(
-                        RichText::new(format!("{number}"))
-                            .size(theme::SIZE_CAPTION)
-                            .strong()
-                            .color(ACCENT),
-                    ),
-                );
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(text)
-                            .size(theme::SIZE_LABEL)
-                            .color(TEXT_SECONDARY),
-                    )
-                    .wrap(),
-                );
-            });
-            ui.add_space(theme::SPACE_1);
-        }
-        ui.label(
-            RichText::new("接続キー")
-                .size(theme::SIZE_CAPTION)
-                .color(TEXT_MUTED),
-        );
-        ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.settings.bridge_token)
-                    .password(true)
-                    .interactive(false)
-                    .desired_width(220.0),
-            );
-            if ui.add(standard("接続キーをコピー")).clicked()
-                && let Ok(mut clipboard) = arboard::Clipboard::new()
-            {
-                let _ = clipboard.set_text(self.settings.bridge_token.clone());
-            }
-            if ui.add(standard("字幕連携フォルダー")).clicked() {
-                let mut command = Command::new("explorer.exe");
-                command.arg(app_root().join("extension"));
-                command_hidden(&mut command);
-                let _ = command.spawn();
-            }
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("YouTube字幕の接続").strong());
+            self.link_badge(ui);
         });
         secondary(
             ui,
-            "字幕はこのPC内の 127.0.0.1:17862 にだけ送られ、外部には送信されません。",
+            "拡張機能の入れ方と接続キーは、専用の画面にまとめました。",
         );
+        if ui.add(standard("接続の画面を開く")).clicked() {
+            self.tab = Tab::YouTube;
+        }
     }
 
     fn settings_glossary_section(&mut self, ui: &mut egui::Ui) {
@@ -2150,6 +2083,7 @@ impl App {
                 Tab::Files => self.files_ui(ui),
                 Tab::Settings => self.settings_ui(ui),
                 Tab::Setup => self.model_ui(ui),
+                Tab::YouTube => self.youtube_ui(ui),
             });
         self.status_details_ui(ctx);
     }

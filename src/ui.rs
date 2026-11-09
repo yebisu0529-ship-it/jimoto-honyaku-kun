@@ -11,6 +11,8 @@ use plamo_translate::journal::ParagraphState;
 const HEADER_HEIGHT: f32 = 56.0;
 /// Height of the bar under the chat: the large button and the room around it.
 const LISTEN_BAR_HEIGHT: f32 = theme::CONTROL_H_LARGE + 2.0 * theme::SPACE_2;
+/// The least size of the button in that bar.
+const LISTEN_BUTTON: Vec2 = Vec2::new(140.0, theme::CONTROL_H_LARGE);
 /// The key that does what the button under the chat does.
 const LISTEN_SHORTCUT: &str = "Ctrl + Alt + L";
 /// The pages the Ctrl+number shortcuts open. The chat is the home screen; the
@@ -280,7 +282,7 @@ fn status_chip(ui: &mut egui::Ui, status: &ModelStatus) -> egui::Response {
 }
 
 /// The latest app message on one truncated line; the full text is on hover.
-fn status_message(ui: &mut egui::Ui, parts: &[(&str, Color32)]) {
+pub(super) fn status_message(ui: &mut egui::Ui, parts: &[(&str, Color32)]) {
     let font = egui::FontId::proportional(theme::SIZE_CAPTION);
     let mut job = egui::text::LayoutJob::default();
     let mut shown: Vec<&str> = Vec::new();
@@ -317,7 +319,7 @@ fn history_time(created_at: &str) -> String {
 const STATUS_LINE_HEIGHT: f32 = 24.0;
 
 /// Allocate a hard outer rectangle; changing child content cannot move history.
-fn live_region<R>(
+pub(super) fn live_region<R>(
     ui: &mut egui::Ui,
     id: &'static str,
     height: f32,
@@ -382,18 +384,9 @@ pub(super) fn primary(label: &str) -> egui::Button<'_> {
     .fill(ACCENT)
     .min_size(Vec2::new(140.0, theme::CONTROL_H_LARGE))
 }
-fn standard(label: &str) -> egui::Button<'_> {
+pub(super) fn standard(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).size(theme::SIZE_LABEL).color(TEXT))
         .min_size(Vec2::new(0.0, theme::CONTROL_H))
-}
-/// The one large button under the chat: the accent colour to start listening,
-/// and red to stop.
-fn listen_button(listening: bool) -> egui::Button<'static> {
-    if listening {
-        primary("■ 止める").fill(ERROR)
-    } else {
-        primary("● 聞く")
-    }
 }
 pub(super) fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     ui.scope(|ui| {
@@ -522,6 +515,49 @@ fn menu_row(ui: &mut egui::Ui, label: &str, shortcut: &str, hover: &str, enabled
     }
 }
 
+/// The words of a control that is drawn in more than one place. They are
+/// written once, so the places cannot come to differ.
+pub(super) struct Control {
+    pub label: &'static str,
+    pub shortcut: &'static str,
+    pub hover: &'static str,
+}
+
+impl Control {
+    /// As a button of its own.
+    pub(super) fn button(&self, ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+        ui.add_enabled(enabled, standard(self.label))
+            .on_hover_text(self.hover)
+    }
+}
+
+pub(super) const SUBTITLE_WINDOW: Control = Control {
+    label: "字幕ウィンドウ",
+    shortcut: "",
+    hover: "訳文を独立したウィンドウに表示します。ミニ表示と併用できます。",
+};
+pub(super) const RANGE: Control = Control {
+    label: "範囲翻訳",
+    shortcut: "Ctrl + Alt + T",
+    hover: "画面の一部を選んで翻訳します。",
+};
+pub(super) const COPY_ALL: Control = Control {
+    label: "全文コピー",
+    shortcut: "",
+    hover: "表示中の会話をすべて、PLaMoのクレジットを付けてコピーします。",
+};
+/// Copies the translation on the 訳文 card.
+pub(super) const COPY: Control = Control {
+    label: "コピー",
+    shortcut: "",
+    hover: "PLaMoのクレジットを付けてコピーします",
+};
+/// The way back to the chat, wherever it is offered.
+pub(super) const BACK_TO_CHAT: &str = "← チャットに戻る";
+/// The heading of the 訳文 card, and what the card says while it is empty.
+pub(super) const TRANSLATION: &str = "訳文";
+pub(super) const TRANSLATION_HINT: &str = "訳文はここに表示されます";
+
 /// A button that is filled while it is the chosen one, and tells a screen
 /// reader so.
 fn choice_button(ui: &mut egui::Ui, label: &str, chosen: bool) -> egui::Response {
@@ -533,7 +569,7 @@ fn choice_button(ui: &mut egui::Ui, label: &str, chosen: bool) -> egui::Response
 
 /// The 自動読み上げ switch: in the header of the other screens, and in the bar
 /// under the chat.
-fn auto_read_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
+pub(super) fn auto_read_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
     choice_button(ui, "自動読み上げ", on).on_hover_text(readout::AUTO_READ_HINT)
 }
 
@@ -642,7 +678,7 @@ impl App {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                         if !home {
                             let button = ui
-                                .add(standard("← チャットに戻る"))
+                                .add(standard(BACK_TO_CHAT))
                                 .on_hover_text(page_shortcut(Tab::Live));
                             #[cfg(test)]
                             {
@@ -683,11 +719,10 @@ impl App {
         let id = egui::Id::new(MORE_MENU);
         let chat = self.tab == Tab::Live;
         let ready = self.backend_ready;
-        let can_range = ready && !self.capture_busy;
+        let can_range = self.can_read_range();
         let can_screen = can_range && self.screen_feed.is_none();
         let can_file = ready && !self.file_busy;
         let has_rows = !self.rows.is_empty();
-        let shown = self.shown_input();
         let open = egui::Popup::is_id_open(ui.ctx(), id);
         let button = ui.add(standard("⋯ その他").selected(open));
         #[cfg(test)]
@@ -712,9 +747,9 @@ impl App {
             row(
                 ui,
                 MenuChoice::SubtitleWindow,
-                "字幕ウィンドウ",
-                "",
-                "訳文を独立したウィンドウに表示します。ミニ表示と併用できます。",
+                SUBTITLE_WINDOW.label,
+                SUBTITLE_WINDOW.shortcut,
+                SUBTITLE_WINDOW.hover,
                 true,
             );
             row(
@@ -736,22 +771,12 @@ impl App {
             row(
                 ui,
                 MenuChoice::Range,
-                "範囲翻訳",
-                "Ctrl + Alt + T",
-                "画面の一部を選んで翻訳します。",
+                RANGE.label,
+                RANGE.shortcut,
+                RANGE.hover,
                 can_range,
             );
-            if self.screens.len() > 1 {
-                ui.menu_button(RichText::new("画面選択").size(theme::SIZE_LABEL), |ui| {
-                    for (index, screen) in self.screens.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut self.screen_index,
-                            index,
-                            format!("{}: {}", index + 1, screen.name),
-                        );
-                    }
-                });
-            }
+            self.screen_menu(ui);
             row(
                 ui,
                 MenuChoice::ScreenText,
@@ -812,43 +837,80 @@ impl App {
                 ui.separator();
                 // Its choices open down the menu, so it comes before the rest
                 // to keep them clear of the row at the bottom of the window.
-                input = ui
-                    .menu_button(RichText::new("入力の切り替え").size(theme::SIZE_LABEL), |ui| {
-                        let mut picked = None;
-                        for mode in LiveSourceMode::ALL {
-                            if choice_button(ui, mode.label(), mode == shown)
-                                .on_hover_text(mode.hint())
-                                .clicked()
-                            {
-                                picked = Some(mode);
-                            }
-                        }
-                        picked
-                    })
-                    .inner
-                    .flatten();
+                input = self.input_menu(ui);
                 row(ui, MenuChoice::Export, "書き出し", "", "", has_rows);
-                ui.menu_button(RichText::new("表示").size(theme::SIZE_LABEL), |ui| {
-                    toggle(ui, &mut self.settings.live_show_original, "原文をすべて表示");
-                    toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール")
-                        .on_hover_text(
-                            "上へスクロールしている間は位置を保ちます。OFFからONに戻すと末尾へ移動します。",
-                        );
-                    ui.add_space(theme::SPACE_1);
-                    ui.label(theme::caption("訳文の文字サイズ"));
-                    theme::slider(
-                        ui,
-                        egui::Slider::new(
-                            &mut self.settings.font_size,
-                            theme::READING_MIN..=theme::READING_MAX,
-                        )
-                        .integer()
-                        .suffix(" pt"),
-                    );
-                });
+                self.display_menu(ui);
             }
         });
         choice.or(input.map(MenuChoice::Input))
+    }
+
+    /// The 入力の切り替え row of a menu and the inputs behind it, with the one
+    /// `shown_input` names marked. Returns the input that was picked.
+    pub(super) fn input_menu(&self, ui: &mut egui::Ui) -> Option<LiveSourceMode> {
+        let shown = self.shown_input();
+        ui.menu_button(
+            RichText::new("入力の切り替え").size(theme::SIZE_LABEL),
+            |ui| {
+                let mut picked = None;
+                for mode in LiveSourceMode::ALL {
+                    if choice_button(ui, mode.label(), mode == shown)
+                        .on_hover_text(mode.hint())
+                        .clicked()
+                    {
+                        picked = Some(mode);
+                    }
+                }
+                picked
+            },
+        )
+        .inner
+        .flatten()
+    }
+
+    /// The 表示 row of a menu and, behind it, how the chat shows the talk.
+    pub(super) fn display_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button(RichText::new("表示").size(theme::SIZE_LABEL), |ui| {
+            toggle(
+                ui,
+                &mut self.settings.live_show_original,
+                "原文をすべて表示",
+            );
+            toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール").on_hover_text(
+                "上へスクロールしている間は位置を保ちます。OFFからONに戻すと末尾へ移動します。",
+            );
+            ui.add_space(theme::SPACE_1);
+            ui.label(theme::caption("訳文の文字サイズ"));
+            theme::slider(
+                ui,
+                egui::Slider::new(
+                    &mut self.settings.font_size,
+                    theme::READING_MIN..=theme::READING_MAX,
+                )
+                .integer()
+                .suffix(" pt"),
+            );
+        });
+    }
+
+    /// The 画面選択 row of a menu, while there is more than one screen to read.
+    pub(super) fn screen_menu(&mut self, ui: &mut egui::Ui) {
+        if self.screens.len() > 1 {
+            ui.menu_button(RichText::new("画面選択").size(theme::SIZE_LABEL), |ui| {
+                for (index, screen) in self.screens.iter().enumerate() {
+                    ui.selectable_value(
+                        &mut self.screen_index,
+                        index,
+                        format!("{}: {}", index + 1, screen.name),
+                    );
+                }
+            });
+        }
+    }
+
+    /// 範囲翻訳 can start: the model is ready and no screen is being taken.
+    pub(super) fn can_read_range(&self) -> bool {
+        self.backend_ready && !self.capture_busy
     }
 
     /// Carries out a choice from the その他 menu.
@@ -1026,7 +1088,7 @@ impl App {
     }
 
     /// The line beside the 聞く button: what is wrong, or what is going on.
-    fn listen_state(&self) -> (&str, Color32) {
+    pub(super) fn listen_state(&self) -> (&str, Color32) {
         if !self.service_error.is_empty() {
             return (&self.service_error, ERROR);
         }
@@ -1072,18 +1134,29 @@ impl App {
         }
     }
 
+    /// The button that listens and stops, at least `min_size` large: the
+    /// accent colour to start listening, and red to stop. Wherever it is
+    /// drawn, a click on it is for `toggle_listening`.
+    pub(super) fn listen_button(&self, ui: &mut egui::Ui, min_size: Vec2) -> egui::Response {
+        let listening = self.current_input().is_some();
+        let (face, hover) = if listening {
+            (
+                primary("■ 止める").fill(ERROR),
+                "入力を止めます。保存済みの訳文はそのまま残ります",
+            )
+        } else {
+            (primary("● 聞く"), self.listen_input.hint())
+        };
+        // A model that went away must not keep the button from stopping.
+        ui.add_enabled(listening || self.backend_ready, face.min_size(min_size))
+            .on_hover_text(format!("{hover}\n{LISTEN_SHORTCUT}"))
+            .on_disabled_hover_text("翻訳モデルの準備ができると、聞けます")
+    }
+
     /// The bar under the chat, where a messenger puts its message box: one
     /// large button that listens and stops, and one line about what is going
     /// on. The readout switch is here too when readout is used.
     fn listen_bar(&mut self, ui: &mut egui::Ui) {
-        let listening = self.current_input().is_some();
-        // A model that went away must not keep the button from stopping.
-        let enabled = listening || self.backend_ready;
-        let hover = if listening {
-            "入力を止めます。保存済みの訳文はそのまま残ります".to_owned()
-        } else {
-            self.listen_input.hint().to_owned()
-        };
         let mut press = false;
         let mut switch_readout = false;
         let mut rects = None;
@@ -1107,10 +1180,7 @@ impl App {
                     }
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = theme::SPACE_3;
-                        let button = ui
-                            .add_enabled(enabled, listen_button(listening))
-                            .on_hover_text(format!("{hover}\n{LISTEN_SHORTCUT}"))
-                            .on_disabled_hover_text("翻訳モデルの準備ができると、聞けます");
+                        let button = self.listen_button(ui, LISTEN_BUTTON);
                         press = button.clicked();
                         rects = Some((bar, button.rect));
                         let (words, color) = self.listen_state();
@@ -1140,18 +1210,23 @@ impl App {
         }
     }
 
+    /// What a status line says while the talk is not being saved, and nothing
+    /// otherwise. The journal error is the storage layer's own wording, so
+    /// the plain statement comes first and the detail follows it.
+    pub(super) fn unsaved(&self) -> String {
+        if self.journal_error.is_empty() {
+            String::new()
+        } else {
+            format!("保存できていません（{}）", self.journal_error)
+        }
+    }
+
     /// One reserved line: a failure to save first, then what is happening now,
     /// then whether the timeline is being saved. Service errors are beside the
     /// 聞く button.
     fn live_status_line(&mut self, ui: &mut egui::Ui) {
         live_region(ui, "live-status", STATUS_LINE_HEIGHT, |ui| {
-            // The journal error is the storage layer's own wording, so the
-            // plain statement comes first and the detail follows it.
-            let unsaved = if self.journal_error.is_empty() {
-                String::new()
-            } else {
-                format!("保存できていません（{}）", self.journal_error)
-            };
+            let unsaved = self.unsaved();
             let activity = if self.readout_busy() {
                 self.readout.status.as_str()
             } else if self.live_busy.is_some() {
@@ -1385,15 +1460,12 @@ impl App {
         card().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    RichText::new("訳文")
+                    RichText::new(TRANSLATION)
                         .size(theme::SIZE_LABEL)
                         .strong()
                         .color(ACCENT),
                 );
-                if ui
-                    .add_enabled(self.manual_output_ready(), standard("コピー"))
-                    .on_hover_text("PLaMoのクレジットを付けてコピーします")
-                    .clicked()
+                if COPY.button(ui, self.manual_output_ready()).clicked()
                     && let Ok(mut clipboard) = arboard::Clipboard::new()
                 {
                     let _ = clipboard.set_text(credit::published(&self.output));
@@ -1427,7 +1499,7 @@ impl App {
                     ui.add_sized(
                         [ui.available_width(), height],
                         egui::TextEdit::multiline(&mut output)
-                            .hint_text(theme::hint("訳文はここに表示されます"))
+                            .hint_text(theme::hint(TRANSLATION_HINT))
                             .font(egui::FontId::proportional(theme::reading_size(
                                 self.settings.font_size,
                             )))
@@ -1529,10 +1601,7 @@ impl App {
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
             let can_clear = !self.rows.is_empty() || !self.asr_partial.trim().is_empty();
-            let can_copy = self
-                .rows
-                .iter()
-                .any(|row| !row.record.translation.trim().is_empty());
+            let can_copy = self.can_copy_talk();
             let (mut clear, mut copy_all) = (false, false);
             self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |ui| {
                 if ui
@@ -1544,10 +1613,7 @@ impl App {
                 {
                     clear = true;
                 }
-                copy_all = ui
-                    .add_enabled(can_copy, standard("全文コピー"))
-                    .on_hover_text("表示中の会話をすべて、PLaMoのクレジットを付けてコピーします。")
-                    .clicked();
+                copy_all = COPY_ALL.button(ui, can_copy).clicked();
             });
             if clear {
                 self.follow(ui.ctx(), MenuChoice::Clear);
@@ -1559,35 +1625,58 @@ impl App {
             {
                 self.ui_probe.reading_font = theme::reading_size(self.settings.font_size);
             }
-            let visible = self.document_visible_row().cloned();
-            let messages = live_messages(&self.rows, visible.as_ref(), self.asr_partial.trim());
-            let options = chat::Options {
-                text_size: theme::reading_size(self.settings.font_size),
-                show_originals: self.settings.live_show_original,
-                follow: self.settings.auto_scroll,
-                readout: self.settings.readout_enabled.then(|| self.readout_busy()),
-                empty: self.empty_chat_hint(),
-            };
             // The chat takes the room the bar under it leaves.
             let chat = Vec2::new(
                 ui.available_width(),
                 (ui.available_height() - LISTEN_BAR_HEIGHT - ui.spacing().item_spacing.y).max(0.0),
             );
-            let action = ui
-                .allocate_ui(chat, |ui| {
-                    self.live_chat.show(ui, "live-chat", &messages, options)
-                })
-                .inner;
+            ui.allocate_ui(chat, |ui| self.live_chat_ui(ui));
             if copy_all {
-                self.live_chat.copy_all(&messages);
+                self.copy_talk();
             }
             self.listen_bar(ui);
-            match action {
-                Some(chat::Action::Read(text)) => self.read_translation(text),
-                Some(chat::Action::StopReadout) => self.stop_readout(),
-                None => {}
-            }
         });
+    }
+
+    /// The talk as the chat shows it, handed to `use_it` with the chat's own
+    /// state. Drawing and copying both come here, so they see one talk.
+    fn with_talk<R>(
+        &mut self,
+        use_it: impl FnOnce(&mut chat::State, &[chat::Message<'_>]) -> R,
+    ) -> R {
+        let visible = self.document_visible_row().cloned();
+        let messages = live_messages(&self.rows, visible.as_ref(), self.asr_partial.trim());
+        use_it(&mut self.live_chat, &messages)
+    }
+
+    /// The chat, in all the room `ui` has left. Every window that shows the
+    /// talk draws it here, with one state and one set of options, so what
+    /// they show cannot differ.
+    pub(super) fn live_chat_ui(&mut self, ui: &mut egui::Ui) {
+        let options = chat::Options {
+            text_size: theme::reading_size(self.settings.font_size),
+            show_originals: self.settings.live_show_original,
+            follow: self.settings.auto_scroll,
+            readout: self.settings.readout_enabled.then(|| self.readout_busy()),
+            empty: self.empty_chat_hint(),
+        };
+        match self.with_talk(|chat, messages| chat.show(ui, "live-chat", messages, options)) {
+            Some(chat::Action::Read(text)) => self.read_translation(text),
+            Some(chat::Action::StopReadout) => self.stop_readout(),
+            None => {}
+        }
+    }
+
+    /// 全文コピー has a translation to copy.
+    pub(super) fn can_copy_talk(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|row| !row.record.translation.trim().is_empty())
+    }
+
+    /// 全文コピー: all the chat shows, with the credit.
+    pub(super) fn copy_talk(&mut self) {
+        self.with_talk(|chat, messages| chat.copy_all(messages));
     }
 
     pub(super) fn files_ui(&mut self, ui: &mut egui::Ui) {

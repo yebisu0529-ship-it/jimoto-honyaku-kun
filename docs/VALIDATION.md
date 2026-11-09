@@ -230,6 +230,15 @@ exe・ZIP・パッケージ・リポジトリの名前、環境変数、デー�
 - `cargo fmt --all -- --check`・`cargo clippy --all-targets --locked -- -D warnings`・`cargo test --locked`（ライブラリ171件・GUI 275件・改行と文字コードの検査各1件）が成功しました。足した検査（字幕が来て、閉じる訳の途中で消えても、聞き終えた段落を最後まで訳す）は、直す前の版では失敗しました。世代だけが変わったときの扱いを外した場合と、範囲を変えても途中の訳を受け取る処理を元に戻した場合の、どちらでも、この検査と訳し終えていた段落の検査が失敗することを確かめました。拡張機能は `node scripts/test_extension_content.mjs`（偽のページと時計で content.js を動かす7件）で確かめ、すべて成功しました。mainのcontent.jsでは3件、見直しの前の版では3件が失敗します。
 - 試していないこと：Google ChromeとMicrosoft Edgeの本体、ほかの窓で完全に覆われたとき、手で付けた字幕の動画、Nemotron以外の音声認識（Qwen3-ASR・Whisper）での切り替え、読み上げ中の切り替え。字幕ウィンドウは、Nemotronが動き直す前の段落を、動き直したあと表示から外します（変更前と同じ）。
 
+### ZIPを展開したフォルダへの保存（2026-11-09）
+
+設定・履歴・モデル・ランタイムの既定の保存先を、`Local AppData` から、ZIPを展開したフォルダの `data` に変えました（ユーザーの指示「重みとかの場所も全部、ZIPファイルを解凍した後のフォルダに保存」）。
+
+- 実際の窓：リリース版を「Talk風Live翻訳」という名前の新しいフォルダに置き、空の `data` を作って、`start.ps1` と同じく `PLAMO_APP_DIR` だけを付けて起動しました（`PLAMO_DATA_DIR` なし）。初回の準備画面が出て、「PC情報と保存先」に「モデルの保存先: …\Talk風Live翻訳\data\engine」と出ました。閉じたあと、そのフォルダの `data` に `settings.json`・`window-state.ron`・`sessions` の記録ができていました。このPCの `Local AppData\LocalTools\PlamoTranslate\data` は、中の名前・サイズ・更新時刻が起動の前後で同じでした（中身は読んでいません）。ダウンロードのボタンは押していません。
+- 音声認識・読み上げ・文字認識の準備では、uvのPythonとキャッシュ、Hugging Faceのキャッシュを、これまでどおり保存先の中に置きます。
+- 検査：保存先の決め方（`storage::resolve`）を一時フォルダで確かめる4件。新しいPCでは展開したフォルダの `data` を作って使い、`Local AppData` には何も作らない。0.5以前の版の `Local AppData` があれば、展開したフォルダに `data` ができるまでそちらを使い、空のフォルダも作らない。展開したフォルダに書き込めないときは `Local AppData` を使う。`PLAMO_DATA_DIR` は絶対パスのときだけ使う。
+- 試していないこと：`Local AppData` に前の版のデータがあるPCでの起動（このPCのデータには触れないため）、データのない新しいPCでの起動、`Program Files` の中に展開したとき。保存先の中のファイルには絶対パスを記録しているものがあるので、展開したフォルダを移動すると、準備をやり直すことがあります。
+
 ## 0.4.0時点の同一音声による比較
 
 公式Nemotron Speech Streaming English 0.6BのQ8_0 GGUF、699,872,960バイトと、NVIDIA NeMo-Speech.cpp 0.3.0のCPU・Vulkan版を取得し、固定SHA-256、モデル識別、所有プロセスの接続先を確認しました。

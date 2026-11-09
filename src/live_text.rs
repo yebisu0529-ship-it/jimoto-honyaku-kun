@@ -280,6 +280,12 @@ impl Accumulator {
         self.interim = None;
     }
 
+    /// Moves later text to a new stamp of the same source. Closed paragraphs
+    /// keep their own stamp and are still translated and committed.
+    pub fn restamp(&mut self, stamp: SourceStamp) {
+        self.stamp = stamp;
+    }
+
     pub fn current_snapshot(&self) -> Option<ParagraphSnapshot> {
         self.current.as_ref().map(|p| p.snapshot.clone())
     }
@@ -1066,7 +1072,8 @@ impl Accumulator {
     }
 
     fn matches_inflight(&self, request: &Request) -> bool {
-        request.snapshot.stamp == self.stamp && self.inflight.as_ref() == Some(request)
+        // A reset clears the request in flight; a restamp keeps it.
+        self.inflight.as_ref() == Some(request)
     }
 
     fn find(&self, key: u64) -> Option<&Paragraph> {

@@ -317,7 +317,18 @@ impl App {
     }
     fn document_ensure_scope(&mut self, kind: SourceKind) {
         let stamp = self.document_stamp(kind);
-        if self.document.source(kind).stamp() == &stamp {
+        let current = self.document.source(kind).stamp();
+        if current == &stamp {
+            return;
+        }
+        // A restarted recognizer is still the same audio source. What it heard
+        // is closed and translated to the end; later speech gets the new stamp.
+        if kind == SourceKind::Audio
+            && current.generation == stamp.generation
+            && current.video_id == stamp.video_id
+        {
+            self.document_close(SourceKind::Audio);
+            self.document.audio.restamp(stamp);
             return;
         }
         if self
@@ -1564,20 +1575,54 @@ mod tests {
         );
         let (id, request, options) = take_job(&mut app, SourceKind::Audio, 4_000);
         app.document_done(id, request, options, Ok(target.into()), 0.1);
-        // Captions close the audio paragraph, then the recognizer restarts for
-        // the caption interval, as process_streaming_audio does.
+        // Captions close the audio paragraph and the recognizer restarts in a
+        // new epoch. The paragraph keeps its translation and gets its closing
+        // pass instead of being cut off.
         app.accept_caption(tip_caption("Thanks for joining us today.", 0.6, false, 1));
         app.nemotron_epoch += 1;
-        app.clear_streaming_audio();
-        let row = app
-            .rows
-            .iter()
-            .find(|row| row.record.translation == target)
-            .unwrap();
+        app.process_streaming_audio();
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 4_500);
+        assert!(request.snapshot.closed);
+        app.document_done(id, request, options, Ok(target.into()), 0.1);
+        let row = app.rows.iter().find(|row| row.record.id == id).unwrap();
+        assert_eq!(row.record.translation, target);
         assert_eq!(
             row.record.paragraph.as_ref().map(|p| p.state),
             Some(ParagraphState::Final),
             "the question was translated in full before the captions came"
+        );
+        assert!(row.is_confirmed());
+    }
+
+    #[test]
+    fn captions_coming_and_going_still_translate_the_audio_paragraph_heard_before() {
+        let mut app = audio_app();
+        app.caption_enabled = true;
+        app.settings.asr_backend = "nemotron".into();
+        let heard = "In 2028 we expect to hold two strategy meetings and six policy meetings";
+        feed(&mut app, heard, 0, 4_000);
+        // YouTube comes back into view: its captions close the audio paragraph
+        // and suspend the recognizer, which starts a new epoch.
+        app.accept_caption(tip_caption("Thanks for joining us today.", 0.6, false, 1));
+        app.nemotron_epoch += 1;
+        app.process_streaming_audio();
+        assert!(app.nemotron_suspended);
+        let (id, request, options) = take_job(&mut app, SourceKind::Audio, 4_500);
+        assert_eq!(request.snapshot.text, heard);
+        // The cue disappears before that closing translation returns, so the
+        // recognizer resumes in yet another epoch.
+        app.accept_caption(tip_caption("", 2.0, false, 1));
+        app.nemotron_epoch += 1;
+        app.process_streaming_audio();
+        assert!(!app.nemotron_suspended);
+        let target = "2028年には、戦略の会合を2回、政策の会合を6回開く予定です。";
+        app.document_done(id, request, options, Ok(target.into()), 0.1);
+        let row = app.rows.iter().find(|row| row.record.id == id).unwrap();
+        assert_eq!(row.record.translation, target);
+        assert_eq!(
+            row.record.paragraph.as_ref().map(|p| p.state),
+            Some(ParagraphState::Final),
+            "the paragraph heard before the captions came ends translated"
         );
         assert!(row.is_confirmed());
     }

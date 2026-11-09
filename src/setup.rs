@@ -392,59 +392,111 @@ impl App {
                 if self.setup.hardware.is_none()
                     && !self.setup.detecting
                     && ui
-                        .add(ui::primary("PCの情報を確認").min_size(Vec2::new(190.0, theme::CONTROL_H_LARGE)))
+                        .add(
+                            ui::primary("PCの情報を確認")
+                                .min_size(Vec2::new(190.0, theme::CONTROL_H_LARGE)),
+                        )
                         .clicked()
                 {
                     self.detect_capacity();
                 }
                 if self.setup.recommendation.is_some() {
                     self.picker_ui(ui);
+                    ui.add_space(theme::SPACE_4);
+                    self.setup_downloads(ui);
                     ui.add_space(theme::SPACE_3);
                     self.setup_pc_details(ui);
-                    ui.add_space(theme::SPACE_4);
-                    ui.add_enabled_ui(!self.setup.installing(), |ui| {
-                        if ui
-                            .checkbox(
-                                &mut self.settings.english_punctuation,
-                                "英語の文章区切り補助も準備する（追加で約86MB）",
-                            )
-                            .changed()
-                        {
-                            self.forget_stopped_chain();
-                        }
-                    });
-                    ui.label(theme::caption(
-                        "原文を段落につなぎ、意味の区切りで訳文をまとめます。補助モデルはApache 2.0です。",
-                    ));
-                    let plan = self.download_plan().unwrap_or_default();
-                    let also = also_prepared(&plan);
-                    if !also.is_empty() {
-                        ui.add_space(theme::SPACE_2);
-                        ui.label(theme::label(format!("続けて、{also}も準備します。")));
-                    }
-                    ui.add_space(theme::SPACE_3);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = theme::SPACE_4;
-                        ui.hyperlink_to(
-                            "PLaMoのモデル利用条件",
-                            "https://plamo.preferredai.jp/info/plamo-community-license-ja",
-                        );
-                        if plan.includes(Step::Speech) {
-                            ui.hyperlink_to(
-                                "Nemotronのモデル利用条件",
-                                "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
-                            );
-                        }
-                    });
-                    ui.label(theme::caption(
-                        "モデルはPFN公式、実行環境はllama.cpp公式から取得します。",
-                    ));
                     self.setup_error_details(ui);
                 } else {
                     self.setup_error_summary(ui);
                     self.setup_error_details(ui);
                 }
             });
+    }
+
+    /// What 「はじめる」 fetches, how much each part is, and the folder it goes to,
+    /// so the one button needs nothing else read first.
+    fn setup_downloads(&mut self, ui: &mut egui::Ui) {
+        let plan = self.download_plan().unwrap_or_default();
+        let size = |step: Step| {
+            plan.steps
+                .iter()
+                .find(|(planned, _)| *planned == step)
+                .map(|(_, size)| match size {
+                    0 => "保存済み".to_owned(),
+                    size => bytes(size.next_multiple_of(1_048_576)),
+                })
+        };
+        let model = self
+            .setup_model()
+            .map_or_else(|| "PLaMo 3 Translate".to_owned(), |model| model.label);
+        let editable = !self.setup.installing();
+        ui.label(RichText::new("ダウンロードするもの").strong());
+        ui.add_space(theme::SPACE_1);
+        egui::Grid::new("setup-downloads")
+            .num_columns(2)
+            .spacing([theme::SPACE_6, theme::SPACE_2])
+            .show(ui, |ui| {
+                for (step, name) in [
+                    (Step::Translation, format!("翻訳モデル（{model}）と実行環境")),
+                    (Step::Speech, "英語の音声認識　Nemotron Speech".to_owned()),
+                    (Step::Voice, "読み上げの声".to_owned()),
+                ] {
+                    if let Some(size) = size(step) {
+                        ui.label(theme::label(name));
+                        ui.label(theme::label(size));
+                        ui.end_row();
+                    }
+                }
+                ui.add_enabled_ui(editable, |ui| {
+                    if ui
+                        .checkbox(&mut self.settings.english_punctuation, "英語の文章区切り補助")
+                        .on_hover_text(
+                            "原文を段落につなぎ、意味の区切りで訳文をまとめます。補助モデルはApache 2.0です。",
+                        )
+                        .changed()
+                    {
+                        self.forget_stopped_chain();
+                    }
+                });
+                ui.label(match size(Step::Punctuation) {
+                    Some(size) => theme::label(size),
+                    None => theme::caption("約86 MB"),
+                });
+                ui.end_row();
+            });
+        ui.add_space(theme::SPACE_3);
+        let data = data_root();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(theme::label(format!("保存先　{}", data.display())));
+            if ui.add(egui::Button::new("フォルダーを開く")).clicked() {
+                self.open_data_folder();
+            }
+        });
+        let store = self.model_store_root();
+        if !store.starts_with(&data) {
+            ui.label(theme::label(format!(
+                "翻訳モデルの保存先　{}",
+                store.display()
+            )));
+        }
+        ui.add_space(theme::SPACE_3);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = theme::SPACE_4;
+            ui.hyperlink_to(
+                "PLaMoのモデル利用条件",
+                "https://plamo.preferredai.jp/info/plamo-community-license-ja",
+            );
+            if plan.includes(Step::Speech) {
+                ui.hyperlink_to(
+                    "Nemotronのモデル利用条件",
+                    "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+                );
+            }
+        });
+        ui.label(theme::caption(
+            "モデルはPFN公式、実行環境はllama.cpp公式から取得します。PC情報は外部へ送信しません。",
+        ));
     }
 
     /// What was measured, the model store and the CPU switch, folded away until wanted.
@@ -458,7 +510,7 @@ impl App {
             .as_ref()
             .map(|r| r.warnings.clone())
             .unwrap_or_default();
-        egui::CollapsingHeader::new("PC情報と保存先").show(ui, |ui| {
+        egui::CollapsingHeader::new("PC情報と詳しい設定").show(ui, |ui| {
             let gpus: Vec<_> = hardware
                 .gpus
                 .iter()
@@ -514,7 +566,6 @@ impl App {
                 ui.colored_label(theme::WARNING, warning);
             }
         });
-        ui.label(theme::caption("PC情報は外部へ送信しません。"));
     }
 
     /// Current step in the accent colour, finished steps readable, later ones muted.
@@ -674,19 +725,6 @@ pub(super) fn start_label(action: &str, plan: Option<Plan>) -> String {
         }
         _ => action.to_owned(),
     }
-}
-
-/// What the chain prepares after the translation model, for the line under the checkbox.
-fn also_prepared(plan: &Plan) -> String {
-    [
-        (Step::Speech, "英語の音声認識（Nemotron）"),
-        (Step::Voice, "読み上げの声"),
-    ]
-    .into_iter()
-    .filter(|(step, _)| plan.includes(*step))
-    .map(|(_, name)| name)
-    .collect::<Vec<_>>()
-    .join("と")
 }
 
 #[cfg(test)]

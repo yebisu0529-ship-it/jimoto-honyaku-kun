@@ -4,6 +4,7 @@ use super::theme::{
 };
 use super::*;
 use plamo_translate::credit;
+use plamo_translate::glossary;
 use plamo_translate::journal::ParagraphState;
 
 /// Height reserved for the page title and its actions.
@@ -536,27 +537,26 @@ fn auto_read_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
     choice_button(ui, "自動読み上げ", on).on_hover_text(readout::AUTO_READ_HINT)
 }
 
-fn parse_glossary(input: &str) -> std::result::Result<Vec<(String, String)>, String> {
-    let mut entries = Vec::new();
-    for (index, line) in input.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Some((source, target)) = line.split_once('\t').or_else(|| line.split_once('=')) else {
-            return Err(format!(
-                "{}行目: 原語と訳語を = またはタブで区切ってください。",
-                index + 1
-            ));
-        };
-        if source.trim().is_empty() || target.trim().is_empty() {
-            return Err(format!(
-                "{}行目: 原語と訳語の両方を入力してください。",
-                index + 1
-            ));
-        }
-        entries.push((source.trim().to_owned(), target.trim().to_owned()));
+/// What the status row says after the 金融 button: what went in, what did not
+/// fit, and what to do next.
+fn glossary_preset_status(added: &glossary::Added) -> String {
+    let mut message = String::new();
+    if added.entries > 0 {
+        message += &format!("金融の用語を{}件入れました。", added.entries);
+    } else if added.left_out == 0 {
+        message += "金融の用語は、すべて用語集にあります。";
     }
-    Ok(entries)
+    if added.left_out > 0 {
+        message += &format!(
+            "{}項目を超える{}件は入れていません。",
+            glossary::MAX_ENTRIES,
+            added.left_out
+        );
+    }
+    if added.entries > 0 {
+        message += "「設定を保存」で使います。ほかの話題では消してください。";
+    }
+    message
 }
 
 /// The live rows as chat messages, oldest first. `visible` is the coherent
@@ -1502,7 +1502,11 @@ impl App {
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
             let can_clear = !self.rows.is_empty() || !self.asr_partial.trim().is_empty();
-            let mut clear = false;
+            let can_copy = self
+                .rows
+                .iter()
+                .any(|row| !row.record.translation.trim().is_empty());
+            let (mut clear, mut copy_all) = (false, false);
             self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |ui| {
                 if ui
                     .add_enabled(can_clear, standard("クリア"))
@@ -1513,6 +1517,10 @@ impl App {
                 {
                     clear = true;
                 }
+                copy_all = ui
+                    .add_enabled(can_copy, standard("全文コピー"))
+                    .on_hover_text("表示中の会話をすべて、PLaMoのクレジットを付けてコピーします。")
+                    .clicked();
             });
             if clear {
                 self.follow(ui.ctx(), MenuChoice::Clear);
@@ -1542,6 +1550,9 @@ impl App {
                     self.live_chat.show(ui, "live-chat", &messages, options)
                 })
                 .inner;
+            if copy_all {
+                self.live_chat.copy_all(&messages);
+            }
             self.listen_bar(ui);
             match action {
                 Some(chat::Action::Read(text)) => self.read_translation(text),
@@ -1803,13 +1814,21 @@ impl App {
             .default_open(false)
             .show(ui, |ui| {
                 secondary(ui, "1行に「原語 = 訳語」を入力します。例: inference = 推論");
+                if ui
+                    .add(standard("金融（FOMC記者会見）の用語を入れる"))
+                    .on_hover_text("FRBの記者会見でよく出る用語を、用語集の最後に足します。今ある行はそのまま残ります。ほかの話題を訳すときは消してください。")
+                    .clicked()
+                {
+                    let added = glossary::add(&mut self.glossary_input, glossary::FOMC);
+                    self.status = glossary_preset_status(&added);
+                }
                 ui.add_sized(
                     [ui.available_width(), 160.0],
                     egui::TextEdit::multiline(&mut self.glossary_input)
                         .desired_width(f32::INFINITY)
                         .margin(12.0),
                 );
-                if let Err(error) = parse_glossary(&self.glossary_input) {
+                if let Err(error) = glossary::parse(&self.glossary_input) {
                     ui.colored_label(ERROR, error);
                 }
                 ui.label(RichText::new("文脈（翻訳する文章の背景）").size(theme::SIZE_LABEL));
@@ -1883,7 +1902,9 @@ impl App {
                 .max_height((ui.available_height() - footer).max(0.0))
                 .show(ui, |ui| {
                     // Two independent columns above 1100 points so a wide
-                    // window does not become one very long form.
+                    // window does not become one very long form. The live
+                    // translation's settings come first; reading text off the
+                    // screen is another use, so its card comes after them.
                     if ui.available_width() >= 1100.0 {
                         ui.columns(2, |columns| {
                             columns[0].spacing_mut().item_spacing.y = theme::SPACE_3;
@@ -1895,8 +1916,8 @@ impl App {
                             });
                             self.settings_glossary_section(&mut columns[0]);
                             settings_card(&mut columns[1], |ui| self.settings_asr_card(ui));
-                            settings_card(&mut columns[1], |ui| self.screen_ocr_settings_ui(ui));
                             settings_card(&mut columns[1], |ui| self.settings_youtube_card(ui));
+                            settings_card(&mut columns[1], |ui| self.screen_ocr_settings_ui(ui));
                             self.settings_shortcuts_section(&mut columns[1]);
                             self.settings_diagnostics_section(&mut columns[1]);
                         });
@@ -1905,10 +1926,10 @@ impl App {
                         settings_card(ui, |ui| self.settings_translation_card(ui));
                         settings_card(ui, |ui| self.readout_settings_ui(ui));
                         settings_card(ui, |ui| self.settings_asr_card(ui));
-                        settings_card(ui, |ui| self.screen_ocr_settings_ui(ui));
                         settings_card(ui, |ui| self.paragraph_tools_settings_ui(ui));
                         settings_card(ui, |ui| self.settings_youtube_card(ui));
                         self.settings_glossary_section(ui);
+                        settings_card(ui, |ui| self.screen_ocr_settings_ui(ui));
                         self.settings_shortcuts_section(ui);
                         self.settings_diagnostics_section(ui);
                     }
@@ -1923,12 +1944,12 @@ impl App {
             ui.painter()
                 .hline(ui.max_rect().x_range(), line, theme::hairline());
             ui.add_space(theme::SPACE_3);
-            let glossary = parse_glossary(&self.glossary_input);
+            let parsed = glossary::parse(&self.glossary_input);
             if ui
-                .add_enabled(glossary.is_ok(), primary("設定を保存"))
+                .add_enabled(parsed.is_ok(), primary("設定を保存"))
                 .clicked()
             {
-                match glossary {
+                match parsed {
                     Ok(glossary) => {
                         self.settings.translation.glossary = glossary;
                         match self.persist_preferences() {
@@ -2134,6 +2155,8 @@ impl App {
 mod home_tests;
 #[cfg(test)]
 mod listen_tests;
+#[cfg(test)]
+mod settings_tests;
 #[cfg(test)]
 mod live_layout_tests {
     use super::*;

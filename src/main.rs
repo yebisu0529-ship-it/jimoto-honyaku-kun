@@ -134,25 +134,7 @@ impl Default for Settings {
     }
 }
 fn app_root() -> PathBuf {
-    if let Some(root) = std::env::var_os("PLAMO_APP_DIR") {
-        return root.into();
-    }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        if dir
-            .file_name()
-            .is_some_and(|n| n == "release" || n == "debug")
-            && let Some(target) = dir.parent()
-            && target.file_name().is_some_and(|n| n == "target")
-            && let Some(project) = target.parent()
-            && project.join("Cargo.toml").exists()
-        {
-            return project.into();
-        }
-        return dir.into();
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    plamo_translate::storage::app_root()
 }
 fn data_root() -> PathBuf {
     plamo_translate::storage::data_root()

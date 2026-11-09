@@ -883,6 +883,58 @@ fn the_chat_header_shows_clear_to_the_left_of_the_menu_and_enables_with_content(
 }
 
 #[test]
+fn the_chat_header_copies_the_whole_talk_from_beside_clear() {
+    let mut app = chat();
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+
+    let (copy, clear) = (window.at("全文コピー"), window.at("クリア"));
+    assert!(
+        copy.right() < clear.left(),
+        "全文コピー must sit to the left of クリア"
+    );
+    assert!(
+        (copy.center().y - clear.center().y).abs() < 2.0,
+        "全文コピー must be on the same row as クリア"
+    );
+    let empty_ink = window.ink("全文コピー");
+
+    for (id, source, translation) in [
+        (1, "Hello.", "こんにちは。"),
+        (2, "Thank you.", "ありがとう。"),
+    ] {
+        app.rows.push(Row {
+            record: Record {
+                id,
+                start_ms: 0,
+                end_ms: 1000,
+                source: source.into(),
+                translation: translation.into(),
+                standard_translation: None,
+                kind: "音声".into(),
+                video_id: String::new(),
+                created_at: String::new(),
+                paragraph: None,
+            },
+            pending: false,
+            error: None,
+            generation: 0,
+        });
+    }
+    window.settle(&mut app);
+    assert_ne!(
+        window.ink("全文コピー"),
+        empty_ink,
+        "全文コピー should be enabled once a row is translated"
+    );
+    window.click(&mut app, "全文コピー");
+    assert_eq!(
+        app.live_chat.copied(),
+        Some(credit::published("こんにちは。\n\nありがとう。").as_str())
+    );
+}
+
+#[test]
 fn clicking_clear_empties_the_chat_and_starts_a_new_session_preserving_earlier_records() {
     let mut app = chat();
     let session_dir = std::env::temp_dir().join(format!("jimoto-test-{}", uuid::Uuid::new_v4()));
@@ -938,4 +990,28 @@ fn clicking_clear_empties_the_chat_and_starts_a_new_session_preserving_earlier_r
     );
 
     let _ = fs::remove_dir_all(&session_dir);
+}
+
+#[test]
+fn reading_text_off_the_screen_comes_after_the_live_translation_settings() {
+    for width in [860.0, 1400.0] {
+        let mut app = chat();
+        let mut window = Window::new(width, 3200.0);
+        window.open_menu(&mut app);
+        window.click(&mut app, "設定");
+        window.settle(&mut app);
+        let ocr = window.at("画面・画像の文字認識");
+        for live in ["音声認識", "YouTube字幕の接続"] {
+            assert!(
+                window.at(live).top() < ocr.top(),
+                "{width}: {live} must come before 画面・画像の文字認識"
+            );
+        }
+        if width < 1100.0 {
+            assert!(
+                window.at("用語集と文脈").top() < ocr.top(),
+                "in one column 用語集と文脈 must come before 画面・画像の文字認識"
+            );
+        }
+    }
 }

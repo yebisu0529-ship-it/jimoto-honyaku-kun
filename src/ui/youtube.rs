@@ -36,13 +36,14 @@ fn link(heard: Heard, now: Instant) -> Link {
 }
 
 impl Link {
-    /// The word on the badge, and its colour.
-    fn badge(self) -> (&'static str, Color32) {
+    /// The word on the badge, its colour, and the fill behind it. Only a
+    /// state that works gets the accent fill.
+    fn badge(self) -> (&'static str, Color32, Color32) {
         match self {
-            Self::NotYet => ("未接続", TEXT_MUTED),
-            Self::WrongKey => ("接続キーが違います", ERROR),
-            Self::Connected { .. } => ("接続済み", theme::SUCCESS),
-            Self::Captions => ("字幕を受信中", theme::SUCCESS),
+            Self::NotYet => ("未接続", TEXT_MUTED, SURFACE_RAISED),
+            Self::WrongKey => ("接続キーが違います", ERROR, SURFACE_RAISED),
+            Self::Connected { .. } => ("接続済み", theme::SUCCESS, ACCENT_SOFT),
+            Self::Captions => ("字幕を受信中", theme::SUCCESS, ACCENT_SOFT),
         }
     }
 
@@ -106,8 +107,8 @@ impl App {
 
     /// The badge of the status card. The settings card shows it too.
     pub(super) fn link_badge(&self, ui: &mut egui::Ui) {
-        let (word, color) = self.extension_link().badge();
-        badge(ui, word, color);
+        let (word, color, fill) = self.extension_link().badge();
+        badge(ui, word, color, fill);
     }
 
     /// The line under the badge: what the state means and what to do next.
@@ -154,8 +155,8 @@ impl App {
                     ui.set_max_width(ui.available_width().min(measure));
                     ui.spacing_mut().item_spacing.y = theme::SPACE_3;
                     settings_card(ui, |ui| {
-                        let (word, color) = link.badge();
-                        badge(ui, word, color);
+                        let (word, color, fill) = link.badge();
+                        badge(ui, word, color, fill);
                         ui.add(egui::Label::new(theme::body(self.link_line(link))).wrap());
                     });
                     self.youtube_steps(ui, link.steps_done());
@@ -228,7 +229,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::testing::{find_text, press, texts};
+    use crate::chat::testing::{box_of, find_text, press, texts};
     use crate::ui::home_tests::{Window, chat};
 
     const BADGES: [&str; 4] = ["未接続", "接続キーが違います", "接続済み", "字幕を受信中"];
@@ -325,11 +326,29 @@ mod tests {
 
     #[test]
     fn each_state_has_its_badge_and_checks_off_the_steps_behind_it() {
-        for (heard, word, color, checked) in [
-            (vec![], "未接続", TEXT_MUTED, 0),
-            (vec![Contact::WrongKey], "接続キーが違います", ERROR, 1),
-            (vec![Contact::Checked], "接続済み", theme::SUCCESS, 2),
-            (vec![Contact::Caption], "字幕を受信中", theme::SUCCESS, 3),
+        for (heard, word, color, fill, checked) in [
+            (vec![], "未接続", TEXT_MUTED, SURFACE_RAISED, 0),
+            (
+                vec![Contact::WrongKey],
+                "接続キーが違います",
+                ERROR,
+                SURFACE_RAISED,
+                1,
+            ),
+            (
+                vec![Contact::Checked],
+                "接続済み",
+                theme::SUCCESS,
+                ACCENT_SOFT,
+                2,
+            ),
+            (
+                vec![Contact::Caption],
+                "字幕を受信中",
+                theme::SUCCESS,
+                ACCENT_SOFT,
+                3,
+            ),
         ] {
             let mut app = screen(&heard);
             let window = drawn(&mut app);
@@ -340,7 +359,14 @@ mod tests {
                     "{other}, expecting {word}"
                 );
             }
-            assert_eq!(find_text(&window.output, word).1, color, "{word}");
+            let (text, ink) = find_text(&window.output, word);
+            assert_eq!(ink, color, "{word}");
+            // The green fill is kept for a state that works.
+            let pill = box_of(&window.output, word, fill);
+            assert!(
+                pill.height() < 2.0 * text.height(),
+                "{word} is in a pill of its fill: {pill:?}"
+            );
             let checks: Vec<_> = texts(&window.output)
                 .into_iter()
                 .filter(|(text, _, _)| text == "✓")

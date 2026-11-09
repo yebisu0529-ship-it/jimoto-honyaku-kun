@@ -420,9 +420,9 @@ pub(super) fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::
     .inner
 }
 
-fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
+fn badge(ui: &mut egui::Ui, text: &str, color: Color32, fill: Color32) {
     egui::Frame::new()
-        .fill(ACCENT_SOFT)
+        .fill(fill)
         .stroke(egui::Stroke::new(1.0_f32, color))
         .corner_radius(4)
         .inner_margin(egui::Margin::symmetric(6, 2))

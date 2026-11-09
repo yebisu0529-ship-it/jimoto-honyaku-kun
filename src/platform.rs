@@ -99,6 +99,18 @@ pub fn capture_area(screen_id: u32, area: (u32, u32, u32, u32)) -> Result<image:
     bail!("Display {screen_id} is no longer connected; choose the area again")
 }
 
+/// The window is minimized. Windows then reports it at (-32000, -32000) with
+/// no size.
+#[cfg(windows)]
+pub fn is_minimized(window: isize) -> bool {
+    use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::IsIconic};
+    window != 0 && unsafe { IsIconic(HWND(window as *mut _)) }.as_bool()
+}
+#[cfg(not(windows))]
+pub fn is_minimized(_window: isize) -> bool {
+    false
+}
+
 #[cfg(windows)]
 pub fn capture_for_selection(screen_id: u32, owner: isize) -> Result<image::RgbaImage> {
     use windows::Win32::{

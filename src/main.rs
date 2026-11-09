@@ -415,6 +415,11 @@ struct App {
     /// The 状態の詳細 window is open.
     details_open: bool,
     native_window: Option<isize>,
+    /// The window's place as eframe last saved it while the window was on the
+    /// screen. `save` puts it back when eframe saves a minimized window.
+    window_place: Option<String>,
+    /// The window was minimized on the last frame.
+    window_minimized: bool,
     #[cfg(test)]
     ui_probe: ui::UiProbe,
 }
@@ -516,6 +521,8 @@ impl App {
             ocr: screen_ocr::OcrState::default(),
             details_open: false,
             native_window: None,
+            window_place: None,
+            window_minimized: false,
             #[cfg(test)]
             ui_probe: ui::UiProbe::default(),
         }
@@ -676,6 +683,11 @@ impl App {
             ocr: screen_ocr::OcrState::default(),
             details_open: false,
             native_window: None,
+            window_place: usable_place(
+                cc.storage
+                    .and_then(|storage| storage.get_string(WINDOW_KEY)),
+            ),
+            window_minimized: false,
             #[cfg(test)]
             ui_probe: ui::UiProbe::default(),
         };
@@ -831,9 +843,21 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
+    /// Asks Windows once the window is known: a minimized window may have
+    /// drawn no frame since it was minimized.
+    fn window_is_minimized(&self) -> bool {
+        match self.native_window {
+            Some(window) => platform::is_minimized(window),
+            None => self.window_minimized,
+        }
+    }
     fn update_window_mode(&mut self, ctx: &egui::Context) {
         let info = ctx.input(|input| input.viewport().clone());
         self.window_mode.observe_with_zoom(&info, ctx.zoom_factor());
+        self.window_minimized = info.minimized == Some(true);
+        for command in self.window_mode.repair(&info) {
+            ctx.send_viewport_cmd(command);
+        }
         self.mini.observe_sources(
             self.caption_enabled,
             self.audio_enabled || self.audio_start_requested,
@@ -1750,7 +1774,28 @@ impl App {
     }
 }
 
+/// The key eframe keeps the window's place under.
+const WINDOW_KEY: &str = "window";
+
+/// A saved place that a window can be opened from. Windows gives a minimized
+/// window the position (-32000, -32000), which says nothing of where it was.
+fn usable_place(place: Option<String>) -> Option<String> {
+    place.filter(|place| !place.is_empty() && !place.contains("-32000"))
+}
+
 impl eframe::App for App {
+    /// eframe has just written the window's place into `storage`. For a
+    /// minimized window that is (-32000, -32000) with no size, and the next
+    /// start would open 64 points square in a corner. The last place the
+    /// window had on the screen is kept instead.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.window_is_minimized() {
+            storage.set_string(WINDOW_KEY, self.window_place.clone().unwrap_or_default());
+        } else {
+            self.window_place = usable_place(storage.get_string(WINDOW_KEY));
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if self.native_window.is_none()
             && let Ok(handle) = frame.window_handle()
@@ -3081,6 +3126,87 @@ mod tests {
 
     fn app() -> App {
         App::inert()
+    }
+
+    /// What eframe's storage holds, without a file.
+    #[derive(Default)]
+    struct Kept(std::collections::HashMap<String, String>);
+    impl eframe::Storage for Kept {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn flush(&mut self) {}
+    }
+
+    /// The window's place as eframe 0.33 writes it, on the screen and
+    /// minimized. Both are copied from files this app saved.
+    const ON_SCREEN: &str = "(inner_position_pixels:Some((x:2760.0,y:80.0)),outer_position_pixels:Some((x:2752.0,y:49.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:1280.0,y:880.0)))";
+    const MINIMIZED: &str = "(inner_position_pixels:Some((x:-32000.0,y:-32000.0)),outer_position_pixels:Some((x:-32000.0,y:-32000.0)),fullscreen:false,maximized:false,inner_size_points:Some((x:0.0,y:0.0)))";
+
+    /// eframe writes the window's place, then lets the app save.
+    fn eframe_saves(app: &mut App, storage: &mut Kept, place: &str) {
+        eframe::Storage::set_string(storage, WINDOW_KEY, place.to_owned());
+        eframe::App::save(app, storage);
+    }
+
+    #[test]
+    fn closing_while_minimized_keeps_the_place_the_window_had_on_the_screen() {
+        let (mut app, mut storage) = (app(), Kept::default());
+        eframe_saves(&mut app, &mut storage, ON_SCREEN);
+        assert_eq!(storage.0[WINDOW_KEY], ON_SCREEN);
+
+        app.window_minimized = true;
+        eframe_saves(&mut app, &mut storage, MINIMIZED);
+        assert_eq!(storage.0[WINDOW_KEY], ON_SCREEN, "not the minimized place");
+
+        app.window_minimized = false;
+        let moved = ON_SCREEN.replace("2760.0", "120.0");
+        eframe_saves(&mut app, &mut storage, &moved);
+        assert_eq!(storage.0[WINDOW_KEY], moved, "a new place on the screen");
+    }
+
+    #[test]
+    fn a_place_saved_while_minimized_is_never_the_one_to_go_back_to() {
+        assert_eq!(usable_place(Some(MINIMIZED.into())), None);
+        assert_eq!(
+            usable_place(Some(ON_SCREEN.into())).as_deref(),
+            Some(ON_SCREEN)
+        );
+
+        // Minimized from the start, with nothing better known: the next start
+        // opens the default window, not a speck.
+        let (mut app, mut storage) = (app(), Kept::default());
+        app.window_minimized = true;
+        eframe_saves(&mut app, &mut storage, MINIMIZED);
+        assert_eq!(storage.0[WINDOW_KEY], "");
+    }
+
+    #[test]
+    fn a_window_opened_as_a_speck_is_given_the_default_size() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let mut input = egui::RawInput::default();
+        input.viewports.insert(
+            egui::ViewportId::ROOT,
+            egui::ViewportInfo {
+                inner_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::splat(64.0),
+                )),
+                monitor_size: Some(egui::vec2(1920.0, 1080.0)),
+                minimized: Some(false),
+                ..Default::default()
+            },
+        );
+        let output = ctx.run(input, |ctx| app.update_window_mode(ctx));
+        let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(
+            commands.contains(&egui::ViewportCommand::InnerSize(window_mode::NORMAL_SIZE)),
+            "{commands:?}"
+        );
     }
     fn caption(text: &str, paused: bool) -> bridge::Caption {
         bridge::Caption {

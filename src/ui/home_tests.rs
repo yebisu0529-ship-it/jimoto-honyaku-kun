@@ -991,3 +991,27 @@ fn clicking_clear_empties_the_chat_and_starts_a_new_session_preserving_earlier_r
 
     let _ = fs::remove_dir_all(&session_dir);
 }
+
+#[test]
+fn reading_text_off_the_screen_comes_after_the_live_translation_settings() {
+    for width in [860.0, 1400.0] {
+        let mut app = chat();
+        let mut window = Window::new(width, 3200.0);
+        window.open_menu(&mut app);
+        window.click(&mut app, "設定");
+        window.settle(&mut app);
+        let ocr = window.at("画面・画像の文字認識");
+        for live in ["音声認識", "YouTube字幕の接続"] {
+            assert!(
+                window.at(live).top() < ocr.top(),
+                "{width}: {live} must come before 画面・画像の文字認識"
+            );
+        }
+        if width < 1100.0 {
+            assert!(
+                window.at("用語集と文脈").top() < ocr.top(),
+                "in one column 用語集と文脈 must come before 画面・画像の文字認識"
+            );
+        }
+    }
+}

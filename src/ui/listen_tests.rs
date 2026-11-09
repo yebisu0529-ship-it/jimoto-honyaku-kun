@@ -9,7 +9,7 @@ use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 /// this PC: Whisper, with no Python to run it. Nothing is installed, no audio
 /// is captured, and the PC's capacity is already known, so opening the model
 /// screen measures nothing.
-fn chat_without_speech() -> App {
+pub(super) fn chat_without_speech() -> App {
     let mut app = App::inert();
     app.backend_ready = true;
     app.setup.hardware = Some(hardware());
@@ -26,7 +26,7 @@ fn ctrl_alt(code: Code) -> u32 {
 }
 
 /// The four inputs as the menu names them.
-const INPUTS: [(&str, LiveSourceMode); 4] = [
+pub(super) const INPUTS: [(&str, LiveSourceMode); 4] = [
     ("自動（字幕を優先）", LiveSourceMode::Auto),
     ("YouTube字幕だけ", LiveSourceMode::Captions),
     ("PC音声だけ", LiveSourceMode::Audio),
@@ -46,7 +46,7 @@ fn choose(window: &mut Window, app: &mut App, label: &str) {
 }
 
 /// The captions and the PC audio as the app holds them.
-fn armed(app: &App) -> (bool, bool) {
+pub(super) fn armed(app: &App) -> (bool, bool) {
     (app.caption_enabled, app.audio_start_requested)
 }
 
@@ -540,8 +540,8 @@ fn the_mini_window_and_the_subtitle_window_see_the_same_state() {
     app.window_mode.enter(&egui::ViewportInfo::default());
     window.settle(&mut app);
     assert!(
-        window.has("一時停止") && !window.has("入力を選ぶ"),
-        "the mini window offers to pause what is listening"
+        window.has("■ 止める") && !window.has("● 聞く"),
+        "the mini window has the button that stops what is listening"
     );
 
     let mut app = chat_without_speech();
@@ -553,8 +553,8 @@ fn the_mini_window_and_the_subtitle_window_see_the_same_state() {
     app.window_mode.enter(&egui::ViewportInfo::default());
     window.settle(&mut app);
     assert!(
-        window.has("入力を選ぶ") && !window.has("一時停止"),
-        "the mini window offers the inputs again"
+        window.has("● 聞く") && !window.has("■ 止める"),
+        "the mini window has the button that listens again"
     );
 }
 

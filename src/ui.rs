@@ -524,6 +524,11 @@ pub(super) struct Control {
 }
 
 impl Control {
+    /// As one row of a menu. True when clicked.
+    pub(super) fn row(&self, ui: &mut egui::Ui, enabled: bool) -> bool {
+        menu_row(ui, self.label, self.shortcut, self.hover, enabled)
+    }
+
     /// As a button of its own.
     pub(super) fn button(&self, ui: &mut egui::Ui, enabled: bool) -> egui::Response {
         ui.add_enabled(enabled, standard(self.label))
@@ -567,8 +572,8 @@ fn choice_button(ui: &mut egui::Ui, label: &str, chosen: bool) -> egui::Response
     response
 }
 
-/// The 自動読み上げ switch: in the header of the other screens, and in the bar
-/// under the chat.
+/// The 自動読み上げ switch: in the header of the other screens, in the bar
+/// under the chat, and in the mini view's toolbar.
 pub(super) fn auto_read_switch(ui: &mut egui::Ui, on: bool) -> egui::Response {
     choice_button(ui, "自動読み上げ", on).on_hover_text(readout::AUTO_READ_HINT)
 }
@@ -1028,7 +1033,7 @@ impl App {
 
     /// A choice in 入力の切り替え. An input that is on is switched at once;
     /// otherwise the choice waits for the next 「聞く」.
-    fn choose_input(&mut self, ctx: &egui::Context, mode: LiveSourceMode) {
+    pub(super) fn choose_input(&mut self, ctx: &egui::Context, mode: LiveSourceMode) {
         self.listen_input = mode;
         if self.current_input().is_some_and(|on| on != mode) {
             self.apply_input(ctx, mode);
@@ -1108,11 +1113,19 @@ impl App {
     }
 
     /// What the chat says while it has no message: what to do next, in the
-    /// order the line beside the 聞く button decides what is going on.
+    /// order the line beside the 聞く button decides what is going on. The
+    /// mini view has the button above the chat and no way to the model screen.
     fn empty_chat_hint(&self) -> &'static str {
+        let mini = self.window_mode.is_mini();
         match self.translation_readiness() {
+            Readiness::Missing if mini => {
+                return "翻訳モデルの準備が、まだできていません。\n「通常表示」に戻ると、準備の画面を開けます。";
+            }
             Readiness::Missing => {
                 return "翻訳モデルの準備が、まだできていません。\nいちばん下の「モデルの準備」を押すと、準備の画面が開きます。";
+            }
+            Readiness::Preparing if mini => {
+                return "翻訳モデルを準備しています。\n終わると、上の「● 聞く」を押せます。";
             }
             Readiness::Preparing => {
                 return "翻訳モデルを準備しています。\n終わると、下の「● 聞く」を押せます。";
@@ -1120,6 +1133,9 @@ impl App {
             Readiness::Ready => {}
         }
         match self.current_input() {
+            None if mini => {
+                "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n上の「● 聞く」を押すと始まります。"
+            }
             None => {
                 "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n下の「● 聞く」を押すと始まります。"
             }
@@ -2128,9 +2144,12 @@ impl App {
             }
         }
         if self.window_mode.is_mini() {
+            // A menu closes on Esc while it is drawn, so whether one was open
+            // is asked first. That press closes the menu and nothing more.
+            let menu_open = egui::Popup::is_any_open(ctx);
             self.mini_ui(ctx);
             if self.selection.is_none()
-                && !egui::Popup::is_any_open(ctx)
+                && !menu_open
                 && ctx
                     .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
             {
@@ -2281,6 +2300,8 @@ impl App {
 mod home_tests;
 #[cfg(test)]
 mod listen_tests;
+#[cfg(test)]
+mod mini_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]

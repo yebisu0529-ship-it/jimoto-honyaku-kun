@@ -748,7 +748,7 @@ impl App {
         if lane == Lane::Manual {
             self.manual_busy = Some(id);
             self.output.clear();
-            self.mini.clear_manual_failure();
+            self.mini.forget_failure();
         } else {
             self.live_busy = Some(id);
             self.current_live_id = Some(id);
@@ -798,10 +798,10 @@ impl App {
             self.status = "モデルの準備ができると、ミニ表示を使えます。".into();
             return;
         }
-        match self.tab {
-            Tab::Text => self.mini.activate_manual(&self.rows),
-            _ => self.mini.show_live(),
-        }
+        self.open_mini();
+        // The small window starts at what was said last, wherever the reader
+        // had scrolled to in the large one.
+        self.live_chat.go_to_end();
         let info = ctx.input(|input| input.viewport().clone());
         self.window_mode.observe_with_zoom(&info, ctx.zoom_factor());
         for command in self.window_mode.enter(&info) {
@@ -816,7 +816,7 @@ impl App {
         for command in self.window_mode.leave(&info) {
             ctx.send_viewport_cmd(command);
         }
-        if was_mini && self.mini.is_manual() {
+        if was_mini && self.mini.shows_card() {
             self.tab = Tab::Text;
         }
         ctx.request_repaint();
@@ -858,10 +858,6 @@ impl App {
         for command in self.window_mode.repair(&info) {
             ctx.send_viewport_cmd(command);
         }
-        self.mini.observe_sources(
-            self.caption_enabled,
-            self.audio_enabled || self.audio_start_requested,
-        );
         if info.close_requested() {
             if self.close_after_restore.is_some() && !self.close_sent {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -885,10 +881,12 @@ impl App {
         if self.capture_busy || self.selection.is_some() {
             return;
         }
-        self.mini.clear_manual_failure();
+        // The range can still be cancelled, so the mini view keeps what it
+        // shows until a range is given.
+        self.mini.forget_failure();
         let Some(screen) = self.screens.get(self.screen_index).cloned() else {
             self.status = "取得できる画面がありません。".into();
-            self.mini.manual_failed();
+            self.result_failed();
             return;
         };
         self.capture_busy = true;
@@ -1232,7 +1230,6 @@ impl App {
                             .find(|r| r.record.id == id)
                             .is_some_and(|r| self.overlay_allowed(&r.record.kind, generation));
                     let mut read_text = None;
-                    let mut manual_completed = false;
                     let mut manual_failed = false;
                     if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
                         row.pending = false;
@@ -1245,7 +1242,6 @@ impl App {
                                 row.record.translation = text.clone();
                                 if lane == Lane::Manual {
                                     self.output = text.clone();
-                                    manual_completed = true;
                                 }
                                 if show_overlay {
                                     self.overlay_text = text;
@@ -1271,13 +1267,8 @@ impl App {
                             }
                         }
                     }
-                    if manual_completed {
-                        self.mini.clear_manual_failure();
-                        if self.window_mode.is_mini() {
-                            self.mini.activate_manual(&self.rows);
-                        }
-                    } else if manual_failed {
-                        self.mini.manual_failed();
+                    if manual_failed {
+                        self.result_failed();
                     }
                     if let Some(text) = read_text {
                         // read_text is populated for Live only after the
@@ -1304,11 +1295,11 @@ impl App {
                             self.status =
                                 "文字が見つかりませんでした。範囲や原文言語を確認してください。"
                                     .into();
-                            self.mini.manual_failed();
+                            self.result_failed();
                         }
                         Err(e) => {
                             self.status = e;
-                            self.mini.manual_failed();
+                            self.result_failed();
                         }
                     }
                 }
@@ -1339,7 +1330,7 @@ impl App {
                         Err(e) => {
                             self.screen_area_requested = false;
                             self.status = e;
-                            self.mini.manual_failed();
+                            self.result_failed();
                         }
                     }
                 }
@@ -1768,6 +1759,7 @@ impl App {
                     self.do_ocr(image::imageops::crop_imm(&selection.image, x, y, w, h).to_image());
                 } else {
                     self.status = "もう少し広い範囲を選択してください。".into();
+                    self.result_failed();
                 }
             }
         }
@@ -2851,10 +2843,11 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     .into();
         }
         if manual {
-            app.mini.activate_manual(&app.rows);
             app.input =
                 "The dashboard shows the schedule. Pause the video, then play it again.".into();
             app.output = "管理画面にスケジュールが表示されます。動画を一時停止してから、再度再生してください。".into();
+            app.tab = Tab::Text;
+            app.open_mini();
         }
         if !ready {
             app.service_error = "翻訳モデルへの接続が切れました。".into();
@@ -3457,49 +3450,6 @@ mod tests {
         let commands = &sent.viewport_output[&egui::ViewportId::ROOT].commands;
         assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
         assert!(!commands.contains(&egui::ViewportCommand::Close));
-    }
-    #[test]
-    fn ocr_dispatch_keeps_live_view_until_the_manual_worker_succeeds() {
-        for succeeds in [true, false] {
-            let mut a = app();
-            let ctx = egui::Context::default();
-            a.backend_ready = true;
-            a.tab = Tab::Live;
-            a.enter_mini_view(&ctx);
-            a.manual_busy = Some(42);
-            a.rows.push(Row {
-                record: record(42, "画面OCR", "", 0, 0),
-                pending: true,
-                error: None,
-                generation: 0,
-            });
-            a.accept_ocr("screen text".into());
-            assert!(!a.mini.is_manual());
-            // Inject the response of an already-started worker, without HTTP/OCR.
-            a.pending_ocr = None;
-            a.tx.send(Event::Partial {
-                id: 42,
-                text: "途中の訳".into(),
-            })
-            .unwrap();
-            a.process(&ctx);
-            assert!(!a.mini.is_manual());
-            a.tx.send(Event::Done {
-                id: 42,
-                lane: Lane::Manual,
-                result: if succeeds {
-                    Ok("完成した訳".into())
-                } else {
-                    Err("test failure".into())
-                },
-                elapsed: 0.1,
-                generation: 0,
-            })
-            .unwrap();
-            a.process(&ctx);
-            assert_eq!(a.mini.is_manual(), succeeds);
-            assert!(a.manual_busy.is_none());
-        }
     }
     #[test]
     fn selection_cursor_stays_visible_and_crosshair_before_and_during_drag() {

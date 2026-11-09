@@ -594,7 +594,7 @@ impl State {
         // While the reader is at the end, a bubble that starts above the top
         // would show only its lower part. It keeps its space but is not drawn.
         // The newest message is drawn even when it is taller than the window,
-        // but without the avatar and name that would be cut.
+        // but without the avatar, the name and the line that would be cut.
         let whole = |rect: Rect| !following || rect.top() >= visible_top - 0.5;
         let mut action = None;
         let mut after_day = false;
@@ -647,13 +647,13 @@ impl State {
                         header + laid.size.y + laid.below,
                     ));
                     if ui.is_rect_visible(rect) && (whole(rect) || bubble.newest) {
-                        let header = whole(rect);
+                        let from_top = whole(rect);
                         let place = Place {
                             at: order[&(bubble.message.id, bubble.part)],
                             ends,
                         };
                         let reply =
-                            self.paint_bubble(ui, rect, (&bubble, header), &laid, options, place);
+                            self.paint_bubble(ui, rect, (&bubble, from_top), &laid, options, place);
                         action = action.or(reply);
                     }
                 }
@@ -724,7 +724,7 @@ impl State {
         &mut self,
         ui: &egui::Ui,
         item: Rect,
-        (bubble, with_header): (&Bubble<'_>, bool),
+        (bubble, from_top): (&Bubble<'_>, bool),
         laid: &Laid,
         options: Options,
         place: Place,
@@ -734,7 +734,7 @@ impl State {
         let top = item.top() + if bubble.first_in_group { NAME_H } else { 0.0 };
         let rect = Rect::from_min_size(egui::pos2(item.left() + BUBBLE_X, top), laid.size);
         let painter = ui.painter();
-        let leads = bubble.first_in_group && with_header;
+        let leads = bubble.first_in_group && from_top;
         if leads {
             let center = egui::pos2(item.left() + SIDE + AVATAR / 2.0, item.top() + AVATAR / 2.0);
             painter.circle_filled(center, AVATAR / 2.0, message.source.color());
@@ -783,7 +783,7 @@ impl State {
                 ),
                 None => body.clone(),
             };
-            painter.galley(content, galley, theme::CHAT_TEXT);
+            paint_lines(painter, from_top, content, galley, theme::CHAT_TEXT);
         }
         if let Some(dots) = laid.dots {
             paint_dots(ui, content + dots.to_vec2());
@@ -810,9 +810,11 @@ impl State {
                 },
                 place,
             );
-            painter.galley(at, galley, theme::CHAT_TEXT_MUTED);
+            paint_lines(painter, from_top, at, galley, theme::CHAT_TEXT_MUTED);
             if let Some((video, y)) = &original.video {
-                painter.galley(
+                paint_lines(
+                    painter,
+                    from_top,
                     content + egui::vec2(0.0, *y),
                     video.clone(),
                     theme::CHAT_TEXT_MUTED,
@@ -984,6 +986,33 @@ impl Metrics {
                 .x,
         }
     }
+}
+
+/// Paints a text of a bubble at `at`. A bubble that is not drawn `from_top`
+/// starts above the view: it is the newest message, which is drawn although
+/// the chat follows its end. A line of it that the top of the view would cut
+/// is left out, so the first line in view is a whole one.
+fn paint_lines(
+    painter: &egui::Painter,
+    from_top: bool,
+    at: Pos2,
+    galley: Arc<Galley>,
+    color: Color32,
+) {
+    if from_top {
+        painter.galley(at, galley, color);
+        return;
+    }
+    let view = painter.clip_rect();
+    let top = galley
+        .rows
+        .iter()
+        .map(|row| at.y + row.rect().top())
+        .find(|top| *top >= view.top() - 0.5)
+        .unwrap_or(view.bottom());
+    painter
+        .with_clip_rect(Rect::from_min_max(egui::pos2(view.left(), top), view.max))
+        .galley(at, galley, color);
 }
 
 fn plain(ui: &egui::Ui, text: &str, size: f32, color: Color32) -> Arc<Galley> {
@@ -1654,6 +1683,20 @@ pub(super) mod testing {
     pub fn cut_at_the_top(output: &FullOutput, body: Rect) -> bool {
         shapes(output).into_iter().any(|(clip, shape)| {
             clip.top() > body.top() - 8.0 && shape.visual_bounding_rect().top() < clip.top() - 0.5
+        })
+    }
+
+    /// A line of text in the reading area that the top edge of what it is
+    /// clipped to runs through.
+    pub fn line_cut_at_the_top(output: &FullOutput, body: Rect) -> bool {
+        shapes(output).into_iter().any(|(clip, shape)| match shape {
+            Shape::Text(text) if clip.top() > body.top() - 8.0 => {
+                text.galley.rows.iter().any(|row| {
+                    let line = row.rect().translate(text.pos.to_vec2());
+                    line.top() < clip.top() - 0.5 && line.bottom() > clip.top() + 0.5
+                })
+            }
+            _ => false,
         })
     }
 
@@ -2711,6 +2754,42 @@ mod tests {
             "it went to the end once and does not follow"
         );
         assert_eq!(count_text(&output, "↓ 新しいメッセージ 1件"), 1);
+    }
+
+    #[test]
+    fn the_newest_message_taller_than_the_chat_is_drawn_from_a_whole_line_while_the_chat_follows() {
+        let long = "訳文が長く続いて、ウィンドウの高さを超えています。".repeat(8);
+        let messages = [Message {
+            status: Status::Forming,
+            ..message(1, Source::PcAudio, &long, Moment::default())
+        }];
+        for (width, height) in [(400.0, 260.0), (520.0, 360.0), (720.0, 300.0)] {
+            let mut chat = Chat::new(width, height);
+            let output = chat.settle(&messages);
+            let body = chat.state.body().unwrap();
+            let (words, _) = find_text(&output, &long);
+            assert!(
+                words.top() < body.top(),
+                "the message fits a chat of {width}x{height}, so nothing is tested"
+            );
+            assert!(
+                !line_cut_at_the_top(&output, body),
+                "a line is cut at the top of a chat of {width}x{height}"
+            );
+            let end = dots(&output);
+            assert_eq!(end.len(), 3);
+            assert!(
+                end.iter().all(|(dot, _)| body.contains(*dot)),
+                "the end of the message is not in view"
+            );
+
+            // A reader who scrolls by hand moves the lines past the edge.
+            let output = chat.scroll_up(&messages, 10.0);
+            assert!(
+                line_cut_at_the_top(&output, body),
+                "scrolling by hand jumps from line to line"
+            );
+        }
     }
 
     #[test]

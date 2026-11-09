@@ -5,8 +5,8 @@ use super::home_tests::Window;
 use super::listen_tests::{INPUTS, armed, chat_without_speech};
 use super::*;
 use crate::chat::testing::{
-    box_of, cut_at_the_top, dots, filled, find_text, has_text_containing, press, shapes, texts,
-    wheel,
+    box_of, cut_at_the_top, dots, filled, find_text, has_text_containing, line_cut_at_the_top,
+    press, shapes, texts, wheel,
 };
 use plamo_translate::journal::{ParagraphMeta, ParagraphState};
 
@@ -1270,6 +1270,41 @@ fn the_card_fits_the_window_and_shows_whole_lines_of_a_long_result() {
             assert!(button.bottom() <= clip.top());
         }
         assert!(clip.bottom() <= window.at(credit::LABEL).top());
+    }
+}
+
+#[test]
+fn a_forming_paragraph_taller_than_the_chat_is_drawn_from_a_whole_line() {
+    // The paragraph still forming in the preview 13-continuous-mini.
+    const FORMING: &str = "来館者はいつでも展示リストに戻れます。画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。フィードバックカードでは、印象に残った内容、分かりにくい箇所、今後の改善について3つの質問をします。";
+    for size in SIZES {
+        let mut app = mini();
+        app.settings.readout_enabled = true;
+        app.audio_enabled = true;
+        app.asr_ready = true;
+        app.rows = vec![
+            row(1, "音声", "各説明文は英語で約150語で構成されています。"),
+            forming(row(2, "音声", FORMING)),
+        ];
+        app.current_live_id = Some(2);
+        let window = drawn(&mut app, size);
+        let body = app.live_chat.body().expect("the chat is drawn");
+        let (words, color) = find_text(&window.output, FORMING);
+        assert_eq!(color, theme::CHAT_TEXT_FORMING);
+        assert!(
+            words.top() < body.top(),
+            "the paragraph starts inside the chat at {size:?}, so nothing is tested"
+        );
+        assert!(
+            !line_cut_at_the_top(&window.output, body),
+            "a line is cut at the top of the chat at {size:?}"
+        );
+        let end = dots(&window.output);
+        assert_eq!(end.len(), 3);
+        assert!(
+            end.iter().all(|(dot, _)| body.contains(*dot)),
+            "the end of the paragraph is not in view at {size:?}"
+        );
     }
 }
 

@@ -8,7 +8,7 @@ translated by PLaMo
 
 英語の音声やYouTube字幕を、このPC内でやさしい日本語にライブ翻訳し、トーク風のチャット画面に表示するWindows用ローカル翻訳アプリです。入力した文章や画面の選択範囲も、このPC内で翻訳できます。
 
-**[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/jimoto-honyaku-kun/releases)** · **プレビュー版 0.5.0**
+**[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/jimoto-honyaku-kun/releases)** · **プレビュー版 0.6.0**
 
 ![初回のモデル準備画面](assets/screenshots/first-run.png)
 
@@ -84,7 +84,7 @@ translated by PLaMo
 - **[詳細仕様・動作要件・ライセンス](docs/SPECIFICATIONS.md)**：モデル容量、対応GPUドライバー、ローカルポート、ビルド手順、各モデルのライセンス一覧
 - **[YouTube拡張機能の導入手順](extension/README.md)**：ブラウザ拡張の読み込みと接続手順
 - **[配布パッケージの構成・作成手順](docs/DISTRIBUTION.md)**：ポータブル版の構成とパッケージ作成方法
-- **[検証範囲](docs/VALIDATION.md)**：0.5.0 で確認済みの動作範囲と未検証項目
+- **[検証範囲](docs/VALIDATION.md)**：0.6.0 までに確認した動作範囲と未検証項目
 
 ## ライセンス
 

@@ -1,0 +1,209 @@
+===== 8b changed 34 of 44
+P00 In support of its goals, the Committee decided to lower the target range for the federal funds rate by 1/4 percentage point to 3-3/4 to 4 percent.
+   - 目標達成に向け、委員会は連邦資金金利の目標範囲を1/4パーセントポイント引き下げ、3-3/4～4パーセントとすることを決定しました。
+   + 目標達成に向け、委員会はFF金利の誘導目標を0.25パーセントポイント引き下げ、3-3/4～4パーセントとすることを決定しました。
+P01 The Committee seeks to achieve maximum employment and inflation at the rate of 2 percent over the longer run.
+   - 委員会は、最大限の雇用の達成と、長期的に2%のインフレ率の実現を目指しています。
+   + 委員会は、最大雇用の達成と、長期的に2%のインフレ率を実現することを目指しています。
+P02 Longer-term inflation expectations appear to remain well anchored.
+   - 長期的なインフレ期待は、引き続きしっかりと定着しているようです。
+   + 長期的なインフレ期待は、引き続き十分に安定していると考えられます。
+P03 Our policy stance is now modestly restrictive, and we are well positioned to respond to developments.
+   - 当社の政策スタンスは現在、緩やかに抑制的な水準にあり、今後の動向に柔軟に対応できる態勢を整えています。
+   + 当行の政策スタンスは現在、緩やかな引き締め的となっており、情勢の変化に対応できる態勢が整っています。
+P05 In the Summary of Economic Projections, the median participant projects two more rate cuts this year.
+   - 経済見通し概要では、参加者の中央値が、年内にさらに2回の利下げが行われると予想しています。
+   + 経済見通し（SEP）では、参加者の中央値が、年内にさらに2回の利下げが行われると予想しています。
+P06 The dot plot is not a plan; it is a collection of individual forecasts.
+   - ドットプロットは計画ではなく、個別の予測の集合です。
+   + ドットプロットは計画ではなく、個々の予測の集まりです。
+P07 We decided to slow the pace of balance sheet runoff.
+   - バランスシートの圧縮ペースを落とすことにしました。
+   + バランスシートの縮小ペースを緩めることにしました。
+P08 Quantitative tightening has gone smoothly, and reserves remain ample.
+   - 量的引き締めは順調に進展しており、準備金も十分な水準を維持しています。
+   + 量的引き締めは順調に進展しており、準備預金も十分な水準を維持しています。
+P09 Total PCE prices rose 2.8 percent over the 12 months ending in September; excluding the volatile food and energy categories, core PCE prices rose 2.9 percent.
+   - 9月までの12か月間で、PCE総合価格は2.8%上昇しました。変動の激しい食品・エネルギー部門を除いたコアPCE価格は2.9%上昇しました。
+   + 総合PCE物価は、9月までの12か月間で2.8%上昇しました。変動の激しい食品・エネルギー項目を除いたコアPCE物価は、2.9%上昇しました。
+P11 A soft landing is still possible, but it is not assured.
+   - 軟着陸はまだ可能ですが、確実ではありません。
+   + ソフトランディングは依然としてあり得ますが、確実ではありません。
+P12 We will remain data dependent and make our decisions meeting by meeting.
+   - 引き続きデータに基づき、会議ごとに意思決定を行ってまいります。
+   + 引き続きデータ次第とし、会合ごとに判断を下してまいります。
+P13 We are not on a preset course.
+   - 私たちはあらかじめ決められたコースを進んでいるわけではありません。
+   + 私たちはあらかじめ決められた道筋を辿っているわけではありません。
+P14 Downside risks to employment have risen, while upside risks to inflation remain.
+   - 雇用の下振れリスクが高まる一方、インフレの上振れリスクは依然として残っています。
+   + 雇用に対する下振れリスクが高まる一方、インフレに対する上振れリスクは依然として残っています。
+P16 Initial jobless claims remain low, and payroll gains have slowed.
+   - 新規失業保険申請件数は低水準で推移しており、雇用者数の増加ペースも鈍化しています。
+   + 新規失業保険申請件数は低水準で推移しており、雇用者数の伸びは鈍化しています。
+P18 Governor Waller dissented in favor of a larger cut.
+   - ウォラー知事は、より大幅な削減に賛成する反対意見を述べました。
+   + ウォラー理事は、より大幅な利下げに賛成し、反対意見を述べました。
+P19 The Board of Governors also approved a cut in the discount rate.
+   - 理事会はまた、割引率の引き下げを承認しました。
+   + 理事会はまた、公定歩合の引き下げを承認しました。
+P20 Vice Chair Jefferson spoke about the outlook last week.
+   - ジェファーソン副議長は先週、今後の見通しについて述べました。
+   + ジェファーソン副議長は先週、見通しについて述べました。
+P22 Headline inflation has come down, but services inflation is still elevated.
+   - 総合インフレ率は低下しましたが、サービスインフレは依然として高水準にあります。
+   + 総合インフレ率は低下しましたが、サービスインフレ率は依然として高水準にあります。
+P23 The Committee will continue to purchase Treasury bills to maintain an ample supply of reserves.
+   - 委員会は、十分な準備金を確保するため、引き続き財務省短期証券を買い入れます。
+   + 委員会は、準備預金の十分な供給を維持するため、引き続き財務省短期証券の買い入れを行います。
+P24 The effects of tariffs on inflation could be transitory.
+   - 関税がインフレに及ぼす影響は、一過性のものかもしれません。
+   + 関税がインフレに及ぼす影響は、一過性のものとなる可能性があります。
+P26 Monetary policy works with long and variable lags.
+   - 金融政策は、長期かつ変動的なラグを伴います。
+   + 金融政策は、時間的・経路的なラグを伴います。
+P28 The federal funds rate is now in a range of 3.75 to 4 percent.
+   - 連邦資金金利は現在、3.75～4%の範囲で推移しています。
+   + FF金利は現在、3.75～4%の範囲で推移しています。
+P30 Our dual mandate is maximum employment and stable prices.
+   - 我々の二つの責務は、最大限の雇用と物価の安定です。
+   + 我々の2つの責務は、最大雇用の達成と物価の安定です。
+P31 The mandate was given to us by Congress.
+   - その権限は議会から私たちに与えられました。
+   + その責務は議会から我々に付与されました。
+P32 The Federal Reserve remains committed to its price stability goal.
+   - 連邦準備制度理事会は、物価安定目標の達成に引き続き取り組んでいます。
+   + 連邦準備制度は、物価の安定という目標に引き続き取り組んでいます。
+P33 Fed funds futures are pricing in another cut in December.
+   - フェデラル・ファンド先物は、12月のさらなる利下げを織り込んでいます。
+   + FF金利先物は、12月のさらなる利下げを織り込んでいます。
+P34 Chair Powell said the Committee is not in a hurry.
+   - パウエル委員長は、委員会は急いでいないと述べました。
+   + パウエル議長は、委員会は急いでいないと述べました。
+P35 Policy is no longer accommodative.
+   - 政策はもはや寛容ではありません。
+   + 政策はもはや緩和的ではありません。
+P36 The SEP shows a median of two cuts next year.
+   - SEPによると、来年の削減数は中央値で2件となる見込みです。
+   + 経済見通し（SEP）では、来年の利下げ回数の中央値は2回となっています。
+P37 Looking at the dots, most participants expect rates to be lower next year.
+   - ドットチャートを見ると、ほとんどの参加者が来年の金利は低下すると予想しています。
+   + ドットプロットを見ると、参加者の大半は来年の金利が低下すると予想しています。
+P38 We will end QT on December 1.
+   - 12月1日でQTを終了します。
+   + 12月1日にQTを終了します。
+P39 The balance sheet has shrunk by more than two trillion dollars.
+   - 貸借対照表は2兆ドル以上縮小しました。
+   + バランスシートは2兆ドル以上縮小しました。
+P42 The FOMC decided to maintain the target range for the federal funds rate at 3 and 3/4 to 4%.
+   - FOMCは、フェデラル・ファンド金利の誘導目標範囲を3と3/4～4%に据え置くことを決定しました。
+   + FOMCは、FF金利の誘導目標を3と3/4～4%に据え置くことを決定しました。
+P43 We lowered the target range to 4 and 1/4 to 4 and 1/2 percent.
+   - 目標範囲を4と1/4%から4と1/2%に引き下げました。
+   + 誘導目標を4と1/4%から4と1/2%に引き下げました。
+===== 08b changed 35 of 44
+P00 In support of its goals, the Committee decided to lower the target range for the federal funds rate by 1/4 percentage point to 3-3/4 to 4 percent.
+   - 委員会は目標達成に向け、連邦資金率の目標範囲を1/4パーセントポイント引き下げ、3-3/4～4パーセントとすることを決定しました。
+   + 委員会は、その目標を支持するため、FF金利の誘導目標を0.25ポイント引き下げ、3～3/4～4％とすることを決定しました。
+P01 The Committee seeks to achieve maximum employment and inflation at the rate of 2 percent over the longer run.
+   - 委員会は、長期的に最大雇用と2%のインフレ率の達成を目指しています。
+   + 本委員会は、長期的に雇用の最大化と2%のインフレ率の達成を目指しています。
+P02 Longer-term inflation expectations appear to remain well anchored.
+   - 長期的なインフレ期待は、依然として堅調に推移しているようです。
+   + 長期的なインフレ期待は、引き続き十分に安定しているようです。
+P03 Our policy stance is now modestly restrictive, and we are well positioned to respond to developments.
+   - 当社の方針は現在、緩やかな規制となっており、動向に対応するための十分な体制を整えております。
+   + 当行の政策スタンスは現在、緩やかな引き締め的となっており、動向に対応するための十分な態勢を整えております。
+P05 In the Summary of Economic Projections, the median participant projects two more rate cuts this year.
+   - 経済予測の概要では、参加者の中央値が、今年さらに2回の利下げを予測しています。
+   + 経済見通し（SEP）において、参加者の中央値は、今年さらに2回の利下げを予想しています。
+P07 We decided to slow the pace of balance sheet runoff.
+   - 貸借対照表の流出ペースを落とすことにしました。
+   + バランスシートの縮小ペースを緩めることにしました。
+P08 Quantitative tightening has gone smoothly, and reserves remain ample.
+   - 量的引き締めは順調に進み、準備金は依然として潤沢です。
+   + 量的引き締めは順調に進み、準備預金は依然として潤沢な状態です。
+P09 Total PCE prices rose 2.8 percent over the 12 months ending in September; excluding the volatile food and energy categories, core PCE prices rose 2.9 percent.
+   - 9月までの12か月間で、PCEの総合価格は2.8%上昇しました。変動の激しい食品およびエネルギー部門を除いたコアPCE価格は2.9%上昇しました。
+   + 総合PCE価格は9月までの12カ月間で2.8％上昇しました。変動の激しい食品およびエネルギー部門を除いたコアPCE価格は2.9％上昇しました。
+P11 A soft landing is still possible, but it is not assured.
+   - 軟着陸はまだ可能ですが、確実ではありません。
+   + ソフトランディングの可能性は依然としてありますが、確実ではありません。
+P12 We will remain data dependent and make our decisions meeting by meeting.
+   - 引き続きデータに依拠し、会議を重ねることで意思決定を行ってまいります。
+   + 引き続きデータに依拠し、会合ごとに判断を下してまいります。
+P13 We are not on a preset course.
+   - 私たちは既定のコースにはいません。
+   + あらかじめ定められた道筋に沿っているわけではありません。
+P14 Downside risks to employment have risen, while upside risks to inflation remain.
+   - 雇用への下振れリスクは高まった一方、インフレへの上振れリスクは依然として残っています。
+   + 雇用への下振れリスクが高まった一方、インフレへの上振れリスクは依然として残っています。
+P16 Initial jobless claims remain low, and payroll gains have slowed.
+   - 新規失業保険申請件数は低水準に留まっており、給与の伸びも鈍化しています。
+   + 新規の失業保険申請件数は低水準にとどまっており、雇用者数の伸びは鈍化しています。
+P18 Governor Waller dissented in favor of a larger cut.
+   - ウォラー知事は、より大幅な削減に賛成しました。
+   + ウォラー理事は、より大幅な利下げに賛成しました。
+P19 The Board of Governors also approved a cut in the discount rate.
+   - 取締役会はまた、割引率の引き下げを承認しました。
+   + 理事会はまた、公定歩合の引き下げを承認しました。
+P20 Vice Chair Jefferson spoke about the outlook last week.
+   - ジェファーソン副議長は先週、今後の見通しについて述べました。
+   + ジェファーソン副議長は先週、見通しについて述べました。
+P21 The Fed is not behind the curve.
+   - FRBは後手に回っています。
+   + FRBは後手に回っているわけではありません。
+P22 Headline inflation has come down, but services inflation is still elevated.
+   - headline inflationは低下しましたが、サービスインフレは依然として高水準です。
+   + 総合インフレ率は低下しましたが、サービスインフレ率は依然として高水準にあります。
+P23 The Committee will continue to purchase Treasury bills to maintain an ample supply of reserves.
+   - 委員会は、十分な準備金を維持するため、引き続き財務省短期証券を買い入れます。
+   + 委員会は、十分な準備預金を維持するため、引き続き財務省短期証券を買い入れます。
+P24 The effects of tariffs on inflation could be transitory.
+   - 関税がインフレに及ぼす影響は、一過性のものとなる可能性があります。
+   + 関税がインフレに及ぼす影響は、一過性にとどまる可能性があります。
+P25 Thank you, Mr. Chairman. Will the Fed hike rates again this year?
+   - 議長、ありがとうございます。FRBは今年も利上げを行う予定でしょうか。
+   + 議長、ありがとうございます。FRBは今年、再び利上げを行うのでしょうか。
+P26 Monetary policy works with long and variable lags.
+   - 金融政策は、長期かつ変動的なラグを伴います。
+   + 金融政策は、長期かつ変動的なラグを伴って機能します。
+P27 Financial conditions have eased since the last FOMC meeting.
+   - 前回のFOMC会合以降、金融情勢は緩和しています。
+   + 前回のFOMC会合以降、金融環境は緩和しています。
+P28 The federal funds rate is now in a range of 3.75 to 4 percent.
+   - 連邦資金金利は現在、3.75%から4%の範囲となっています。
+   + FF金利は現在、3.75～4％の水準にあります。
+P30 Our dual mandate is maximum employment and stable prices.
+   - 私たちの二つの使命は、雇用の最大化と物価の安定です。
+   + 我々の2つの責務は、雇用の最大化と物価の安定です。
+P31 The mandate was given to us by Congress.
+   - その任務は議会から私たちに与えられました。
+   + その責務は議会から私たちに委ねられました。
+P32 The Federal Reserve remains committed to its price stability goal.
+   - 連邦準備制度理事会は、物価安定目標の達成に引き続き取り組んでいます。
+   + 連邦準備制度は、物価の安定という目標に引き続き取り組んでいます。
+P33 Fed funds futures are pricing in another cut in December.
+   - フェデラル・ファンド金利先物は、12月にさらなる利下げを織り込んでいます。
+   + FF金利先物は、12月のさらなる利下げを織り込んでいます。
+P36 The SEP shows a median of two cuts next year.
+   - SEPでは、来年のカット数の中央値が2回となっています。
+   + 経済見通し（SEP）では、来年の利下げ回数の中央値は2回となっています。
+P37 Looking at the dots, most participants expect rates to be lower next year.
+   - 点で見ると、ほとんどの参加者は来年の金利が低下すると予想しています。
+   + 点で見ると、ほとんどの参加者が来年の金利は低下すると予想しています。
+P38 We will end QT on December 1.
+   - 12月1日をもってQTを終了します。
+   + 12月1日をもってQTを終了いたします。
+P39 The balance sheet has shrunk by more than two trillion dollars.
+   - 貸借対照表は2兆ドル以上縮小しました。
+   + バランスシートは2兆ドル以上縮小しました。
+P40 Some participants favored holding rates steady.
+   - 一部の参加者は、保有率を一定に保つことを支持しました。
+   + 一部の参加者は、金利の据え置きを支持しました。
+P42 The FOMC decided to maintain the target range for the federal funds rate at 3 and 3/4 to 4%.
+   - FOMCは、フェデラル・ファンド金利の目標範囲を3と3/4～4%に据え置くことを決定しました。
+   + FOMCは、FF金利の誘導目標を3と3/4～4%に据え置くことを決定しました。
+P43 We lowered the target range to 4 and 1/4 to 4 and 1/2 percent.
+   - 目標範囲を4と1/4から4と1/2パーセントに下げました。
+   + 誘導目標を4と1/4％から4と1/2％に引き下げました。

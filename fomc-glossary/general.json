@@ -1,0 +1,50 @@
+[
+ {
+  "set": "general",
+  "start_ms": 0,
+  "end_ms": 1,
+  "source": "Please pull up a chair and sit down."
+ },
+ {
+  "set": "general",
+  "start_ms": 100000,
+  "end_ms": 100001,
+  "source": "Governor Newsom signed the bill on Tuesday."
+ },
+ {
+  "set": "general",
+  "start_ms": 200000,
+  "end_ms": 200001,
+  "source": "The country's oil reserves are running low."
+ },
+ {
+  "set": "general",
+  "start_ms": 300000,
+  "end_ms": 300001,
+  "source": "The city lifted its mask mandate last spring."
+ },
+ {
+  "set": "general",
+  "start_ms": 400000,
+  "end_ms": 400001,
+  "source": "The boat anchored near the island."
+ },
+ {
+  "set": "general",
+  "start_ms": 500000,
+  "end_ms": 500001,
+  "source": "The new rules are too restrictive for small businesses."
+ },
+ {
+  "set": "general",
+  "start_ms": 600000,
+  "end_ms": 600001,
+  "source": "She chairs the school board."
+ },
+ {
+  "set": "general",
+  "start_ms": 700000,
+  "end_ms": 700001,
+  "source": "Our company's balance sheet is strong."
+ }
+]

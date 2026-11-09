@@ -1,0 +1,13 @@
+[package]
+name = "fomc-glossary-evidence"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+plamo-translate = { path = "M:/Codex/Projects/jimoto-honyaku-kun-fomc-glossary" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]

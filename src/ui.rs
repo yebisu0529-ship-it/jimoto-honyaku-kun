@@ -1490,7 +1490,11 @@ impl App {
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
             let can_clear = !self.rows.is_empty() || !self.asr_partial.trim().is_empty();
-            let mut clear = false;
+            let can_copy = self
+                .rows
+                .iter()
+                .any(|row| !row.record.translation.trim().is_empty());
+            let (mut clear, mut copy_all) = (false, false);
             self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |ui| {
                 if ui
                     .add_enabled(can_clear, standard("クリア"))
@@ -1501,6 +1505,10 @@ impl App {
                 {
                     clear = true;
                 }
+                copy_all = ui
+                    .add_enabled(can_copy, standard("全文コピー"))
+                    .on_hover_text("表示中の会話をすべて、PLaMoのクレジットを付けてコピーします。")
+                    .clicked();
             });
             if clear {
                 self.follow(ui.ctx(), MenuChoice::Clear);
@@ -1530,6 +1538,9 @@ impl App {
                     self.live_chat.show(ui, "live-chat", &messages, options)
                 })
                 .inner;
+            if copy_all {
+                self.live_chat.copy_all(&messages);
+            }
             self.listen_bar(ui);
             match action {
                 Some(chat::Action::Read(text)) => self.read_translation(text),
@@ -1958,7 +1969,9 @@ impl App {
                 .max_height((ui.available_height() - footer).max(0.0))
                 .show(ui, |ui| {
                     // Two independent columns above 1100 points so a wide
-                    // window does not become one very long form.
+                    // window does not become one very long form. The live
+                    // translation's settings come first; reading text off the
+                    // screen is another use, so its card comes after them.
                     if ui.available_width() >= 1100.0 {
                         ui.columns(2, |columns| {
                             columns[0].spacing_mut().item_spacing.y = theme::SPACE_3;
@@ -1970,8 +1983,8 @@ impl App {
                             });
                             self.settings_glossary_section(&mut columns[0]);
                             settings_card(&mut columns[1], |ui| self.settings_asr_card(ui));
-                            settings_card(&mut columns[1], |ui| self.screen_ocr_settings_ui(ui));
                             settings_card(&mut columns[1], |ui| self.settings_youtube_card(ui));
+                            settings_card(&mut columns[1], |ui| self.screen_ocr_settings_ui(ui));
                             self.settings_shortcuts_section(&mut columns[1]);
                             self.settings_diagnostics_section(&mut columns[1]);
                         });
@@ -1980,10 +1993,10 @@ impl App {
                         settings_card(ui, |ui| self.settings_translation_card(ui));
                         settings_card(ui, |ui| self.readout_settings_ui(ui));
                         settings_card(ui, |ui| self.settings_asr_card(ui));
-                        settings_card(ui, |ui| self.screen_ocr_settings_ui(ui));
                         settings_card(ui, |ui| self.paragraph_tools_settings_ui(ui));
                         settings_card(ui, |ui| self.settings_youtube_card(ui));
                         self.settings_glossary_section(ui);
+                        settings_card(ui, |ui| self.screen_ocr_settings_ui(ui));
                         self.settings_shortcuts_section(ui);
                         self.settings_diagnostics_section(ui);
                     }

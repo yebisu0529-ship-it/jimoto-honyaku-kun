@@ -680,3 +680,54 @@ fn the_meter_sits_beside_the_list_when_wide_and_above_it_when_narrow() {
         "level with the top row"
     );
 }
+
+#[test]
+fn the_screen_lists_each_download_with_its_size_and_the_folder_it_goes_to() {
+    use setup_chain::Step;
+    // Tall enough that the list under the model rows is in view without scrolling.
+    for size in [(SMALL.0, 1600.0), LARGE] {
+        let nothing = tempfile::tempdir().unwrap();
+        let mut app = app_on(Some((24 * GIB, 5 * GIB)));
+        app.seed_plan(&setup_chain::Roots::under(nothing.path()));
+        let plan = app.download_plan().expect("a plan for the chosen model");
+        let model = app.setup_model().expect("a chosen model");
+        let drawn = texts(&Session::new().settle(&mut app, size));
+        let at = |want: &str| {
+            drawn
+                .iter()
+                .find(|(_, _, text)| text == want)
+                .map(|(_, rect, _)| *rect)
+                .unwrap_or_else(|| panic!("{size:?}: {want:?} is not drawn"))
+        };
+        for (step, name) in [
+            (
+                Step::Translation,
+                format!("翻訳モデル（{}）と実行環境", model.label),
+            ),
+            (Step::Speech, "英語の音声認識　Nemotron Speech".to_owned()),
+            (Step::Punctuation, "英語の文章区切り補助".to_owned()),
+        ] {
+            let bytes_of = plan
+                .steps
+                .iter()
+                .find(|(planned, _)| *planned == step)
+                .unwrap()
+                .1;
+            let name = at(&name);
+            let amount = bytes(bytes_of.next_multiple_of(1_048_576));
+            assert!(
+                drawn.iter().any(|(_, rect, text)| *text == amount
+                    && rect.left() > name.right()
+                    && (rect.center().y - name.center().y).abs() < 4.0),
+                "{size:?}: {amount} is on the row of {step:?}"
+            );
+        }
+        at(&format!("保存先　{}", data_root().display()));
+        assert!(
+            !drawn
+                .iter()
+                .any(|(_, _, text)| text.starts_with("続けて、")),
+            "{size:?}: the list replaces the sentence about what comes next"
+        );
+    }
+}

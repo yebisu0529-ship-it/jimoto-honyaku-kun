@@ -134,25 +134,7 @@ impl Default for Settings {
     }
 }
 fn app_root() -> PathBuf {
-    if let Some(root) = std::env::var_os("PLAMO_APP_DIR") {
-        return root.into();
-    }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        if dir
-            .file_name()
-            .is_some_and(|n| n == "release" || n == "debug")
-            && let Some(target) = dir.parent()
-            && target.file_name().is_some_and(|n| n == "target")
-            && let Some(project) = target.parent()
-            && project.join("Cargo.toml").exists()
-        {
-            return project.into();
-        }
-        return dir.into();
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    plamo_translate::storage::app_root()
 }
 fn data_root() -> PathBuf {
     plamo_translate::storage::data_root()
@@ -185,6 +167,8 @@ enum Tab {
     Files,
     Settings,
     Setup,
+    /// Connecting the browser extension that sends YouTube captions.
+    YouTube,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum Lane {
@@ -350,6 +334,7 @@ struct App {
     tx: SyncSender<Event>,
     rx: Receiver<Event>,
     bridge_rx: Receiver<bridge::Caption>,
+    bridge_contact: Arc<bridge::LastContact>,
     stop: Arc<AtomicBool>,
     screens: Vec<platform::Screen>,
     screen_index: usize,
@@ -452,6 +437,7 @@ impl App {
             tx,
             rx,
             bridge_rx,
+            bridge_contact: Arc::default(),
             stop: Arc::new(AtomicBool::new(false)),
             screens: Vec::new(),
             screen_index: 0,
@@ -557,9 +543,11 @@ impl App {
         };
         let token = settings.bridge_token.clone();
         let bridge_stop = stop.clone();
+        let bridge_contact = Arc::<bridge::LastContact>::default();
+        let heard = bridge_contact.clone();
         let info = tx.clone();
         thread::spawn(move || {
-            if let Err(e) = bridge::run(token, bridge_stop, bridge_tx) {
+            if let Err(e) = bridge::run(token, bridge_stop, bridge_tx, heard) {
                 let _ = info.send(Event::Info(e.to_string()));
             }
         });
@@ -609,6 +597,7 @@ impl App {
             tx,
             rx,
             bridge_rx,
+            bridge_contact,
             stop,
             screens: platform::screens().unwrap_or_default(),
             screen_index: 0,
@@ -1556,7 +1545,7 @@ impl App {
             _ => credit::published(&timeline_txt(&records)),
         };
         match fs::write(path, content) {
-            Ok(()) => self.status = "タイムラインを書き出しました。".into(),
+            Ok(()) => self.status = "履歴を書き出しました。".into(),
             Err(e) => self.status = e.to_string(),
         }
     }
@@ -2436,6 +2425,39 @@ fn render_setup_views(folder: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The YouTube connection screen in its four states, at a common size and at
+/// the smallest window. Each contact is noted just before the drawing.
+fn render_youtube_views(folder: &Path) -> Result<()> {
+    use bridge::Contact;
+    for (name, heard) in [
+        ("not-yet", None),
+        ("wrong-key", Some(Contact::WrongKey)),
+        ("connected", Some(Contact::Checked)),
+        ("captions", Some(Contact::Caption)),
+    ] {
+        for (width, height) in [(1280, 880), (860, 620)] {
+            let ctx = egui::Context::default();
+            ui::configure_theme(&ctx);
+            let mut app = App::inert();
+            app.tab = Tab::YouTube;
+            app.backend_ready = true;
+            app.startup_decided = true;
+            app.status = "プレビュー · 接続や保存は行いません".into();
+            if let Some(contact) = heard {
+                app.bridge_contact.note(contact);
+            }
+            preview::render(
+                &ctx,
+                &folder.join(format!("38-youtube-{name}-{width}x{height}.png")),
+                width,
+                height,
+                |ctx| app.render_ui(ctx),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// What a preview of the main window shows over its screen, or changes on it.
 enum Overlay {
     Nothing,
@@ -2461,6 +2483,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
     render_long_paragraph_views(folder)?;
     render_setup_views(folder)?;
+    render_youtube_views(folder)?;
     let nothing_saved = tempfile::tempdir()?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
         for (name, tab, filled, overlay, listening) in [

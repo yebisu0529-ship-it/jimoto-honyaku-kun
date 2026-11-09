@@ -135,20 +135,22 @@ pub(super) fn chat() -> App {
     app
 }
 
-const SCREENS: [(Tab, &str); 4] = [
+const SCREENS: [(Tab, &str); 5] = [
     (Tab::Text, "文章を翻訳"),
     (Tab::Files, "履歴"),
     (Tab::Settings, "設定"),
     (Tab::Setup, "モデル"),
+    (Tab::YouTube, "YouTube字幕の接続"),
 ];
 
-/// Every screen that has the page header: the chat and the four behind the menu.
-const HEADERED: [(Tab, &str); 5] = [
+/// Every screen that has the page header: the chat and the five behind the menu.
+const HEADERED: [(Tab, &str); 6] = [
     (Tab::Text, "文章"),
     (Tab::Live, "チャット"),
     (Tab::Files, "履歴"),
     (Tab::Settings, "設定"),
     (Tab::Setup, "モデル"),
+    (Tab::YouTube, "YouTube字幕の接続"),
 ];
 
 #[test]
@@ -232,6 +234,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
         "ファイルを翻訳",
         "履歴",
         "モデル",
+        "YouTube字幕の接続",
         "設定",
         "状態の詳細",
     ];
@@ -258,6 +261,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
         ("画面の文字を翻訳", "Ctrl"),
         ("ファイルを翻訳", "Ctrl"),
         ("モデル", "Ctrl"),
+        ("YouTube字幕の接続", "Ctrl"),
         ("状態の詳細", "Ctrl"),
     ] {
         let row = window.at(item);
@@ -378,6 +382,7 @@ fn items_that_need_the_model_are_faded_until_it_is_ready_and_the_others_never_ar
             "ファイルを翻訳",
             "履歴",
             "モデル",
+            "YouTube字幕の接続",
             "設定",
             "状態の詳細",
             "入力の切り替え",
@@ -457,7 +462,13 @@ fn the_readout_switch_is_in_the_bar_on_the_chat_and_beside_the_menu_on_the_other
     assert!(listen.right() < switch.left());
     assert!((switch.center().y - listen.center().y).abs() < 2.0);
 
-    for tab in [Tab::Text, Tab::Files, Tab::Settings, Tab::Setup] {
+    for tab in [
+        Tab::Text,
+        Tab::Files,
+        Tab::Settings,
+        Tab::Setup,
+        Tab::YouTube,
+    ] {
         let mut app = chat();
         app.tab = tab;
         app.settings.readout_enabled = true;
@@ -524,6 +535,7 @@ fn each_screen_behind_the_menu_has_its_title_on_the_row_of_the_back_button_and_t
         (Tab::Files, "履歴"),
         (Tab::Settings, "設定"),
         (Tab::Setup, "このPCに合うモデルを準備"),
+        (Tab::YouTube, "YouTube字幕の接続"),
     ] {
         let mut app = chat();
         app.tab = tab;
@@ -554,6 +566,7 @@ fn the_credit_stays_at_the_bottom_right_of_every_screen() {
             (Tab::Files, "履歴"),
             (Tab::Settings, "設定"),
             (Tab::Setup, "モデル"),
+            (Tab::YouTube, "YouTube字幕の接続"),
         ] {
             let mut app = chat();
             app.tab = tab;
@@ -700,6 +713,42 @@ fn the_state_belongs_to_the_chat_and_the_other_screens_leave_the_row_to_the_mess
         assert_eq!(in_the_row("準備完了"), tab == Tab::Live);
         assert!(in_the_row("設定を保存しました。"));
     }
+}
+
+#[test]
+fn the_history_screen_says_what_its_language_row_is_for() {
+    let mut app = chat();
+    app.tab = Tab::Files;
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    let label = window.at("ファイル翻訳の言語");
+    let source = window.at("自動判定");
+    assert!(label.right() < source.left(), "{label:?} {source:?}");
+    assert!(
+        (label.center().y - source.center().y).abs() < 3.0,
+        "{label:?} {source:?}"
+    );
+
+    // On the 文章 screen the same row is beside its own 翻訳する button.
+    app.tab = Tab::Text;
+    window.settle(&mut app);
+    assert!(window.has("自動判定") && !window.has("ファイル翻訳の言語"));
+}
+
+#[test]
+fn the_chat_calls_what_it_saves_the_history_as_the_menu_does() {
+    let mut app = chat();
+    let session_dir = std::env::temp_dir().join(format!("jimoto-test-{}", uuid::Uuid::new_v4()));
+    app.journal = Some(Journal::new(&session_dir).expect("creates a test journal"));
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    assert!(window.has("履歴に自動保存"));
+    assert!(
+        !texts(&window.output)
+            .iter()
+            .any(|(text, _, _)| text.contains("タイムライン"))
+    );
+    let _ = fs::remove_dir_all(&session_dir);
 }
 
 #[test]
@@ -883,6 +932,58 @@ fn the_chat_header_shows_clear_to_the_left_of_the_menu_and_enables_with_content(
 }
 
 #[test]
+fn the_chat_header_copies_the_whole_talk_from_beside_clear() {
+    let mut app = chat();
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+
+    let (copy, clear) = (window.at("全文コピー"), window.at("クリア"));
+    assert!(
+        copy.right() < clear.left(),
+        "全文コピー must sit to the left of クリア"
+    );
+    assert!(
+        (copy.center().y - clear.center().y).abs() < 2.0,
+        "全文コピー must be on the same row as クリア"
+    );
+    let empty_ink = window.ink("全文コピー");
+
+    for (id, source, translation) in [
+        (1, "Hello.", "こんにちは。"),
+        (2, "Thank you.", "ありがとう。"),
+    ] {
+        app.rows.push(Row {
+            record: Record {
+                id,
+                start_ms: 0,
+                end_ms: 1000,
+                source: source.into(),
+                translation: translation.into(),
+                standard_translation: None,
+                kind: "音声".into(),
+                video_id: String::new(),
+                created_at: String::new(),
+                paragraph: None,
+            },
+            pending: false,
+            error: None,
+            generation: 0,
+        });
+    }
+    window.settle(&mut app);
+    assert_ne!(
+        window.ink("全文コピー"),
+        empty_ink,
+        "全文コピー should be enabled once a row is translated"
+    );
+    window.click(&mut app, "全文コピー");
+    assert_eq!(
+        app.live_chat.copied(),
+        Some(credit::published("こんにちは。\n\nありがとう。").as_str())
+    );
+}
+
+#[test]
 fn clicking_clear_empties_the_chat_and_starts_a_new_session_preserving_earlier_records() {
     let mut app = chat();
     let session_dir = std::env::temp_dir().join(format!("jimoto-test-{}", uuid::Uuid::new_v4()));
@@ -938,4 +1039,28 @@ fn clicking_clear_empties_the_chat_and_starts_a_new_session_preserving_earlier_r
     );
 
     let _ = fs::remove_dir_all(&session_dir);
+}
+
+#[test]
+fn reading_text_off_the_screen_comes_after_the_live_translation_settings() {
+    for width in [860.0, 1400.0] {
+        let mut app = chat();
+        let mut window = Window::new(width, 3200.0);
+        window.open_menu(&mut app);
+        window.click(&mut app, "設定");
+        window.settle(&mut app);
+        let ocr = window.at("画面・画像の文字認識");
+        for live in ["音声認識", "YouTube字幕の接続"] {
+            assert!(
+                window.at(live).top() < ocr.top(),
+                "{width}: {live} must come before 画面・画像の文字認識"
+            );
+        }
+        if width < 1100.0 {
+            assert!(
+                window.at("用語集と文脈").top() < ocr.top(),
+                "in one column 用語集と文脈 must come before 画面・画像の文字認識"
+            );
+        }
+    }
 }

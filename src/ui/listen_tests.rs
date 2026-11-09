@@ -638,3 +638,79 @@ fn the_bar_is_under_the_chat_above_the_status_row_and_inside_the_gutters() {
         }
     }
 }
+
+/// The words in the middle of the chat while it has no message, at the
+/// smallest window. They stay inside the chat.
+fn hint(app: &mut App) -> String {
+    let window = drawn(app, 860.0, 620.0);
+    let panel = app.live_chat.panel().expect("the chat is drawn");
+    let inside: Vec<_> = texts(&window.output)
+        .into_iter()
+        .filter(|(_, rect, _)| panel.contains_rect(*rect))
+        .map(|(text, _, _)| text)
+        .collect();
+    assert_eq!(inside.len(), 1, "{inside:?}");
+    inside.into_iter().next().unwrap()
+}
+
+#[test]
+fn the_empty_chat_says_what_to_do_next_in_each_state() {
+    let mut app = chat_without_speech();
+    let stopped = hint(&mut app);
+    assert!(stopped.starts_with(chat::EMPTY_HINT), "{stopped}");
+    assert!(
+        stopped.ends_with("\n下の「● 聞く」を押すと始まります。"),
+        "{stopped}"
+    );
+
+    let mut app = chat_without_speech();
+    app.audio_enabled = true;
+    app.asr_ready = true;
+    assert_eq!(
+        hint(&mut app),
+        "英語の動画や音声を再生してください。\n訳が、ここに出ます。"
+    );
+
+    // Audio played now would not be heard yet.
+    let mut app = chat_without_speech();
+    app.audio_start_requested = true;
+    assert_eq!(
+        hint(&mut app),
+        "音声認識を準備しています。\n終わると、英語の動画や音声の訳がここに出ます。"
+    );
+
+    let mut app = chat_without_speech();
+    app.caption_enabled = true;
+    assert_eq!(
+        hint(&mut app),
+        "YouTubeで動画を開き、字幕（CC）をオンにして再生してください。\n字幕の訳が、ここに出ます。"
+    );
+
+    let mut app = chat_without_speech();
+    app.start_screen_feed(1, (0, 0, 120, 40));
+    assert_eq!(
+        hint(&mut app),
+        "選んだ範囲の文字が変わると、ここに訳が出ます。"
+    );
+}
+
+#[test]
+fn without_a_translation_model_the_empty_chat_points_at_the_model_and_not_at_the_button() {
+    let mut app = chat_without_speech();
+    app.backend_ready = false;
+    let missing = hint(&mut app);
+    assert!(
+        missing.contains("「モデルの準備」") && !missing.contains("聞く"),
+        "{missing}"
+    );
+    assert!(
+        drawn(&mut app, 860.0, 620.0).has("モデルの準備"),
+        "the button the words name is on the screen"
+    );
+
+    app.backend_loading = true;
+    assert_eq!(
+        hint(&mut app),
+        "翻訳モデルを準備しています。\n終わると、下の「● 聞く」を押せます。"
+    );
+}

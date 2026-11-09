@@ -56,6 +56,8 @@ pub const CHAT_TEXT_FORMING: Color32 = Color32::from_rgb(112, 116, 124);
 pub const CHAT_TEXT_MUTED: Color32 = Color32::from_rgb(86, 96, 110);
 /// The thin line between a translation and its original.
 pub const CHAT_RULE: Color32 = Color32::from_rgb(220, 225, 232);
+/// Behind text selected by dragging.
+pub const CHAT_SELECTION: Color32 = Color32::from_rgb(189, 219, 255);
 /// Times, sender names and notes on the chat background.
 pub const CHAT_META: Color32 = Color32::from_rgb(43, 56, 76);
 /// Date and new-message pills, and the text on them.
@@ -331,6 +333,7 @@ mod tests {
             ("text/bubble", CHAT_TEXT, CHAT_BUBBLE, 4.5),
             ("forming text/bubble", CHAT_TEXT_FORMING, CHAT_BUBBLE, 4.5),
             ("muted/bubble", CHAT_TEXT_MUTED, CHAT_BUBBLE, 4.5),
+            ("text/selection", CHAT_TEXT, CHAT_SELECTION, 4.5),
             ("meta/background", CHAT_META, CHAT_BACKGROUND, 4.5),
             ("pill text/pill", CHAT_PILL_TEXT, CHAT_PILL, 4.5),
             (
@@ -402,6 +405,7 @@ mod tests {
         for (file, source) in [
             ("chat.rs", include_str!("chat.rs")),
             ("ui.rs", include_str!("ui.rs")),
+            ("ui/youtube.rs", include_str!("ui/youtube.rs")),
             ("mini.rs", include_str!("mini.rs")),
             ("setup.rs", include_str!("setup.rs")),
             ("picker.rs", include_str!("picker.rs")),

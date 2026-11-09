@@ -1473,6 +1473,12 @@ fn decimal_at(text: &str, at: usize) -> Option<(&str, &'static str, usize)> {
             return Some((number, decimal, text.len() - after.len()));
         }
     }
+    // After a number and a space the fraction is the rest of that number, as
+    // in "5 1/4 percent": "5 0.25 percent" would read as two numbers.
+    let before = text[..at].trim_end();
+    if before.len() < at && before.ends_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
     // Alone "3/4" may be a date; before a percent it is a rate.
     let (decimal, after) = take_fraction(rest)?;
     let percent = after.starts_with('%') || after.starts_with(" percent");
@@ -2752,6 +2758,15 @@ mod tests {
             "3 and 3/4,5",
             "3 and 1/4/26",
             "3-1/2/2026",
+            // A whole number and a fraction joined by a space: the fraction
+            // is not a rate of its own.
+            "to 5 1/4 percent",
+            "raised rates by 1 1/2 percentage points",
+            "a range of 4 1/4% to 4 1/2%",
+            "from 5 1/4 to 5 1/2 percent",
+            "100 1/2 percent",
+            "3  1/4%",
+            "at 5\n1/4 percent",
             // A range from zero, a year, numbers too long for a rate, and no number at all.
             "0 and 1/4",
             "05 and 1/2",

@@ -329,6 +329,17 @@ impl State {
         self.at_end = true;
     }
 
+    /// The reader was at the newest message when the chat was last drawn.
+    pub fn is_at_end(&self) -> bool {
+        self.at_end
+    }
+
+    /// Text is selected, so the next Esc is for letting it go.
+    pub fn has_selection(&self) -> bool {
+        self.selection
+            .is_some_and(|selection| selection.anchor != selection.focus)
+    }
+
     /// Copies all the chat shows, from the first message to the last, with
     /// the credit.
     pub fn copy_all(&mut self, messages: &[Message<'_>]) {

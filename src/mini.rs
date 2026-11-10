@@ -31,15 +31,25 @@ enum Showing {
 pub(super) struct MiniState {
     showing: Showing,
     /// Why the last reading or text translation failed, in the words the
-    /// status row was given.
+    /// status row was given. It is the newest thing that happened: a request
+    /// that begins and a translation that is done both clear it.
     failure: Option<String>,
+    /// The chat has not been drawn since the mini view was entered. Its first
+    /// drawing goes to the newest message.
+    chat_from_newest: bool,
+    /// How tall the chat was when it was last drawn.
+    chat_height: f32,
+    /// The card has not been drawn since its result began. Its first drawing
+    /// starts at the first line.
+    card_from_top: bool,
 }
 
 impl MiniState {
-    /// A text translation, or the choosing of a range to read, begins. The
-    /// failure before it is over.
-    pub(super) fn forget_failure(&mut self) {
+    /// A reading or a text translation begins. The failure before it is
+    /// over, and its result is read from the first line.
+    pub(super) fn result_begins(&mut self) {
         self.failure = None;
+        self.card_from_top = true;
     }
 
     pub(super) fn shows_card(&self) -> bool {
@@ -51,12 +61,12 @@ impl MiniState {
 /// cannot show the result of one request as the result of another.
 #[derive(PartialEq, Eq)]
 enum Card<'a> {
+    Failed(&'a str),
     /// A picture is being read, or waits to be. The result before it is not
     /// shown, because it would look like the new one.
     Reading,
     /// A translation in flight, as far as it has come.
     Translating(&'a str),
-    Failed(&'a str),
     Translated(&'a str),
     Empty,
 }
@@ -74,7 +84,7 @@ impl App {
     /// A picture or a range was given to be read. The failure before it is
     /// over, and the mini view shows the card for what comes of it.
     pub(super) fn reading_given(&mut self) {
-        self.mini.forget_failure();
+        self.mini.result_begins();
         self.open_card();
     }
 
@@ -87,9 +97,16 @@ impl App {
 
     /// A text translation is done. The mini view shows it, also when the
     /// reader went back to the chat while it was coming: what was asked for
-    /// is not left out of sight.
+    /// is not left out of sight. A failure that came while it was in flight
+    /// is older news now.
     pub(super) fn result_ready(&mut self) {
+        self.mini.failure = None;
         self.open_card();
+    }
+
+    /// Esc lets go of text selected in the chat before it leaves the mini view.
+    pub(super) fn mini_has_selection(&self) -> bool {
+        self.mini.showing == Showing::Chat && self.live_chat.has_selection()
     }
 
     /// The card is the mini view's. The main window shows the same result on
@@ -105,15 +122,21 @@ impl App {
     pub(super) fn open_mini(&mut self) {
         let result = self.tab == Tab::Text && self.card() != Card::Empty;
         self.mini.showing = if result { Showing::Card } else { Showing::Chat };
+        // The small window starts at what was said last, wherever the reader
+        // had scrolled to in the large one, and at the top of a result. Both
+        // wait for the mini view's own drawing: the large window may still
+        // draw the chat once more on the frame the mini view is asked for.
+        self.mini.chat_from_newest = true;
+        self.mini.card_from_top = true;
     }
 
     fn card(&self) -> Card<'_> {
-        if self.reading_picture() {
+        if let Some(why) = &self.mini.failure {
+            Card::Failed(why)
+        } else if self.reading_picture() {
             Card::Reading
         } else if self.manual_busy.is_some() {
             Card::Translating(&self.output)
-        } else if let Some(why) = &self.mini.failure {
-            Card::Failed(why)
         } else if !self.output.is_empty() {
             Card::Translated(&self.output)
         } else {
@@ -134,7 +157,21 @@ impl App {
                     (ui.available_height() - STATUS_ROW - ui.spacing().item_spacing.y).max(0.0),
                 );
                 ui.allocate_ui(room, |ui| match self.mini.showing {
-                    Showing::Chat => self.live_chat_ui(ui),
+                    Showing::Chat => {
+                        // The window is still as large as it was on the first
+                        // frames after entering, and becomes small a little
+                        // later. A reader at the newest message stays there
+                        // while the chat changes height, also when the chat
+                        // is set not to follow.
+                        let resized = room.y != self.mini.chat_height;
+                        if std::mem::take(&mut self.mini.chat_from_newest)
+                            || (resized && self.live_chat.is_at_end())
+                        {
+                            self.live_chat.go_to_end();
+                        }
+                        self.mini.chat_height = room.y;
+                        self.live_chat_ui(ui);
+                    }
                     Showing::Card => self.card_ui(ui),
                 });
                 self.status_row(ui);
@@ -208,11 +245,12 @@ impl App {
 
     /// The compact counterpart of the 文章 screen's 訳文 card.
     fn card_ui(&mut self, ui: &mut egui::Ui) {
+        let from_top = std::mem::take(&mut self.mini.card_from_top);
         let (text, color, done) = match self.card() {
+            Card::Failed(why) => (why, ERROR, false),
             Card::Reading => (screen_ocr::READING, TEXT_MUTED, false),
             Card::Translating("") => ("翻訳中", TEXT_MUTED, false),
             Card::Translating(so_far) => (so_far, TEXT, false),
-            Card::Failed(why) => (why, ERROR, false),
             Card::Translated(text) => (text, TEXT, true),
             Card::Empty => (ui::TRANSLATION_HINT, TEXT_MUTED, false),
         };
@@ -251,28 +289,33 @@ impl App {
                 fonts.row_height(&egui::FontId::proportional(theme::reading_size(size)))
             })
             .ceil();
-        egui::ScrollArea::vertical()
+        let mut body = egui::ScrollArea::vertical()
             .id_salt("body")
-            .auto_shrink([false, false])
-            .show_viewport(&mut card, |ui, viewport| {
-                // A line cut in half would hang at the bottom edge of the
-                // smallest window, so only whole lines are in view.
-                let seen = viewport.translate(ui.max_rect().min.to_vec2());
-                let lines = (seen.height() / line).floor().max(1.0);
-                ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::from_min_size(
-                    seen.min,
-                    egui::vec2(seen.width(), lines * line),
-                )));
-                ui.add(
-                    egui::Label::new(
-                        theme::reading(text, size)
-                            .color(color)
-                            .line_height(Some(line)),
-                    )
-                    .wrap()
-                    .selectable(true),
-                );
-            });
+            .auto_shrink([false, false]);
+        if from_top {
+            // The place the reader had in the result before this one is not
+            // a place in this one.
+            body = body.vertical_scroll_offset(0.0);
+        }
+        body.show_viewport(&mut card, |ui, viewport| {
+            // A line cut in half would hang at the bottom edge of the
+            // smallest window, so only whole lines are in view.
+            let seen = viewport.translate(ui.max_rect().min.to_vec2());
+            let lines = (seen.height() / line).floor().max(1.0);
+            ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::from_min_size(
+                seen.min,
+                egui::vec2(seen.width(), lines * line),
+            )));
+            ui.add(
+                egui::Label::new(
+                    theme::reading(text, size)
+                        .color(color)
+                        .line_height(Some(line)),
+                )
+                .wrap()
+                .selectable(true),
+            );
+        });
         if back {
             self.mini.showing = Showing::Chat;
         }

@@ -2145,12 +2145,14 @@ impl App {
             }
         }
         if self.window_mode.is_mini() {
-            // A menu closes on Esc while it is drawn, so whether one was open
-            // is asked first. That press closes the menu and nothing more.
-            let menu_open = egui::Popup::is_any_open(ctx);
+            // Esc lets go of one thing at a time: an open menu, then text
+            // selected in the chat, then the mini view. The menu closes and
+            // the selection is dropped while the view is drawn, so both are
+            // asked about first.
+            let held = egui::Popup::is_any_open(ctx) || self.mini_has_selection();
             self.mini_ui(ctx);
             if self.selection.is_none()
-                && !menu_open
+                && !held
                 && ctx
                     .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
             {

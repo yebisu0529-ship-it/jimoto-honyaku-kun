@@ -748,7 +748,7 @@ impl App {
         if lane == Lane::Manual {
             self.manual_busy = Some(id);
             self.output.clear();
-            self.mini.forget_failure();
+            self.mini.result_begins();
         } else {
             self.live_busy = Some(id);
             self.current_live_id = Some(id);
@@ -799,9 +799,6 @@ impl App {
             return;
         }
         self.open_mini();
-        // The small window starts at what was said last, wherever the reader
-        // had scrolled to in the large one.
-        self.live_chat.go_to_end();
         let info = ctx.input(|input| input.viewport().clone());
         self.window_mode.observe_with_zoom(&info, ctx.zoom_factor());
         for command in self.window_mode.enter(&info) {
@@ -882,8 +879,7 @@ impl App {
             return;
         }
         // The range can still be cancelled, so the mini view keeps what it
-        // shows until a range is given.
-        self.mini.forget_failure();
+        // shows, a failure included, until a range is given.
         let Some(screen) = self.screens.get(self.screen_index).cloned() else {
             self.status = "取得できる画面がありません。".into();
             self.result_failed();

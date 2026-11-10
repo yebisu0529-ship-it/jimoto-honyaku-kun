@@ -43,6 +43,12 @@ impl Window {
         }
     }
 
+    /// The same window at another size, as when the app makes it small for
+    /// the mini view. What egui remembers of it stays.
+    pub(super) fn resize(&mut self, width: f32, height: f32) {
+        self.size = egui::vec2(width, height);
+    }
+
     pub(super) fn has(&self, label: &str) -> bool {
         texts(&self.output).iter().any(|(text, _, _)| text == label)
     }

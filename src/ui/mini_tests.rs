@@ -6,7 +6,7 @@ use super::listen_tests::{INPUTS, armed, chat_without_speech};
 use super::*;
 use crate::chat::testing::{
     box_of, cut_at_the_top, dots, filled, find_text, has_text_containing, line_cut_at_the_top,
-    press, shapes, texts, wheel,
+    press, selected, shapes, texts, wheel,
 };
 use plamo_translate::journal::{ParagraphMeta, ParagraphState};
 
@@ -259,6 +259,21 @@ fn in_flight(app: &mut App, id: u64) {
 fn answer(app: &mut App, event: Event) {
     app.tx.send(event).unwrap();
     app.process(&egui::Context::default());
+}
+
+/// Starts a text translation the way the app does. Its worker cannot reach a
+/// translator at this address and gives up at once. That answer is taken
+/// away here, and the test gives its own with `answer`.
+fn translation_begun(app: &mut App) -> u64 {
+    app.settings.translation.endpoint = "no translator".into();
+    app.input = "Hello.".into();
+    app.manual_translate();
+    let id = app.manual_busy.expect("the translation is in flight");
+    assert!(matches!(
+        app.rx.recv_timeout(Duration::from_secs(10)),
+        Ok(Event::Done { .. })
+    ));
+    id
 }
 
 fn done(id: u64, result: std::result::Result<&str, &str>) -> Event {
@@ -1011,6 +1026,186 @@ fn messages_that_come_while_the_card_is_shown_are_in_view_on_the_way_back() {
         "the chat stayed where it was when the card came up"
     );
     assert!(!has_text_containing(&window.output, "新しいメッセージ"));
+}
+
+#[test]
+fn a_result_that_comes_while_the_chat_is_shown_is_read_from_its_first_line() {
+    let long = |name: &str| format!("{name}の最初の行です。") + &"長い訳文が続きます。".repeat(60);
+    let mut app = chat_without_speech();
+    app.tab = Tab::Text;
+    app.rows = talk(3);
+    app.output = long("前の訳文");
+    let mut window = Window::new(SMALLEST.0, SMALLEST.1);
+    window.draw(&mut app, vec![mini_key()]);
+    window.settle(&mut app);
+    let first = find_text(&window.output, &app.output).0.top();
+    let body = window.at("コピー").center() + egui::vec2(-80.0, 80.0);
+    scroll(&mut window, &mut app, body, -200.0);
+    assert!(
+        find_text(&window.output, &app.output).0.top() < first - 100.0,
+        "the wheel did not move the result"
+    );
+
+    // The reader goes back to the chat. The next translation begins and is
+    // done without the card being drawn in between.
+    window.click(&mut app, "← チャットに戻る");
+    let id = translation_begun(&mut app);
+    window.settle(&mut app);
+    assert!(shows_talk(&window, 3));
+    answer(&mut app, done(id, Ok(&long("次の訳文"))));
+    window.settle(&mut app);
+    assert!(app.output.starts_with("次の訳文"));
+    assert_eq!(
+        find_text(&window.output, &app.output).0.top(),
+        first,
+        "the new result opens where the reader was in the one before"
+    );
+}
+
+#[test]
+fn a_failure_while_a_translation_is_in_flight_gives_way_once_the_translation_is_done() {
+    const NOTHING_READ: &str = "文字が見つかりませんでした。範囲や原文言語を確認してください。";
+    let mut app = mini();
+    open_card(&mut app);
+    let mut window = drawn(&mut app, USUAL);
+    let id = translation_begun(&mut app);
+    answer(
+        &mut app,
+        Event::Partial {
+            id,
+            text: "先に頼んだ文章の途中の訳".into(),
+        },
+    );
+    window.settle(&mut app);
+    assert!(window.has("先に頼んだ文章の途中の訳"));
+
+    // A picture given meanwhile has no text in it. That is the newest thing
+    // that happened, so the card says it at once.
+    let generation = app.ocr.generation;
+    answer(
+        &mut app,
+        Event::Ocr {
+            generation,
+            result: Ok("  ".into()),
+        },
+    );
+    window.settle(&mut app);
+    assert!(window.has(NOTHING_READ), "the failure waits behind 翻訳中");
+    assert!(!has_text_containing(&window.output, "先に頼んだ文章"));
+
+    answer(&mut app, done(id, Ok("完成した訳文です。")));
+    window.settle(&mut app);
+    assert!(
+        window.has("完成した訳文です。") && !window.has(NOTHING_READ),
+        "the older failure hides the translation that is done"
+    );
+    release_on(&mut window, &mut app, "コピー");
+    assert_eq!(copied(&window), [credit::published("完成した訳文です。")]);
+}
+
+#[test]
+fn the_menu_row_enters_at_the_newest_message_and_the_main_chat_keeps_the_reader_s_place() {
+    for follow in [true, false] {
+        let mut app = chat_without_speech();
+        app.settings.auto_scroll = follow;
+        app.rows = talk(12);
+        let mut window = drawn(&mut app, MAIN);
+        // The reader goes to the first message in the main window.
+        let body = app.live_chat.body().unwrap().center();
+        scroll(&mut window, &mut app, body, 4000.0);
+        assert!(in_view(&window, &app, 1) && !in_view(&window, &app, 12));
+
+        // その他 → ミニ表示. It is the same window, made small, and the main
+        // window still draws its chat on the frame of the click.
+        window.open_menu(&mut app);
+        window.click(&mut app, "ミニ表示");
+        assert!(app.window_mode.is_mini());
+        window.resize(SMALLEST.0, SMALLEST.1);
+        window.settle(&mut app);
+        assert!(
+            in_view(&window, &app, 12) && !in_view(&window, &app, 1),
+            "the newest message is not in view with auto-scroll {follow}"
+        );
+
+        window.click(&mut app, "通常表示");
+        window.resize(MAIN.0, MAIN.1);
+        window.settle(&mut app);
+        assert!(!app.window_mode.is_mini());
+        assert!(
+            in_view(&window, &app, 1) && !in_view(&window, &app, 12),
+            "the main chat lost the reader's place with auto-scroll {follow}"
+        );
+    }
+}
+
+#[test]
+fn a_visit_that_showed_only_the_card_leaves_the_main_chat_where_the_reader_was() {
+    let mut app = chat_without_speech();
+    app.rows = talk(12);
+    let mut window = drawn(&mut app, MAIN);
+    let body = app.live_chat.body().unwrap().center();
+    scroll(&mut window, &mut app, body, 4000.0);
+    assert!(in_view(&window, &app, 1) && !in_view(&window, &app, 12));
+
+    // The 文章 screen has a result, so the mini view opens on the card.
+    app.tab = Tab::Text;
+    app.output = "文章の画面の訳文です。".into();
+    window.draw(&mut app, vec![mini_key()]);
+    window.resize(USUAL.0, USUAL.1);
+    window.settle(&mut app);
+    assert!(window.has("文章の画面の訳文です。") && bubbles(&window).is_empty());
+    window.draw(&mut app, vec![escape()]);
+    window.resize(MAIN.0, MAIN.1);
+    assert!(!app.window_mode.is_mini() && app.tab == Tab::Text);
+
+    app.tab = Tab::Live;
+    window.settle(&mut app);
+    assert!(
+        in_view(&window, &app, 1) && !in_view(&window, &app, 12),
+        "the chat that the mini view never showed was moved to its end"
+    );
+}
+
+#[test]
+fn escape_lets_go_of_selected_text_before_it_leaves_the_mini_view() {
+    let mut app = mini();
+    app.rows = talk(2);
+    let mut window = drawn(&mut app, USUAL);
+    let words = window.at("1番目の訳文です。");
+    let from = words.left_center() + egui::vec2(2.0, 0.0);
+    let to = words.right_center() - egui::vec2(2.0, 0.0);
+    window.draw(&mut app, vec![egui::Event::PointerMoved(from)]);
+    window.draw(
+        &mut app,
+        vec![press(from, egui::PointerButton::Primary, true)],
+    );
+    for step in 1..=4 {
+        let at = from + (to - from) * (step as f32 / 4.0);
+        window.draw(&mut app, vec![egui::Event::PointerMoved(at)]);
+    }
+    window.draw(
+        &mut app,
+        vec![press(to, egui::PointerButton::Primary, false)],
+    );
+    window.settle(&mut app);
+    assert_eq!(
+        selected(&window.output),
+        ["1番目の訳文です。"],
+        "the drag selected the words of the bubble"
+    );
+
+    window.draw(&mut app, vec![escape()]);
+    window.settle(&mut app);
+    assert!(
+        selected(&window.output).is_empty(),
+        "Esc did not let go of the selection"
+    );
+    assert!(app.window_mode.is_mini(), "Esc left the mini view as well");
+    window.draw(&mut app, vec![escape()]);
+    assert!(
+        !app.window_mode.is_mini(),
+        "the next Esc leaves the mini view"
+    );
 }
 
 #[test]

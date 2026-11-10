@@ -1230,7 +1230,8 @@ impl App {
                             .find(|r| r.record.id == id)
                             .is_some_and(|r| self.overlay_allowed(&r.record.kind, generation));
                     let mut read_text = None;
-                    let mut manual_failed = false;
+                    // How a text translation ended: true when it has a result.
+                    let mut manual_done = None;
                     if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
                         row.pending = false;
                         match result {
@@ -1242,6 +1243,7 @@ impl App {
                                 row.record.translation = text.clone();
                                 if lane == Lane::Manual {
                                     self.output = text.clone();
+                                    manual_done = Some(true);
                                 }
                                 if show_overlay {
                                     self.overlay_text = text;
@@ -1263,12 +1265,16 @@ impl App {
                                 }
                                 row.error = Some(error.clone());
                                 self.status = error;
-                                manual_failed = lane == Lane::Manual;
+                                if lane == Lane::Manual {
+                                    manual_done = Some(false);
+                                }
                             }
                         }
                     }
-                    if manual_failed {
-                        self.result_failed();
+                    match manual_done {
+                        Some(true) => self.result_ready(),
+                        Some(false) => self.result_failed(),
+                        None => {}
                     }
                     if let Some(text) = read_text {
                         // read_text is populated for Live only after the

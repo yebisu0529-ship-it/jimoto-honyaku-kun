@@ -85,6 +85,13 @@ impl App {
         self.open_card();
     }
 
+    /// A text translation is done. The mini view shows it, also when the
+    /// reader went back to the chat while it was coming: what was asked for
+    /// is not left out of sight.
+    pub(super) fn result_ready(&mut self) {
+        self.open_card();
+    }
+
     /// The card is the mini view's. The main window shows the same result on
     /// its 文章 screen.
     fn open_card(&mut self) {

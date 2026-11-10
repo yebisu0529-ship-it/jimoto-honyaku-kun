@@ -964,11 +964,28 @@ fn the_way_back_returns_to_the_chat_and_a_new_result_starts_at_its_first_line() 
     assert!(!window.has("← チャットに戻る") && !window.has("コピー"));
     assert!(app.window_mode.is_mini());
 
-    // A result that comes after that does not take the chat away again.
+    // A translation that is still coming leaves the chat in view. Once it is
+    // done the card shows it: what was asked for is not left out of sight.
     in_flight(&mut app, 51);
+    answer(
+        &mut app,
+        Event::Partial {
+            id: 51,
+            text: "あとから届く訳文の途中".into(),
+        },
+    );
+    window.settle(&mut app);
+    assert!(
+        shows_talk(&window, 3) && !has_text_containing(&window.output, "あとから届く"),
+        "half a translation took the chat away"
+    );
     answer(&mut app, done(51, Ok("あとから届いた訳文です。")));
     window.settle(&mut app);
-    assert!(shows_talk(&window, 3) && !window.has("あとから届いた訳文です。"));
+    assert!(
+        window.has("あとから届いた訳文です。") && window.has("← チャットに戻る"),
+        "the result is not shown once it is done"
+    );
+    assert!(bubbles(&window).is_empty(), "the chat is under the card");
 }
 
 #[test]

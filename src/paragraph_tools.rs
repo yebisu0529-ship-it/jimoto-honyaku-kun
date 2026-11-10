@@ -199,10 +199,7 @@ impl App {
                         self.paragraph_tools.error.clear();
                     }
                     Ok(None) => {}
-                    Err(error) => {
-                        self.paragraph_tools.error = error;
-                        self.document.notice = "英語の区切り補助を使えません。原文をつないで翻訳を続けます。設定で確認できます。".into();
-                    }
+                    Err(error) => self.paragraph_tools.error = error,
                 }
                 if std::mem::take(&mut self.paragraph_tools.download_requested)
                     && self.paragraph_tools.engine.is_none()

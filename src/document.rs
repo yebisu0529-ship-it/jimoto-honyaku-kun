@@ -92,7 +92,6 @@ pub(super) struct DocumentState {
     observed_options: Option<TranslationOptions>,
     configure_after: u64,
     applied_chunk: Option<ChunkLength>,
-    pub notice: String,
 }
 impl Default for DocumentState {
     fn default() -> Self {
@@ -118,7 +117,6 @@ impl Default for DocumentState {
             observed_options: None,
             configure_after: 0,
             applied_chunk: None,
-            notice: String::new(),
         }
     }
 }
@@ -476,8 +474,7 @@ impl App {
             generation: self.source_generation(source_name(kind, &self.video_id)),
         });
         self.document_save(id, true);
-        self.document.notice = "文章の一部を原文のまま保存しました。履歴で確認できます。".into();
-        self.status.clone_from(&self.document.notice);
+        self.status = "文章の一部を原文のまま保存しました。履歴で確認できます。".into();
     }
     fn document_apply(&mut self, kind: SourceKind, outcome: PushOutcome) {
         let overflow: HashSet<_> = outcome
@@ -497,9 +494,7 @@ impl App {
                     });
                     row.error = Some("翻訳の処理待ちが増えたため、原文を保存しました。".into());
                 }
-                self.document.notice =
-                    "処理待ちの原文を保存しました。履歴から確認できます。".into();
-                self.status.clone_from(&self.document.notice);
+                self.status = "処理待ちの原文を保存しました。履歴から確認できます。".into();
             }
             self.document_save(id, true);
         }
@@ -794,8 +789,6 @@ impl App {
                 self.paragraph_tools.error = other.err().unwrap_or_else(|| {
                     "Punctuation source did not match the active paragraph".into()
                 });
-                self.document.notice =
-                    "区切り補助の結果を採用せず、原文をつないで翻訳しています。".into();
             }
         }
         self.document_translate(row_id, request, options, cancel);
@@ -1299,7 +1292,6 @@ mod tests {
         app.audio_generation += 1;
         app.document_source_changed(SourceKind::Audio);
         app.document_punctuated(id, request, options, Err("late tagger result".into()));
-        assert!(app.document.notice.is_empty());
         assert!(app.paragraph_tools.error.is_empty());
         assert!(app.document.audio.pending_snapshots().is_empty());
         assert!(app.document.displayed.is_none());

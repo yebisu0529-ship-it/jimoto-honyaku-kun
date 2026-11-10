@@ -9,6 +9,9 @@ use plamo_translate::{
     paddle_setup::{self, PaddleInstallation},
 };
 
+/// What the app says while a picture is being read.
+pub(super) const READING: &str = "画像から文字を読み取っています…";
+
 enum Runtime {
     Indra(IndraEngine),
     Paddle(PaddleEngine),
@@ -128,8 +131,13 @@ impl App {
             Err(error) => self.ocr.error = format!("PaddleOCRの準備状況を確認できません: {error}"),
         }
     }
+    /// A picture is being read or waits to be: for the recogniser or, once
+    /// read, for its turn to be translated.
+    pub(super) fn reading_picture(&self) -> bool {
+        self.ocr.busy.is_some() || self.ocr.pending.is_some() || self.pending_ocr.is_some()
+    }
     pub(super) fn do_ocr(&mut self, image: image::RgbaImage) {
-        self.mini.clear_manual_failure();
+        self.reading_given();
         self.pending_ocr = None;
         self.ocr.generation = self.ocr.generation.wrapping_add(1);
         self.ocr.pending = Some((self.ocr.generation, image));
@@ -160,7 +168,7 @@ impl App {
         }
         let (generation, image) = self.ocr.pending.take().unwrap();
         self.ocr.busy = Some(generation);
-        self.status = "画像から文字を読み取っています…".into();
+        self.status = READING.into();
         let recognizer = self.screen_recognizer();
         let tx = self.tx.clone();
         thread::spawn(move || {

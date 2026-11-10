@@ -399,8 +399,7 @@ mod tests {
     /// source fails here with its file and line.
     #[test]
     fn ui_sources_take_type_and_colour_from_tokens() {
-        // UI_UX_BRIEF section 5: the credit keeps these sizes until it has a
-        // roomier place on screen.
+        // The credit keeps its small size until it has a roomier place on screen.
         let allowed = [("mini.rs", ".size(9.0)")];
         for (file, source) in [
             ("chat.rs", include_str!("chat.rs")),

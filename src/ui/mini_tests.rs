@@ -989,6 +989,31 @@ fn the_way_back_returns_to_the_chat_and_a_new_result_starts_at_its_first_line() 
 }
 
 #[test]
+fn messages_that_come_while_the_card_is_shown_are_in_view_on_the_way_back() {
+    let mut app = mini();
+    app.rows = talk(6);
+    let mut window = drawn(&mut app, SMALLEST);
+    assert!(in_view(&window, &app, 6) && !in_view(&window, &app, 1));
+
+    // This PC has no screen to read, so the card comes up with that.
+    app.capture(&egui::Context::default());
+    window.settle(&mut app);
+    assert!(window.has(NO_SCREEN) && bubbles(&window).is_empty());
+    for id in 7..=9 {
+        app.rows
+            .push(row(id, "音声", &format!("{id}番目の訳文です。")));
+    }
+    window.settle(&mut app);
+
+    window.click(&mut app, "← チャットに戻る");
+    assert!(
+        in_view(&window, &app, 9),
+        "the chat stayed where it was when the card came up"
+    );
+    assert!(!has_text_containing(&window.output, "新しいメッセージ"));
+}
+
+#[test]
 fn the_text_screen_brings_its_result_into_the_mini_view_and_every_other_screen_opens_the_chat() {
     let enter = |tab: Tab, prepare: fn(&mut App)| {
         let mut app = chat_without_speech();

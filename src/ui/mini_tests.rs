@@ -1460,6 +1460,10 @@ fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window()
             open_menu(&mut window, &mut app);
 
             let (frame, rows) = menu(&window);
+            assert!(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, size.into()).contains_rect(frame),
+                "the menu leaves the window with {screens} screens at {size:?}: {frame:?}"
+            );
             let mut expected = vec![
                 "入力の切り替え",
                 "表示",
@@ -1474,10 +1478,6 @@ fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window()
             }
             let words: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
             assert_eq!(words, expected, "{screens} screens at {size:?}");
-            assert!(
-                egui::Rect::from_min_size(egui::Pos2::ZERO, size.into()).contains_rect(frame),
-                "the menu leaves the window with {screens} screens at {size:?}: {frame:?}"
-            );
             for pair in rows.windows(2) {
                 let step = pair[1].1.center().y - pair[0].1.center().y;
                 if pair[0].0 == "全文コピー" {

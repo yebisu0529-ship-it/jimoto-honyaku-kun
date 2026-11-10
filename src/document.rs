@@ -807,11 +807,14 @@ impl App {
             paragraph_tools::SourceKindForTools::Other
         }
     }
-    /// The source and previous source PLaMo reads: the accumulated wording
-    /// without the hesitation sounds of spoken English, which it would
-    /// translate as 「えー」. Screen text and other languages keep every word
-    /// ("um" is Portuguese for "a"). The previous source is language evidence
-    /// too, so a short first interim of a later part still counts as English.
+    /// The source and previous source PLaMo reads. English loses the
+    /// hesitation sounds of speech, which PLaMo would translate as 「えー」,
+    /// and gets rates in quarters and halves as decimals, which it would keep
+    /// as 「3と3/4」. Fillers go first, so "3 and uh 3/4" becomes "3.75".
+    /// Screen text keeps its fillers, as its author wrote them. Other
+    /// languages keep every word ("um" is Portuguese for "a"). The previous
+    /// source is language evidence too, so a short first interim of a later
+    /// part still counts as English.
     fn document_translator_input(
         &self,
         request: &Request,
@@ -826,13 +829,18 @@ impl App {
             .starts_with(super::screen_feed::SCREEN_SOURCE);
         let kind = self.document_tools_kind(request.snapshot.stamp.kind);
         let evidence = format!("{previous} {source}");
-        if !screen && paragraph_tools::use_english_support(options, kind, &evidence) {
+        if !paragraph_tools::use_english_support(options, kind, &evidence) {
+            (source.clone(), previous.clone())
+        } else if screen {
             (
-                live_text::without_fillers(source),
-                live_text::without_fillers(previous),
+                live_text::with_decimal_fractions(source),
+                live_text::with_decimal_fractions(previous),
             )
         } else {
-            (source.clone(), previous.clone())
+            (
+                live_text::with_decimal_fractions(&live_text::without_fillers(source)),
+                live_text::with_decimal_fractions(&live_text::without_fillers(previous)),
+            )
         }
     }
     fn document_translate(
@@ -1947,6 +1955,123 @@ mod tests {
         );
     }
 
+    /// What PLaMo reads for a caption that follows `previous`, with the source
+    /// language set to `source_lang`.
+    fn translator_input(
+        video_id: &str,
+        text: &str,
+        previous: &str,
+        source_lang: &str,
+    ) -> (String, String) {
+        let options = TranslationOptions {
+            source_lang: source_lang.into(),
+            ..Default::default()
+        };
+        let request = live_request(SourceKind::Caption, video_id, text, previous);
+        App::inert().document_translator_input(&request, &options)
+    }
+
+    #[test]
+    fn a_rate_in_fractions_stays_in_the_source_but_is_a_decimal_in_what_the_translator_reads() {
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        app.caption_paused = false;
+        let caption = |text: &str, position| bridge::Caption {
+            text: text.into(),
+            video_id: "video-a".into(),
+            position,
+            paused: false,
+            epoch: 2,
+        };
+        let first = "The Committee decided to maintain the target range for the federal funds rate at 3 and 3/4 to 4%.";
+        let second = "Then we can lower it by 1/4 percentage point to 3-3/4 to 4 percent.";
+        app.document_ingest_caption(caption(first, 1.0));
+        app.document_ingest_caption(caption(&format!("{first} >> {second}"), 2.0));
+        let (id, request, options) = take_job(&mut app, SourceKind::Caption, 3_000);
+        assert_eq!(
+            request.snapshot.text, first,
+            "the marker closed the first part"
+        );
+        assert_eq!(
+            app.document_translator_input(&request, &options),
+            (
+                "The Committee decided to maintain the target range for the federal funds rate at 3.75 to 4%."
+                    .to_owned(),
+                String::new()
+            )
+        );
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("委員会は政策金利を3.75から4%に据え置くことを決めました。".into()),
+            0.1,
+        );
+
+        let (id, request, options) = take_job(&mut app, SourceKind::Caption, 9_000);
+        assert_eq!(request.snapshot.text, second);
+        assert_eq!(request.previous_source, first);
+        assert_eq!(
+            app.document_translator_input(&request, &options),
+            (
+                "Then we can lower it by 0.25 percentage point to 3.75 to 4 percent.".to_owned(),
+                "The Committee decided to maintain the target range for the federal funds rate at 3.75 to 4%."
+                    .to_owned()
+            )
+        );
+        app.document_done(
+            id,
+            request,
+            options,
+            Ok("そのうえで、0.25ポイント下げて3.75から4%にできます。".into()),
+            0.1,
+        );
+        assert_eq!(app.rows[0].record.source, first);
+        assert_eq!(app.rows[1].record.source, second);
+        app.document_update_subtitle_window();
+        assert_eq!(app.subtitle_window.history()[0].source, first);
+        assert_eq!(app.subtitle_window.view().unwrap().source, second);
+    }
+
+    #[test]
+    fn fillers_are_left_out_before_the_fractions_are_read() {
+        assert_eq!(
+            translator_input(
+                "video-a",
+                "the target range at 3 and uh 3/4 to 4%",
+                "",
+                "en"
+            ),
+            ("the target range at 3.75 to 4%".to_owned(), String::new())
+        );
+    }
+
+    #[test]
+    fn screen_text_keeps_its_fillers_but_its_fractions_become_decimals() {
+        assert_eq!(
+            translator_input(
+                "screen:1",
+                "Um, the Committee lowered the target range to 3-3/4 to 4 percent.",
+                "Uh, the range was 4-1/4 to 4-1/2 percent.",
+                "en"
+            ),
+            (
+                "Um, the Committee lowered the target range to 3.75 to 4 percent.".to_owned(),
+                "Uh, the range was 4.25 to 4.5 percent.".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn fractions_stay_in_text_that_is_not_english() {
+        let source = "Die Spanne liegt bei 3-3/4 bis 4 Prozent.";
+        let previous = "Zuvor lag sie bei 4-1/4 bis 4-1/2 Prozent.";
+        assert_eq!(
+            translator_input("video-a", source, previous, "de"),
+            (source.to_owned(), previous.to_owned())
+        );
+    }
+
     #[test]
     fn a_live_caption_reaches_the_translation_server_without_its_fillers() {
         let (endpoint, prompts) =
@@ -1970,6 +2095,24 @@ mod tests {
         assert!(
             prompt.contains(
                 "<|plamo:tag|>input<|plamo:msg|>the committee will review the report and we can share it with the public.<|plamo:tag|>output"
+            ),
+            "{prompt}"
+        );
+        assert_eq!(app.rows[0].record.source, caption);
+    }
+
+    #[test]
+    fn a_live_caption_reaches_the_translation_server_with_its_rate_as_a_decimal() {
+        let (endpoint, prompts) =
+            translation_stub(vec![Completion::Text("訳"), Completion::Text("訳")]);
+        let mut app = caption_app(endpoint);
+        let caption = "The Committee decided to maintain the target range for the federal funds rate at 3 and 3/4 to 4%.";
+        live_caption(&mut app, caption, 1.0);
+        app.document_tick();
+        let prompt = prompts.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            prompt.contains(
+                "<|plamo:tag|>input<|plamo:msg|>The Committee decided to maintain the target range for the federal funds rate at 3.75 to 4%.<|plamo:tag|>output"
             ),
             "{prompt}"
         );

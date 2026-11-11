@@ -139,7 +139,6 @@ pub fn load(root: &Path) -> Result<Option<IndraInstallation>> {
     Ok(committed(root)?.map(|(_, manifest)| manifest.installation))
 }
 
-/// `load`, then every model, every notice and the Python executable hashed.
 fn load_verified(root: &Path) -> Result<Option<IndraInstallation>> {
     let Some((root, manifest)) = committed(root)? else {
         return Ok(None);
@@ -167,7 +166,6 @@ fn load_verified(root: &Path) -> Result<Option<IndraInstallation>> {
     Ok(Some(manifest.installation))
 }
 
-/// What `load` checks, with the folder and the record the hashes are read against.
 fn committed(root: &Path) -> Result<Option<(PathBuf, Manifest)>> {
     if !root.exists() {
         return Ok(None);
@@ -492,8 +490,6 @@ mod tests {
             assert!(a.url.starts_with("https://files.pythonhosted.org/"));
         }
     }
-    /// A folder as `install` leaves it, except that every model and notice has
-    /// only its recorded size, not its content.
     fn prepared(root: &Path) -> IndraInstallation {
         let root = fs::canonicalize(root).unwrap();
         let data = metadata().unwrap();

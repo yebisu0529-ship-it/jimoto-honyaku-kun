@@ -5,7 +5,6 @@ use std::collections::HashSet;
 /// both stop here.
 pub const MAX_ENTRIES: usize = 100;
 
-/// The most characters one side of an entry can have.
 pub const MAX_SIDE_CHARS: usize = 256;
 
 /// Why the translation prompt cannot take one side of an entry.
@@ -17,8 +16,6 @@ pub enum Fault {
     TooLong,
 }
 
-/// The one rule for each side of an entry. The box refuses a line with such a
-/// side, and the translation prompt an entry with one.
 pub fn fault(side: &str) -> Option<Fault> {
     if side.trim().is_empty() {
         Some(Fault::Empty)

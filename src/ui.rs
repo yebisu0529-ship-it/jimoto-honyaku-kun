@@ -114,20 +114,16 @@ impl Readiness {
     }
 }
 
-/// A card of the settings that is behind 「その他の機能」, out of sight while
-/// that section is closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OtherSetting {
     Readout,
     ScreenOcr,
 }
 
-/// Where a row of 状態の詳細 leads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Destination {
     Models,
     Settings,
-    /// The settings, with 「その他の機能」 open at this card.
     OtherSetting(OtherSetting),
 }
 
@@ -331,8 +327,6 @@ fn history_time(created_at: &str) -> String {
         .unwrap_or_else(|_| created_at.to_owned())
 }
 
-/// What a row of the 履歴 calls the source of a record: the chat's name for
-/// the inputs the chat shows, and the menu's name for a range.
 fn source_name(kind: &str) -> &str {
     match chat::Source::from_kind(kind) {
         Some(source) => source.name(),
@@ -408,13 +402,9 @@ const HISTORY_PAGE: usize = 200;
 /// its journal file; the current talk has none while nothing is saved.
 #[derive(Default)]
 pub(super) struct HistoryView {
-    /// The search word the rest was kept for. Another word starts it over.
     search: String,
-    /// The rows a talk shows beyond the first page.
     more: HashMap<Option<PathBuf>, usize>,
-    /// The earlier talks the reader opened.
     pub(super) opened: HashSet<PathBuf>,
-    /// The earlier talks the reader closed while this search word is in.
     closed: HashSet<PathBuf>,
 }
 
@@ -435,8 +425,6 @@ impl HistoryView {
         *self.more.entry(talk).or_default() += HISTORY_PAGE;
     }
 
-    /// An earlier talk is open once the reader opens it. While a word is
-    /// searched, a talk with a match is open until the reader closes it.
     fn is_open(&self, file: &Path) -> bool {
         if self.search.is_empty() {
             self.opened.contains(file)
@@ -640,17 +628,13 @@ enum MenuChoice {
 
 /// Names the その他 menu, so that a preview can open it.
 pub(super) const MORE_MENU: &str = "more-menu";
-/// The last row of both menus, and the last section of the settings. Every
-/// feature that is not the live translation is behind it.
 pub(super) const OTHER_FEATURES: &str = "その他の機能";
 
-/// The rows of a menu touch, one control apart, with the menu's padding.
 pub(super) fn space_menu_rows(ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.y = 0.0;
     ui.spacing_mut().button_padding.x = theme::SPACE_2;
 }
 
-/// The その他の機能 row of a menu and, behind it, the rows `add` draws.
 pub(super) fn other_features_menu(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.menu_button(
         RichText::new(OTHER_FEATURES).size(theme::SIZE_LABEL),
@@ -696,7 +680,6 @@ impl Control {
     }
 }
 
-/// A row of the menu. The settings list its key.
 const MINI: Control = Control {
     label: "ミニ表示",
     shortcut: "Ctrl + Shift + M",
@@ -712,7 +695,6 @@ pub(super) const RANGE: Control = Control {
     shortcut: "Ctrl + Alt + T",
     hover: "画面の一部を選んで翻訳します。",
 };
-/// In the menu and on the 文章 screen, where its progress is shown.
 const FILE_TRANSLATION: Control = Control {
     label: "ファイルを翻訳",
     shortcut: "",
@@ -772,7 +754,6 @@ fn glossary_preset_status(added: &glossary::Added) -> String {
     message
 }
 
-/// The chat shows the row. Text and range translations are left out of it.
 fn in_chat(row: &Row) -> bool {
     chat::Source::from_kind(&row.record.kind).is_some()
 }
@@ -895,9 +876,6 @@ impl App {
         });
     }
 
-    /// The one menu behind the chat. It leads to the screens the live
-    /// translation has a use for; on the chat itself it also holds what to do
-    /// with the talk. Every other feature is behind its last row.
     fn more_menu(&mut self, ui: &mut egui::Ui) -> Option<MenuChoice> {
         let id = egui::Id::new(MORE_MENU);
         let chat = self.tab == Tab::Live;
@@ -1125,7 +1103,6 @@ impl App {
             }
             MenuChoice::Input(mode) => self.choose_input(ctx, mode),
             MenuChoice::File => {
-                // The progress and the cancel button are on the 文章 screen.
                 self.tab = Tab::Text;
                 self.translate_file();
             }
@@ -1138,9 +1115,6 @@ impl App {
         }
     }
 
-    /// 「クリア」: the chat starts a new talk in a new journal file. The file
-    /// of the talk it removes stays, and the 履歴 reads it again with the
-    /// other earlier talks.
     fn clear_talk(&mut self) {
         let dir = self
             .journal
@@ -1153,8 +1127,6 @@ impl App {
                 self.document_shutdown();
                 self.journal = Some(journal);
                 self.journal_error.clear();
-                // A text translation still running keeps its row, which
-                // its result or its failure comes back to.
                 let running = self.manual_busy;
                 self.rows.retain(|row| Some(row.record.id) == running);
                 self.invalidate_timeline();
@@ -1280,7 +1252,6 @@ impl App {
     }
 
     /// The line beside the 聞く button: what is wrong, or what is going on.
-    /// It names the input that is translated now.
     pub(super) fn listen_state(&self) -> (&str, Color32) {
         if !self.service_error.is_empty() {
             return (&self.service_error, ERROR);
@@ -1585,8 +1556,6 @@ impl App {
             Readiness::Missing
         }
     }
-    /// The local models in use, in the order the details list them: those
-    /// of the live translation first.
     fn model_statuses(&self) -> Vec<ModelStatus> {
         let translation = self.translation_readiness();
         let ocr = if self.screen_ocr_ready() {
@@ -1890,7 +1859,6 @@ impl App {
         }
     }
 
-    /// 全文コピー has a translation in the chat to copy.
     pub(super) fn can_copy_talk(&self) -> bool {
         self.rows
             .iter()
@@ -1940,7 +1908,6 @@ impl App {
         });
     }
 
-    /// The current talk and under it the earlier talks, one fold each.
     fn history_list(&mut self, ui: &mut egui::Ui) {
         self.history.follow_search(&self.search);
         let search = self.search.to_lowercase();
@@ -2021,8 +1988,6 @@ impl App {
                 }
             }
         }
-        // While the earlier talks are read, it is not known yet whether
-        // they hold anything.
         let reading = matches!(self.earlier, Earlier::Reading(_));
         let earlier_talks =
             matches!(&self.earlier, Earlier::Read(earlier) if !earlier.talks.is_empty());
@@ -2064,8 +2029,6 @@ impl App {
         if ui.add(standard("モデルを変更")).clicked() {
             self.open_setup();
         }
-        // The live translation translates in this pair. The 文章 screen,
-        // which has it too, is one of the other features.
         ui.add_space(theme::SPACE_2);
         secondary(ui, "翻訳する言語");
         self.languages(ui);
@@ -2269,9 +2232,6 @@ impl App {
             });
     }
 
-    /// The settings of the features that are not the live translation, out
-    /// of sight until they are asked for, or until the app sends the reader
-    /// to one of them.
     fn settings_other_features_section(&mut self, ui: &mut egui::Ui) {
         let reveal = self.reveal;
         let section = egui::CollapsingHeader::new(OTHER_FEATURES)
@@ -2290,8 +2250,6 @@ impl App {
                     ),
                 ]
             });
-        // The section grows open over a few frames; the card has its place
-        // once the section has its full height.
         if let Some(card) = reveal
             && section.fully_open()
             && let Some(cards) = section.body_returned
@@ -2306,9 +2264,6 @@ impl App {
         }
     }
 
-    /// Opens the settings at a card behind 「その他の機能」. The page opens the
-    /// section and scrolls to the card once; after that the section is the
-    /// reader's to close.
     pub(super) fn open_other_setting(&mut self, card: OtherSetting) {
         self.tab = Tab::Settings;
         self.reveal = Some(card);
@@ -2333,9 +2288,7 @@ impl App {
                 .max_height((ui.available_height() - footer).max(0.0))
                 .show(ui, |ui| {
                     // Two independent columns above 1100 points so a wide
-                    // window does not become one very long form. The live
-                    // translation's settings come first, and the other
-                    // features' last, in a section of their own.
+                    // window does not become one very long form.
                     if ui.available_width() >= 1100.0 {
                         ui.columns(2, |columns| {
                             columns[0].spacing_mut().item_spacing.y = theme::SPACE_3;
@@ -3373,8 +3326,6 @@ mod live_layout_tests {
         frame(app, 5, vec![press(false)]);
     }
 
-    /// Clicks `label` in the settings of the other features, which stay
-    /// closed until their section is opened.
     fn click_other_setting(app: &mut App, label: &str) {
         app.tab = Tab::Settings;
         let mut window = super::home_tests::Window::new(1280.0, 2000.0);
@@ -3527,7 +3478,6 @@ mod live_layout_tests {
     #[test]
     fn a_start_with_readout_off_reads_nothing_of_its_install_until_the_switch_is_turned_on() {
         let mut app = App::inert();
-        // The readout part of App::new, which a test cannot run whole.
         app.initialize_readout();
         assert!(
             !app.readout.install_checked,

@@ -2202,7 +2202,6 @@ mod tests {
         let temp = Temp::new();
         let path = temp.0.join("manifest.json");
         atomic_write(&path, b"old").unwrap();
-        // Another program has the record open and shares nothing.
         let held = OpenOptions::new()
             .read(true)
             .share_mode(0)

@@ -112,7 +112,6 @@ fn open_menu(window: &mut Window, app: &mut App) {
     window.settle(app);
 }
 
-/// Opens the 「⋯」 menu and, in it, the row of the other features.
 fn open_other_features(window: &mut Window, app: &mut App) {
     open_menu(window, app);
     window.click(app, OTHER_FEATURES);
@@ -306,7 +305,6 @@ fn the_button_listens_in_the_chosen_input_and_stops_every_input_as_in_the_main_w
         }
         (heard, stops, armed(&app), window.has("● 聞く"))
     };
-    // This PC has no screen to read, so 聞く turns nothing on for the screen.
     let screen = (SCREEN, LiveSourceMode::Screen, (false, false));
     for (label, mode, expected) in INPUTS.into_iter().chain([screen]) {
         let small = pressed(mode, true);
@@ -1187,8 +1185,6 @@ fn escape_closes_the_menu_before_it_lets_go_of_selected_text() {
         &mut app,
         vec![press(to, egui::PointerButton::Primary, false)],
     );
-    // The menu is drawn before the chat, so it closes on the Esc before the
-    // chat reads the key.
     open_menu(&mut window, &mut app);
     assert!(window.has("最前面") && !selected(&window.output).is_empty());
 
@@ -1659,9 +1655,6 @@ fn open_card(app: &mut App) {
     app.reset_screen_ocr();
 }
 
-/// The menu whose first row is `first` as it is drawn: its frame, and the
-/// words of its rows from the top without the arrow or the shortcut at the
-/// end of a row.
 fn menu(window: &Window, first: &str) -> (egui::Rect, Vec<(String, egui::Rect)>) {
     let frame = box_of(&window.output, first, theme::SURFACE);
     let mut rows: Vec<_> = texts(&window.output)
@@ -1736,8 +1729,6 @@ fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window()
             );
             steps(&rows, Some("全文コピー"));
 
-            // Behind the last row: reading a range, the screen to read, and
-            // the subtitle window.
             window.click(&mut app, OTHER_FEATURES);
             let (frame, rows) = menu(&window, "範囲翻訳");
             assert!(

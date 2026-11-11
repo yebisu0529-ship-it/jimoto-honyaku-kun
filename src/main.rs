@@ -307,7 +307,6 @@ struct PendingTranscript {
     end_ms: u64,
     generation: u64,
 }
-/// The talks of the journal files before the current one, for the 履歴 screen.
 #[derive(Default)]
 enum Earlier {
     #[default]
@@ -749,7 +748,6 @@ impl App {
     fn manual_output_ready(&self) -> bool {
         self.manual_busy.is_none() && !self.output.is_empty()
     }
-    /// Why the mini view cannot open now, in the words of the status row.
     fn mini_refusal(&self) -> Option<&'static str> {
         if !self.backend_ready {
             Some("モデルの準備ができると、ミニ表示を使えます。")
@@ -1489,8 +1487,6 @@ impl App {
             Err(e) => self.status = e.to_string(),
         }
     }
-    /// Reads the talks of the earlier journal files on a worker. They arrive
-    /// as an `Event::Earlier`. Without a journal there is no folder to read.
     fn read_earlier_talks(&mut self) {
         let Some(journal) = &self.journal else {
             return;
@@ -2423,7 +2419,6 @@ fn render_youtube_views(folder: &Path) -> Result<()> {
 enum Overlay {
     Nothing,
     Menu,
-    /// The menu, with the submenu of the row it names open.
     Submenu(&'static str),
     Details,
     NoModel,
@@ -2455,7 +2450,6 @@ enum MiniScene {
     /// The reader is at the first message while new ones come in.
     NewMessages,
     Menu,
-    /// The menu, with the submenu of the row it names open.
     Submenu(&'static str),
     /// The result card: with a translation, while a picture is read, and
     /// after a reading that found no text.
@@ -2606,8 +2600,6 @@ fn render_mini_views(folder: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The 履歴 screen right after 「クリア」: nothing in the current talk yet, and
-/// two earlier talks of which the newer one is open.
 fn render_earlier_talk_views(folder: &Path) -> Result<()> {
     use plamo_translate::journal::Talk;
     let record = |id: u64, kind: &str, at: &str, source: &str, translation: &str| Record {
@@ -2902,7 +2894,6 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 overlay,
                 Overlay::Menu | Overlay::Submenu(_) | Overlay::Details
             ) {
-                // Menus and windows fade in; the picture shows them after they have.
                 ctx.style_mut(|style| style.animation_time = 0.0);
             }
             match overlay {
@@ -2912,7 +2903,6 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     let open_menu = |ctx: &egui::Context| {
                         egui::Popup::open_id(ctx, egui::Id::new(ui::MORE_MENU))
                     };
-                    // With two screens, every row of その他の機能 is drawn.
                     app.screens = two_screens();
                     // A context of its own finds the row, so that the pointer can
                     // rest on it and open the submenu. Without the row, the menu
@@ -3768,8 +3758,6 @@ mod tests {
         assert_eq!(a.input, "A dropped note.");
         assert!(a.caption_enabled);
 
-        // A picture is read first. An unprepared recogniser keeps it waiting,
-        // and the manual lane is busy, so nothing runs in this test.
         let mut a = chat();
         a.settings.ocr_backend = "indra".into();
         a.manual_busy = Some(1);

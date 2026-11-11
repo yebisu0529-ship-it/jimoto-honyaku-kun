@@ -18,9 +18,6 @@ pub fn app_root() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// The folder an exe in `dir` runs from. A build in `target/<profile>`, or in
-/// `target/<triple>/<profile>` when the build names a target, belongs to its
-/// project folder.
 fn exe_folder_root(dir: &Path) -> PathBuf {
     let profile = dir
         .file_name()

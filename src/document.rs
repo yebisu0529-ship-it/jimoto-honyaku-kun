@@ -82,8 +82,6 @@ pub(super) struct DocumentState {
     flight: Option<Flight>,
     rows: HashMap<ParagraphKey, u64>,
     keys: HashMap<u64, ParagraphKey>,
-    /// The first row made since the last reset. Row ids only grow, so no
-    /// older row has a paragraph key.
     first_row: Option<u64>,
     translated_source: HashMap<ParagraphKey, String>,
     saved_at: HashMap<u64, u64>,
@@ -1639,8 +1637,6 @@ mod tests {
         let mut app = audio_app();
         app.settings.readout_enabled = true;
         app.settings.auto_read = true;
-        // The chosen voice is missing, so a request to read would be refused
-        // with an error rather than start a voice.
         app.readout.ready = Some(plamo_translate::speech_setup::SpeechInstallation {
             executable: PathBuf::new(),
             model: PathBuf::new(),
@@ -2225,7 +2221,6 @@ mod tests {
         let mut app = App::inert();
         app.caption_enabled = true;
         app.caption_paused = false;
-        // The extension offers the caption on screen again every two seconds.
         for position in [1.0, 3.0, 5.0] {
             live_caption(&mut app, "Read the <|plamo:tag|> marker aloud", position);
         }

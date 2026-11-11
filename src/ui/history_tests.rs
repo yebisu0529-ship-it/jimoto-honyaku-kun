@@ -1,5 +1,3 @@
-//! The 履歴 screen: the current talk, and the earlier talks that 「クリア」
-//! removed from the chat.
 use super::home_tests::{Window, chat, row};
 use super::*;
 use crate::chat::testing::texts;
@@ -7,14 +5,12 @@ use plamo_translate::journal::Talk;
 
 const READING: &str = "これまでの会話を読み込んでいます…";
 
-/// A message saved at `created_at`, as the journal gives it back.
 fn said(id: u64, created_at: &str, translation: &str) -> Row {
     let mut said = row(id, "音声", translation);
     said.record.created_at = created_at.into();
     said
 }
 
-/// A talk saved in `folder` before the current one, as 「クリア」 leaves it.
 fn saved_talk(folder: &Path, rows: &[Row]) {
     let journal = Journal::new(folder).unwrap();
     for row in rows {
@@ -22,7 +18,6 @@ fn saved_talk(folder: &Path, rows: &[Row]) {
     }
 }
 
-/// The chat with a journal in `folder` that holds the current talk.
 fn saving(folder: &Path, rows: Vec<Row>) -> App {
     let mut app = chat();
     let journal = Journal::new(folder).unwrap();
@@ -34,7 +29,6 @@ fn saving(folder: &Path, rows: Vec<Row>) -> App {
     app
 }
 
-/// The worker's answer to the reading the 履歴 screen started.
 fn reading(app: &mut App) -> Event {
     app.rx
         .recv_timeout(Duration::from_secs(10))
@@ -46,7 +40,6 @@ fn take_in(app: &mut App, event: Event) {
     app.process(&egui::Context::default());
 }
 
-/// Waits for the earlier talks and takes them in.
 fn read_earlier(app: &mut App) {
     let event = reading(app);
     take_in(app, event);
@@ -79,7 +72,6 @@ fn after_clear_the_history_shows_the_removed_talk_in_a_fold_that_opens_on_a_clic
         "the fold is open at first"
     );
     window.click(&mut app, fold);
-    // A fold grows open over a few frames.
     window.settle(&mut app);
     assert!(
         window.has("消した会話の訳文です。"),
@@ -148,7 +140,6 @@ fn a_reading_that_arrives_after_another_clear_is_ignored() {
     app.tab = Tab::Files;
     let mut window = Window::new(860.0, 620.0);
     window.settle(&mut app);
-    // That reading is still on its way when 「クリア」 removes the second talk.
     let early = reading(&mut app);
     app.tab = Tab::Live;
     window.settle(&mut app);
@@ -173,8 +164,6 @@ fn the_history_says_while_it_reads_and_with_no_earlier_talk_shows_no_heading() {
     app.tab = Tab::Files;
     let mut window = Window::new(860.0, 620.0);
     window.settle(&mut app);
-    // The frames that start the reading do not wait for the files: a worker
-    // reads them, and its answer comes in with the other events.
     assert!(window.has(READING), "the screen does not say it reads");
     read_earlier(&mut app);
     window.settle(&mut app);
@@ -231,7 +220,6 @@ fn the_history_says_what_it_could_not_read_and_what_it_left_out() {
     );
 }
 
-/// The translations the screen draws, in order from the top.
 fn translations(window: &Window) -> Vec<String> {
     texts(&window.output)
         .into_iter()
@@ -247,7 +235,6 @@ fn a_long_talk_shows_its_newest_rows_and_more_on_request_until_the_search_change
     app.rows = (1..=250)
         .map(|id| row(id, "音声", &format!("訳文{id}")))
         .collect();
-    // Tall enough that every row drawn is in the window.
     let mut window = Window::new(860.0, 40_000.0);
     window.settle(&mut app);
     let shown = translations(&window);
@@ -274,7 +261,6 @@ fn a_long_talk_shows_its_newest_rows_and_more_on_request_until_the_search_change
         "the count outlived the search"
     );
 
-    // An opened earlier talk is shown the same way, by its own count.
     app.rows.truncate(1);
     app.earlier = Earlier::Read(EarlierTalks {
         talks: vec![Talk {

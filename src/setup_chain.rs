@@ -227,9 +227,6 @@ impl App {
         })
     }
 
-    /// Whether the settings ask for this step: the translation model always, the
-    /// rest as chosen. The settings can change while the chain runs, so the chain
-    /// asks again when a step starts and when it stops.
     pub(super) fn wants(&self, step: Step) -> bool {
         match step {
             Step::Translation => true,
@@ -239,7 +236,6 @@ impl App {
         }
     }
 
-    /// The steps the settings ask for, in the order they run.
     fn planned_steps(&self) -> Vec<Step> {
         [
             Step::Translation,
@@ -453,7 +449,6 @@ impl App {
     }
 
     /// An installer stopped. `cancelled` is the step's own cancel flag, as it was when the installer answered.
-    /// A step whose setting was turned off is finished instead, so the chain goes on.
     pub(super) fn stop_step(&mut self, step: Step, cancelled: bool, error: String) {
         if !self.wants(step) {
             self.finish_step(step);

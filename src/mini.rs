@@ -325,9 +325,7 @@ impl App {
         }
     }
 
-    /// One line. A failure to save comes first, then what the line beside the
-    /// 聞く button says in the main window, then a failure to read aloud while
-    /// readout is on.
+    /// One line.
     fn status_row(&self, ui: &mut egui::Ui) {
         ui::live_region(ui, "mini-status", STATUS_ROW, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

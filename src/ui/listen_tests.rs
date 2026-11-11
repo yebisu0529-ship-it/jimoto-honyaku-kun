@@ -25,15 +25,11 @@ fn ctrl_alt(code: Code) -> u32 {
     HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), code).id()
 }
 
-/// The inputs the list always has, as it names them, with the captions and
-/// the PC audio each turns on.
 pub(super) const INPUTS: [(&str, LiveSourceMode, (bool, bool)); 3] = [
     ("自動（字幕を優先）", LiveSourceMode::Auto, (true, true)),
     ("YouTube字幕だけ", LiveSourceMode::Captions, (true, false)),
     ("PC音声だけ", LiveSourceMode::Audio, (false, true)),
 ];
-/// The input the list has only while it is the one shown. It is started from
-/// 画面の文字を翻訳 behind その他の機能.
 pub(super) const SCREEN: &str = "画面の文字";
 
 /// 「聞く」 pressed on the keyboard.
@@ -145,7 +141,6 @@ fn the_other_shortcut_still_reads_a_range() {
     assert!(!app.caption_enabled && !app.audio_start_requested);
 }
 
-/// The inputs behind 入力の切り替え, from the top.
 fn listed(window: &Window) -> Vec<&'static str> {
     let mut drawn: Vec<_> = INPUTS
         .iter()
@@ -222,22 +217,18 @@ fn the_list_has_the_screen_only_while_it_is_the_input_shown() {
         vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
     );
 
-    // 画面の文字を翻訳 makes it the input, also on this PC, which has no
-    // screen to read.
     window.open_other_features(&mut app);
     window.click(&mut app, "画面の文字を翻訳");
     open_list(&mut window, &mut app);
     assert_eq!(listed(&window), four);
     assert_eq!(marked(&window), [SCREEN]);
 
-    // The mark tells the truth, so the reader can switch away from it.
     window.click(&mut app, "PC音声だけ");
     assert!(app.listen_input == LiveSourceMode::Audio);
     open_list(&mut window, &mut app);
     assert_eq!(listed(&window), three);
     assert_eq!(marked(&window), ["PC音声だけ"]);
 
-    // While the screen is read, it is the input that is on.
     let mut app = chat_without_speech();
     app.start_screen_feed(1, (0, 0, 120, 40));
     let mut window = Window::new(860.0, 620.0);
@@ -341,8 +332,6 @@ fn the_menu_entry_for_the_screen_still_starts_reading_at_once_and_is_the_same_ch
         "the next 聞く asks for the range again"
     );
 
-    // While something listens, the range is asked for first, and what runs
-    // goes on until then.
     let mut app = chat_without_speech();
     listen(&mut app);
     let mut window = Window::new(860.0, 620.0);
@@ -710,8 +699,6 @@ fn the_bar_is_under_the_chat_above_the_status_row_and_inside_the_gutters() {
     }
 }
 
-/// The words in the middle of the chat while it has no message. They stay
-/// inside the chat.
 pub(super) fn hint(app: &mut App, size: (f32, f32)) -> String {
     let window = drawn(app, size);
     let panel = app.live_chat.panel().expect("the chat is drawn");

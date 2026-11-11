@@ -12,7 +12,6 @@ pub(super) const AUTO_READ_HINT: &str = "新しい日本語の訳文を自動で
 
 pub(super) struct ReadoutState {
     pub ready: Option<SpeechInstallation>,
-    /// The saved install has been read, which happens once.
     pub install_checked: bool,
     pub engine: Option<TtsEngine>,
     pub preparing: bool,

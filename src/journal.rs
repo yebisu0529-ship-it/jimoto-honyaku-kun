@@ -63,7 +63,6 @@ pub struct Talk {
 pub struct EarlierTalks {
     /// Newest file first.
     pub talks: Vec<Talk>,
-    /// Older records were not read, to stay within the limit.
     pub older_left_out: bool,
     /// Files that could not be read.
     pub unreadable: usize,
@@ -489,8 +488,6 @@ mod tests {
         assert!(!owned_filename("unrelated.jsonl"));
     }
 
-    /// A journal file of this application, named as made at `made` (the
-    /// `%Y%m%dT%H%M%S%9fZ` stamp), with `lines` as its contents.
     fn journal_file(dir: &Path, made: &str, lines: &str) -> PathBuf {
         let path = dir.join(format!("{PREFIX}{made}-{}.jsonl", uuid::Uuid::new_v4()));
         assert!(owned_filename(path.file_name().unwrap().to_str().unwrap()));
@@ -520,7 +517,6 @@ mod tests {
             .collect()
     }
 
-    /// Every file of the folder with its bytes.
     fn folder(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
         fs::read_dir(dir)
             .unwrap()
@@ -537,7 +533,6 @@ mod tests {
         let temp = Temp::new();
         let older = journal_file(&temp.0, "20261108T100100000000000Z", &lines([2, 1]));
         let newer = journal_file(&temp.0, "20261108T100200000000000Z", &lines([3]));
-        // A clock set wrong can name a file after the current one.
         let ahead = journal_file(&temp.0, "20991231T000000000000000Z", &lines([4]));
         fs::write(temp.0.join("unrelated.jsonl"), lines([5])).unwrap();
         let journal = Journal::new(&temp.0).unwrap();
@@ -557,7 +552,6 @@ mod tests {
     fn a_file_with_a_damaged_last_line_and_an_empty_file_are_left_out_and_no_file_changes() {
         let temp = Temp::new();
         let kept = journal_file(&temp.0, "20261108T100100000000000Z", &lines([1]));
-        // The next start copied this talk into a newer file, as open_latest does.
         let damaged = format!("{}{{\"id\":3,\"source\":\"trunc", lines([2]));
         journal_file(&temp.0, "20261108T100200000000000Z", &damaged);
         journal_file(&temp.0, "20261108T100300000000000Z", "");
@@ -601,7 +595,6 @@ mod tests {
         assert_eq!(ids(&up_to_a_talk), [vec![6, 7], vec![3, 4, 5]]);
         assert!(up_to_a_talk.older_left_out, "the oldest file is not read");
 
-        // The talk that does not fit keeps its newest records.
         let into_a_talk = journal.earlier_talks(4).unwrap();
         assert_eq!(ids(&into_a_talk), [vec![6, 7], vec![4, 5]]);
         assert!(into_a_talk.older_left_out);

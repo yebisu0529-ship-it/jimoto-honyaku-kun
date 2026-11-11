@@ -211,8 +211,6 @@ impl App {
             }
         }
     }
-    /// The helper is ready, is no longer wanted, or the attempt failed: each settles
-    /// the chain's step. A run still going, or started again just now, leaves it waiting.
     fn punctuation_settled(&mut self) {
         if self.paragraph_tools.engine.is_some() || !self.wants(Step::Punctuation) {
             self.finish_step(Step::Punctuation);

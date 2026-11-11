@@ -755,7 +755,6 @@ mod tests {
     #[test]
     fn a_server_stopped_for_a_model_change_is_not_reported_as_a_failed_start() {
         let folder = tempfile::tempdir().unwrap();
-        // Stands in for llama-server: it ignores its arguments and runs until stopped.
         let server = folder.path().join("server.cmd");
         fs::write(&server, "@ping -n 60 127.0.0.1 >nul\r\n").unwrap();
         let model = folder.path().join("plamo-3-translate-2b-Q4_K_M.gguf");

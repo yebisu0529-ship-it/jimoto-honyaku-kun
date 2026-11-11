@@ -55,7 +55,6 @@ pub fn pcm_to_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
     Ok(output.into_inner())
 }
 
-/// Starts the child without a console window of its own.
 pub fn hide_console(command: &mut std::process::Command) -> &mut std::process::Command {
     #[cfg(windows)]
     {

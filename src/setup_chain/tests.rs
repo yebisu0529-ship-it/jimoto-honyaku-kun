@@ -290,8 +290,6 @@ fn a_helper_step_whose_box_was_unchecked_before_it_starts_finishes_without_prepa
     let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
     started(&mut app, &[Step::Punctuation, Step::Speech]);
     app.settings.english_punctuation = false;
-    // The saved helper is still loading, so a preparation asked for now would
-    // only wait for that load.
     app.paragraph_tools.loading = true;
     app.launch(Step::Punctuation);
     assert_eq!(
@@ -339,8 +337,6 @@ fn a_voice_step_whose_switch_was_turned_off_before_it_starts_finishes_without_do
     let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
     started(&mut app, &[Step::Voice]);
     app.settings.readout_enabled = false;
-    // The voice is still being downloaded from its own dialog, so a download
-    // asked for now would only wait for that one.
     app.readout.preparing = true;
     app.launch(Step::Voice);
     assert!(

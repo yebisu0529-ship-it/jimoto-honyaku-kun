@@ -120,7 +120,6 @@ impl App {
                 "拡張機能とつながりました（{}）。YouTubeで字幕を出すと、ここに「字幕を受信中」と出ます。",
                 ago(since)
             ),
-            // While nothing listens, the input 「● 聞く」 turns on decides.
             Link::Captions => match (self.current_input(), self.shown_input()) {
                 (Some(_), LiveSourceMode::Auto | LiveSourceMode::Captions) => {
                     "YouTube字幕を受け取り、チャットで訳しています。".into()

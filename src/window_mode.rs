@@ -76,7 +76,6 @@ impl MiniWindowState {
         clamp_size(self.mini_size, MINI_MIN * self.zoom, MINI_SIZE) / self.zoom
     }
 
-    /// Observes the viewport at the last known zoom (initially 1).
     fn observe(&mut self, info: &ViewportInfo) {
         self.native_scale = scale(info.native_pixels_per_point, self.native_scale);
         if info.minimized == Some(true) {

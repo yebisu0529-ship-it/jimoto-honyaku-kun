@@ -109,7 +109,6 @@ impl Window {
         self.click(app, "⋯ その他");
     }
 
-    /// Opens the menu and, in it, the row of the other features.
     pub(super) fn open_other_features(&mut self, app: &mut App) {
         self.open_menu(app);
         self.click(app, OTHER_FEATURES);
@@ -178,7 +177,6 @@ pub(super) fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     }
 }
 
-/// The rows behind その他の機能 in the menu of the main window, in order.
 const OTHER: [&str; 6] = [
     "文章を翻訳",
     "範囲翻訳",
@@ -275,7 +273,6 @@ fn the_way_back_to_the_chat_works_without_a_model() {
     assert!(app.tab == Tab::Live);
 }
 
-/// Each shortcut is drawn at the end of its row.
 fn assert_shortcuts(window: &Window, rows: &[(&str, &str)]) {
     for (item, shortcut) in rows {
         let (row, hint) = (window.at(item), window.at(shortcut));
@@ -286,7 +283,6 @@ fn assert_shortcuts(window: &Window, rows: &[(&str, &str)]) {
     }
 }
 
-/// No shortcut is drawn on any of the rows.
 fn assert_no_shortcut(window: &Window, rows: &[&str]) {
     for item in rows {
         let row = window.at(item);
@@ -732,8 +728,7 @@ fn ctrl_number_still_opens_its_screen_from_every_screen() {
 }
 
 /// What the status row painted before the chat took one state in its place:
-/// the name of a model and, unless it is ready, its state as one text. The
-/// models of the live translation come first.
+/// the name of a model and, unless it is ready, its state as one text.
 const CHIPS: [&str; 4] = ["翻訳", "音声認識未準備", "文字認識", "読み上げ未準備"];
 
 const LOAD_FAILED: &str =
@@ -853,8 +848,6 @@ fn the_history_screen_finds_and_exports_the_talk_and_files_are_translated_on_the
         assert!(!window.has(gone), "{gone} is still on the 履歴 screen");
     }
 
-    // The 文章 screen has the button beside 画像から翻訳, its languages beside
-    // 翻訳する, and the file that is being translated.
     app.tab = Tab::Text;
     window.settle(&mut app);
     assert!(window.has("貼り付けた文章、画像の文字、ファイルを翻訳します。"));
@@ -1026,7 +1019,6 @@ fn the_details_close_on_escape_and_when_another_item_is_chosen() {
     assert!(!app.details_open);
 }
 
-/// All of the heading is drawn inside the window, above the bar of 設定を保存.
 fn assert_in_view(window: &Window, heading: &str, size: (f32, f32)) {
     assert!(window.has(heading), "{size:?}: {heading} is not drawn");
     let (rect, save) = (window.at(heading), window.at("設定を保存"));
@@ -1036,8 +1028,6 @@ fn assert_in_view(window: &Window, heading: &str, size: (f32, f32)) {
     );
 }
 
-/// Clicks a row of 状態の詳細, and waits while the page it leads to opens a
-/// section and scrolls.
 fn follow_details_row(window: &mut Window, app: &mut App, row: &str) {
     app.details_open = true;
     window.settle(app);
@@ -1046,12 +1036,9 @@ fn follow_details_row(window: &mut Window, app: &mut App, row: &str) {
     window.settle(app);
 }
 
-/// The row of 状態の詳細 leads to its card inside その他の機能, at the smallest
-/// window and at the size where the settings have two columns.
 fn assert_row_opens_its_card(row: &str, heading: &str, readout: bool) {
     for size in [(860.0, 620.0), (1280.0, 880.0)] {
         let mut app = chat();
-        // Windows OCR needs nothing more; Indra OCR needs data that is not here.
         app.settings.ocr_backend = "indra".into();
         app.settings.readout_enabled = readout;
         let mut window = Window::new(size.0, size.1);
@@ -1093,7 +1080,6 @@ fn turning_on_automatic_readout_without_a_voice_opens_the_settings_at_the_readou
 fn the_rows_of_speech_and_translation_open_what_they_did_and_leave_the_other_features_closed() {
     let mut app = chat();
     app.backend_ready = false;
-    // Tall enough that the whole page of the settings is drawn.
     let mut window = Window::new(860.0, 3200.0);
     follow_details_row(&mut window, &mut app, "音声認識未準備");
     assert!(app.tab == Tab::Settings);
@@ -1116,7 +1102,6 @@ fn after_an_arrival_the_settings_from_the_menu_neither_reopen_the_section_nor_sc
     follow_details_row(&mut window, &mut app, "文字認識未準備");
     assert_in_view(&window, "画面・画像の文字認識", (860.0, 620.0));
 
-    // The reader scrolls back to the top of the page and returns to the chat.
     window.draw(
         &mut app,
         vec![egui::Event::PointerMoved(egui::pos2(430.0, 300.0))],
@@ -1134,7 +1119,6 @@ fn after_an_arrival_the_settings_from_the_menu_neither_reopen_the_section_nor_sc
         "the page scrolled to the card again"
     );
 
-    // The section is open as the reader left it, and once closed it stays so.
     window.resize(860.0, 3200.0);
     window.settle(&mut app);
     assert!(
@@ -1341,8 +1325,6 @@ fn clear_keeps_a_text_translation_that_is_still_coming_and_its_end_arrives() {
         let mut app = chat();
         app.journal = Some(Journal::new(history.path()).unwrap());
         app.rows.push(row(100, "音声", "こんにちは。"));
-        // The worker cannot reach a translator at this address and gives up
-        // at once. Its answer is taken away, and the test gives its own.
         app.settings.translation.endpoint = "no translator".into();
         app.input = "Hello.".into();
         app.manual_translate();
@@ -1382,9 +1364,6 @@ fn clear_keeps_a_text_translation_that_is_still_coming_and_its_end_arrives() {
     }
 }
 
-/// The settings in one column, and in the left and the right column of a
-/// wide window. The live translation comes first; the other features come
-/// last, in a section of their own.
 const ONE_COLUMN: [&str; 8] = [
     "翻訳モデル",
     "音声認識",
@@ -1403,8 +1382,6 @@ const RIGHT: [&str; 5] = [
     "詳細（トラブル時）",
     OTHER_FEATURES,
 ];
-/// The settings of the other features. They stay out of sight until their
-/// section is opened.
 const OTHER_SETTINGS: [&str; 2] = ["訳文の読み上げ", "画面・画像の文字認識"];
 
 fn assert_in_order(window: &Window, width: f32, headings: &[&str]) {
@@ -1446,8 +1423,6 @@ fn the_settings_start_with_the_language_pair_and_open_the_other_features_on_requ
             }
         }
 
-        // The live translation translates in the language pair, so it is set
-        // in the card of the model, under its own label.
         let (model, pair) = (window.at("翻訳モデル"), window.at("翻訳する言語"));
         let (source, target) = (window.at("自動判定"), window.at("日本語"));
         let next = window.at(if width < 1100.0 {

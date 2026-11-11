@@ -463,7 +463,6 @@ mod tests {
         assert!(app.ocr.confirm);
         assert!(app.ocr.error.is_empty());
     }
-    /// What the setup dialog draws, nothing while it is closed.
     fn dialog(app: &mut App) -> Vec<String> {
         let context = egui::Context::default();
         let mut drawn = Vec::new();
@@ -495,7 +494,6 @@ mod tests {
             dialog(&mut app).contains(&"文字認識の追加準備".to_owned()),
             "the dialog is open for PaddleOCR"
         );
-        // What the settings card does when another recogniser is chosen.
         app.settings.ocr_backend = "windows".into();
         app.reset_screen_ocr();
         assert_eq!(
@@ -519,8 +517,6 @@ mod tests {
         let mut app = App::inert();
         app.settings.ocr_backend = "windows".into();
         app.begin_ocr_install();
-        // Were the check broken, this would stop the PaddleOCR download it
-        // started before its first request.
         app.ocr.cancel.store(true, Ordering::Release);
         assert!(
             !app.ocr.installing && app.ocr.setup_worker.is_none(),

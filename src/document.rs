@@ -82,6 +82,8 @@ pub(super) struct DocumentState {
     flight: Option<Flight>,
     rows: HashMap<ParagraphKey, u64>,
     keys: HashMap<u64, ParagraphKey>,
+    /// The first row made since the last reset. Row ids only grow, so no
+    /// older row has a paragraph key.
     first_row: Option<u64>,
     translated_source: HashMap<ParagraphKey, String>,
     saved_at: HashMap<u64, u64>,

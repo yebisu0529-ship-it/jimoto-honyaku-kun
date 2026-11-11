@@ -3758,6 +3758,8 @@ mod tests {
         assert_eq!(a.input, "A dropped note.");
         assert!(a.caption_enabled);
 
+        // A picture is read first. An unprepared recogniser keeps it waiting,
+        // and a text translation is still running, so nothing starts in this test.
         let mut a = chat();
         a.settings.ocr_backend = "indra".into();
         a.manual_busy = Some(1);

@@ -227,6 +227,9 @@ impl App {
         })
     }
 
+    /// Whether the settings ask for this step: the translation model always, the
+    /// rest as chosen. The settings can change while the chain runs, so the chain
+    /// asks again when a step starts and when it stops.
     pub(super) fn wants(&self, step: Step) -> bool {
         match step {
             Step::Translation => true,

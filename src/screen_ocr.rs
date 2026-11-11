@@ -517,6 +517,8 @@ mod tests {
         let mut app = App::inert();
         app.settings.ocr_backend = "windows".into();
         app.begin_ocr_install();
+        // Were the check broken, this would stop the PaddleOCR download it
+        // started before its first request.
         app.ocr.cancel.store(true, Ordering::Release);
         assert!(
             !app.ocr.installing && app.ocr.setup_worker.is_none(),

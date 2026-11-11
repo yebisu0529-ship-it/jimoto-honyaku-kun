@@ -213,8 +213,7 @@ impl App {
         button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "その他"));
         let (mut input, mut range) = (None, false);
         egui::Popup::menu(&button).id(id).show(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.spacing_mut().button_padding.x = theme::SPACE_2;
+            ui::space_menu_rows(ui);
             input = self.input_menu(ui);
             self.display_menu(ui);
             let mut top = self.window_mode.always_on_top();
@@ -227,11 +226,13 @@ impl App {
                 self.copy_talk();
             }
             ui.separator();
-            range = ui::RANGE.row(ui, self.can_read_range());
-            self.screen_menu(ui);
-            if ui::SUBTITLE_WINDOW.row(ui, true) {
-                self.subtitle_window.open = true;
-            }
+            ui::other_features_menu(ui, |ui| {
+                range = ui::RANGE.row(ui, self.can_read_range());
+                self.screen_menu(ui);
+                if ui::SUBTITLE_WINDOW.row(ui, true) {
+                    self.subtitle_window.open = true;
+                }
+            });
         });
         // As in the main window, an input is switched and a range is asked
         // for once the menu has been drawn.
@@ -325,19 +326,25 @@ impl App {
     }
 
     /// One line. A failure to save comes first, then what the line beside the
-    /// 聞く button says in the main window, then a failure to read aloud.
+    /// 聞く button says in the main window, then a failure to read aloud while
+    /// readout is on.
     fn status_row(&self, ui: &mut egui::Ui) {
         ui::live_region(ui, "mini-status", STATUS_ROW, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(credit::LABEL).size(9.0).color(TEXT_MUTED));
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let unsaved = self.unsaved();
+                    let readout = if self.settings.readout_enabled {
+                        self.readout.error.as_str()
+                    } else {
+                        ""
+                    };
                     ui::status_message(
                         ui,
                         &[
                             (unsaved.as_str(), ERROR),
                             self.listen_state(),
-                            (self.readout.error.as_str(), ERROR),
+                            (readout, ERROR),
                         ],
                     );
                 });

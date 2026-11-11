@@ -81,7 +81,7 @@ impl Source {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::YouTube => "YouTube",
             Self::PcAudio => "PC音声",
@@ -265,6 +265,11 @@ pub struct State {
     hits: Vec<Hit>,
     /// The menu asked for the selection to be copied.
     copy_selection: bool,
+    /// A menu was open when the chat was last drawn, so an Esc now is the
+    /// menu's. egui closes a menu on Esc but leaves the key to the rest of the
+    /// frame, and a menu drawn before the chat has closed by the time the chat
+    /// reads the key.
+    menu_was_open: bool,
     #[cfg(test)]
     panel: Option<Rect>,
     #[cfg(test)]
@@ -290,6 +295,7 @@ impl Default for State {
             selection: None,
             hits: Vec::new(),
             copy_selection: false,
+            menu_was_open: false,
             #[cfg(test)]
             panel: None,
             #[cfg(test)]
@@ -467,9 +473,10 @@ impl State {
         if std::mem::take(&mut self.copy_selection) || copy_keys {
             self.copy_selected(messages);
         }
-        if escape {
+        if escape && !self.menu_was_open {
             self.selection = None;
         }
+        self.menu_was_open = egui::Popup::is_any_open(ui.ctx());
         output.inner
     }
 
@@ -1496,29 +1503,38 @@ fn bubble_texts(words: &str) -> Vec<&str> {
 /// Where the sentences of `text` end, the last at the end of the text. A
 /// sentence ends after 。？！ or their half-width forms, together with any
 /// further such marks and closing brackets that follow. Nothing ends inside
-/// 「」, 『』 or （）.
+/// 「」, 『』 or （）, unless the text ends with one still open: a bracket
+/// without its partner shelters nothing, so the text is cut as if it had no
+/// brackets.
 fn sentence_ends(text: &str) -> Vec<usize> {
     let is_stop = |c| matches!(c, '。' | '｡' | '？' | '?' | '！' | '!');
     let is_close = |c| matches!(c, '」' | '』' | '）');
-    let mut ends = Vec::new();
-    let mut open = 0usize;
-    let mut chars = text.char_indices().peekable();
-    while let Some((at, c)) = chars.next() {
-        if matches!(c, '「' | '『' | '（') {
-            open += 1;
-        } else if is_close(c) {
-            open = open.saturating_sub(1);
-        } else if is_stop(c) && open == 0 {
-            let mut end = at + c.len_utf8();
-            while let Some(&(next, mark)) = chars.peek()
-                && (is_stop(mark) || is_close(mark))
-            {
-                end = next + mark.len_utf8();
-                chars.next();
+    let cut = |brackets_shelter: bool| {
+        let mut ends = Vec::new();
+        let mut open = 0usize;
+        let mut chars = text.char_indices().peekable();
+        while let Some((at, c)) = chars.next() {
+            if brackets_shelter && matches!(c, '「' | '『' | '（') {
+                open += 1;
+            } else if brackets_shelter && is_close(c) {
+                open = open.saturating_sub(1);
+            } else if is_stop(c) && open == 0 {
+                let mut end = at + c.len_utf8();
+                while let Some(&(next, mark)) = chars.peek()
+                    && (is_stop(mark) || is_close(mark))
+                {
+                    end = next + mark.len_utf8();
+                    chars.next();
+                }
+                ends.push(end);
             }
-            ends.push(end);
         }
-    }
+        (ends, open > 0)
+    };
+    let mut ends = match cut(true) {
+        (_, true) => cut(false).0,
+        (ends, false) => ends,
+    };
     if ends.last() != Some(&text.len()) {
         ends.push(text.len());
     }
@@ -1979,6 +1995,15 @@ mod tests {
         assert_eq!(
             bubble_texts(&format!("{a}{b}{c}")),
             [a.as_str(), b.as_str(), c.as_str()]
+        );
+    }
+
+    #[test]
+    fn a_bracket_left_open_does_not_keep_the_sentences_after_it_in_one_bubble() {
+        let third = third();
+        assert_eq!(
+            bubble_texts(&format!("彼は「{}", third.repeat(4))),
+            [format!("彼は「{}", third.repeat(2)), third.repeat(2)]
         );
     }
 
@@ -3126,6 +3151,46 @@ mod tests {
         );
         let (output, _) = chat.frame(&messages, vec![]);
         assert!(selected(&output).is_empty(), "Escape");
+    }
+
+    #[test]
+    fn an_escape_that_closes_the_menu_keeps_the_selection_and_the_next_lets_it_go() {
+        let escape = || Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut chat = Chat::new(720.0, 460.0);
+        let messages = three();
+        let output = chat.settle(&messages);
+        let (from, _) = ends_of(&output, "はじめまして。");
+        let (_, to) = ends_of(&output, "よろしくお願いします。");
+        chat.drag(&messages, from, to);
+        let second = bubble_of(&output, "よろしくお願いします。");
+        let (menu, _) = chat.click(&messages, second.center(), PointerButton::Secondary);
+        assert_eq!(count_text(&menu, "選択範囲をコピー"), 1, "the menu is open");
+
+        chat.frame(&messages, vec![escape()]);
+        let (output, _) = chat.frame(&messages, vec![]);
+        assert_eq!(
+            count_text(&output, "選択範囲をコピー"),
+            0,
+            "Esc closes the menu"
+        );
+        assert_eq!(
+            selected(&output),
+            ["はじめまして。", "よろしくお願いします。"],
+            "the Esc that closed the menu let go of the selection too"
+        );
+
+        chat.frame(&messages, vec![escape()]);
+        let (output, _) = chat.frame(&messages, vec![]);
+        assert!(
+            selected(&output).is_empty(),
+            "the next Esc lets go of the selection"
+        );
     }
 
     #[test]

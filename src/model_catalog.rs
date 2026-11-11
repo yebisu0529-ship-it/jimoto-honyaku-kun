@@ -34,15 +34,6 @@ pub enum Policy {
     Balanced,
     Quality,
 }
-impl Policy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Realtime => "realtime",
-            Self::Balanced => "balanced",
-            Self::Quality => "quality",
-        }
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Model {
@@ -154,13 +145,19 @@ pub fn bundled() -> Result<Catalog> {
 }
 
 pub fn recommend(hardware: &Hardware, policy: Policy) -> Recommendation {
-    recommend_replacing(hardware, policy, 0)
+    recommend_replacing(hardware, policy, 0, &[])
 }
 
 /// [`recommend`] for a PC where this app has a model loaded on the GPU.
 /// Choosing another model replaces it, so `released` (the loaded model's GPU
-/// memory) counts as free when judging what fits.
-pub fn recommend_replacing(hardware: &Hardware, policy: Policy, released: u64) -> Recommendation {
+/// memory) counts as free when judging what fits. `saved` names the models
+/// whose file is already on this PC, so they need no room to download.
+pub fn recommend_replacing(
+    hardware: &Hardware,
+    policy: Policy,
+    released: u64,
+    saved: &[&str],
+) -> Recommendation {
     // Compile-time bundled data is validated by tests, never replaced with
     // invented hashes or an unpinned model when parsing fails.
     let catalog = bundled().expect("invalid bundled, build-time-verified model catalog");
@@ -276,7 +273,8 @@ pub fn recommend_replacing(hardware: &Hardware, policy: Policy, released: u64) -
         let host_fit = ram_budget.is_some_and(|b| host_needed <= b);
         if !host_fit { reasons.push(format!("OS・音声認識の予約後にRAM約{}も必要です。", size(host_needed))); }
         let disk_needed = disk_peak_bytes(model);
-        let disk_fit = hardware.disk_free_bytes.is_some_and(|free| free >= disk_needed);
+        let disk_fit = saved.contains(&model.id.as_str())
+            || hardware.disk_free_bytes.is_some_and(|free| free >= disk_needed);
         if !disk_fit { reasons.push(format!("翻訳モデルの準備には、保存先に最低約{}の空きが必要です。音声認識と読み上げは追加で容量を確認します。", size(disk_needed))); }
         if model.quantization == "Q2_K" { reasons.push("Q2_Kは容量優先の手動候補です。公式評価で一部の翻訳精度低下があり、自動推奨しません。".into()); }
         if model.parameters_b >= 31.0 { reasons.push("31Bは待ち時間が長くなる可能性があります。リアルタイム用途の既定にはしません。".into()); }
@@ -667,6 +665,21 @@ mod tests {
         ));
     }
     #[test]
+    fn a_saved_model_needs_no_room_to_download_and_an_unsaved_one_still_does() {
+        let mut hw = fixture(64);
+        hw.gpus.push(card(24 * GIB, 0));
+        hw.disk_free_bytes = Some(8 * GIB);
+        let rec = recommend_replacing(&hw, Policy::Realtime, 0, &["plamo3-8b-q4_k_m"]);
+        let saved = alt(&rec, "plamo3-8b-q4_k_m");
+        assert_eq!((saved.fits, saved.blocker), (true, None));
+        let unsaved = alt(&rec, "plamo3-8b-q3_k_m");
+        assert_eq!(
+            unsaved.blocker,
+            Some(Blocker::Disk(disk_peak_bytes(&unsaved.model) - 8 * GIB))
+        );
+        assert_eq!(rec.selected.id, "plamo3-8b-q4_k_m");
+    }
+    #[test]
     fn switching_models_counts_the_loaded_models_memory_as_free() {
         let loaded = inference_bytes(
             &alt(
@@ -679,7 +692,7 @@ mod tests {
         hw.gpus.push(card(12 * GIB, 2 * GIB + loaded));
         let kept = recommend(&hw, Policy::Realtime);
         assert!(missing_on_gpu(&kept, "plamo3-8b-q4_k_m").is_some());
-        let switching = recommend_replacing(&hw, Policy::Realtime, loaded);
+        let switching = recommend_replacing(&hw, Policy::Realtime, loaded, &[]);
         assert!(alt(&switching, "plamo3-8b-q4_k_m").fits);
         assert_eq!(
             switching.gpu.as_ref().unwrap().free_bytes,
@@ -700,7 +713,7 @@ mod tests {
         hw.gpus.push(card(24 * GIB, 5 * GIB + eight));
         assert_eq!(recommend(&hw, Policy::Realtime).selected.parameters_b, 2.0);
         assert_eq!(
-            recommend_replacing(&hw, Policy::Realtime, eight)
+            recommend_replacing(&hw, Policy::Realtime, eight, &[])
                 .selected
                 .parameters_b,
             8.0
@@ -772,7 +785,7 @@ mod tests {
                     }
                     let mut hw = fixture(64);
                     hw.gpus.push(card(total * GIB, used));
-                    let rec = recommend_replacing(&hw, Policy::Realtime, held);
+                    let rec = recommend_replacing(&hw, Policy::Realtime, held, &[]);
                     let plan = rec.gpu.as_ref().unwrap();
                     for id in sizes {
                         let a = alt(&rec, id);

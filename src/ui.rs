@@ -6,6 +6,7 @@ use super::*;
 use plamo_translate::credit;
 use plamo_translate::glossary;
 use plamo_translate::journal::ParagraphState;
+use std::collections::{HashMap, HashSet};
 
 /// Height reserved for the page title and its actions.
 const HEADER_HEIGHT: f32 = 56.0;
@@ -52,8 +53,6 @@ pub(super) struct UiProbe {
     pub back_button: Option<egui::Rect>,
     pub listen_bar: Option<egui::Rect>,
     pub listen_button: Option<egui::Rect>,
-    pub reading_font: f32,
-    pub status_rect: Option<egui::Rect>,
 }
 
 /// How far one local model is from being usable.
@@ -115,11 +114,28 @@ impl Readiness {
     }
 }
 
+/// A card of the settings that is behind 「その他の機能」, out of sight while
+/// that section is closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OtherSetting {
+    Readout,
+    ScreenOcr,
+}
+
+/// Where a row of 状態の詳細 leads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Destination {
+    Models,
+    Settings,
+    /// The settings, with 「その他の機能」 open at this card.
+    OtherSetting(OtherSetting),
+}
+
 struct ModelStatus {
     name: &'static str,
     readiness: Readiness,
     detail: String,
-    opens: Tab,
+    opens: Destination,
     /// The chat cannot work without it. The others are prepared when they are
     /// first used.
     required: bool,
@@ -315,6 +331,132 @@ fn history_time(created_at: &str) -> String {
         .unwrap_or_else(|_| created_at.to_owned())
 }
 
+/// What a row of the 履歴 calls the source of a record: the chat's name for
+/// the inputs the chat shows, and the menu's name for a range.
+fn source_name(kind: &str) -> &str {
+    match chat::Source::from_kind(kind) {
+        Some(source) => source.name(),
+        None if kind == "画面OCR" => RANGE.label,
+        None => kind,
+    }
+}
+
+/// The record holds `search`, written in lower case, in its original or its
+/// translation.
+fn record_found(record: &Record, search: &str) -> bool {
+    search.is_empty()
+        || record.source.to_lowercase().contains(search)
+        || record.translation.to_lowercase().contains(search)
+}
+
+/// The rows of one talk on the 履歴 screen, newest first: as many of
+/// `records` as `limit` allows, then the button that shows more. The current
+/// talk and the earlier ones are drawn here, so they cannot come to differ.
+/// True when that button is clicked.
+fn talk_rows<'a>(
+    ui: &mut egui::Ui,
+    mut records: impl Iterator<Item = &'a Record>,
+    limit: usize,
+    text_size: f32,
+) -> bool {
+    for record in records.by_ref().take(limit) {
+        ui.add_space(theme::SPACE_2);
+        ui.label(
+            RichText::new(format!(
+                "{} · {}",
+                history_time(&record.created_at),
+                source_name(&record.kind)
+            ))
+            .size(theme::SIZE_CAPTION)
+            .color(TEXT_MUTED),
+        );
+        ui.add(
+            egui::Label::new(
+                RichText::new(&record.translation)
+                    .size(text_size)
+                    .color(TEXT),
+            )
+            .wrap()
+            .selectable(true),
+        );
+        ui.add(
+            egui::Label::new(
+                RichText::new(&record.source)
+                    .size(theme::SIZE_LABEL)
+                    .color(TEXT_MUTED),
+            )
+            .wrap()
+            .selectable(true),
+        );
+        ui.add_space(theme::SPACE_2);
+        ui.separator();
+    }
+    let rest = records.count();
+    if rest == 0 {
+        return false;
+    }
+    ui.add_space(theme::SPACE_2);
+    ui.add(standard(&format!("さらに表示（残り{rest}件）")))
+        .clicked()
+}
+
+/// The rows a talk on the 履歴 screen shows at first, and adds with each
+/// 「さらに表示」. Laying out every row of a long talk on every frame is slow.
+const HISTORY_PAGE: usize = 200;
+
+/// What the 履歴 screen keeps from one frame to the next. A talk is known by
+/// its journal file; the current talk has none while nothing is saved.
+#[derive(Default)]
+pub(super) struct HistoryView {
+    /// The search word the rest was kept for. Another word starts it over.
+    search: String,
+    /// The rows a talk shows beyond the first page.
+    more: HashMap<Option<PathBuf>, usize>,
+    /// The earlier talks the reader opened.
+    pub(super) opened: HashSet<PathBuf>,
+    /// The earlier talks the reader closed while this search word is in.
+    closed: HashSet<PathBuf>,
+}
+
+impl HistoryView {
+    fn follow_search(&mut self, search: &str) {
+        if self.search != search {
+            self.search = search.to_owned();
+            self.more.clear();
+            self.closed.clear();
+        }
+    }
+
+    fn shown(&self, talk: &Option<PathBuf>) -> usize {
+        HISTORY_PAGE + self.more.get(talk).copied().unwrap_or(0)
+    }
+
+    fn show_more(&mut self, talk: Option<PathBuf>) {
+        *self.more.entry(talk).or_default() += HISTORY_PAGE;
+    }
+
+    /// An earlier talk is open once the reader opens it. While a word is
+    /// searched, a talk with a match is open until the reader closes it.
+    fn is_open(&self, file: &Path) -> bool {
+        if self.search.is_empty() {
+            self.opened.contains(file)
+        } else {
+            !self.closed.contains(file)
+        }
+    }
+
+    fn toggle(&mut self, file: &Path) {
+        let toggled = if self.search.is_empty() {
+            &mut self.opened
+        } else {
+            &mut self.closed
+        };
+        if !toggled.remove(file) {
+            toggled.insert(file.to_path_buf());
+        }
+    }
+}
+
 /// Height of the one status line between the live toolbar and the panel.
 const STATUS_LINE_HEIGHT: f32 = 24.0;
 
@@ -359,17 +501,16 @@ pub(super) fn configure_theme(ctx: &egui::Context) {
     theme::apply(ctx);
 }
 
-fn card() -> egui::Frame {
-    theme::card()
-}
-
 /// Every settings group is a full-width card whose controls keep their own
 /// width; `ui.columns` would otherwise stretch each button across the column.
-fn settings_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    card().show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        ui.with_layout(egui::Layout::top_down(egui::Align::Min), add);
-    });
+fn settings_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
+    theme::card()
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), add);
+        })
+        .response
+        .rect
 }
 fn secondary(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(theme::label(text));
@@ -494,12 +635,31 @@ enum MenuChoice {
     YouTube,
     Settings,
     Details,
-    Clear,
     Export,
 }
 
 /// Names the その他 menu, so that a preview can open it.
 pub(super) const MORE_MENU: &str = "more-menu";
+/// The last row of both menus, and the last section of the settings. Every
+/// feature that is not the live translation is behind it.
+pub(super) const OTHER_FEATURES: &str = "その他の機能";
+
+/// The rows of a menu touch, one control apart, with the menu's padding.
+pub(super) fn space_menu_rows(ui: &mut egui::Ui) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.spacing_mut().button_padding.x = theme::SPACE_2;
+}
+
+/// The その他の機能 row of a menu and, behind it, the rows `add` draws.
+pub(super) fn other_features_menu(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.menu_button(
+        RichText::new(OTHER_FEATURES).size(theme::SIZE_LABEL),
+        |ui| {
+            space_menu_rows(ui);
+            add(ui);
+        },
+    );
+}
 
 /// One row of a menu, with its shortcut at the right edge. True when clicked.
 fn menu_row(ui: &mut egui::Ui, label: &str, shortcut: &str, hover: &str, enabled: bool) -> bool {
@@ -536,6 +696,12 @@ impl Control {
     }
 }
 
+/// A row of the menu. The settings list its key.
+const MINI: Control = Control {
+    label: "ミニ表示",
+    shortcut: "Ctrl + Shift + M",
+    hover: "同じチャットを、小さな窓で読みます。",
+};
 pub(super) const SUBTITLE_WINDOW: Control = Control {
     label: "字幕ウィンドウ",
     shortcut: "",
@@ -545,6 +711,12 @@ pub(super) const RANGE: Control = Control {
     label: "範囲翻訳",
     shortcut: "Ctrl + Alt + T",
     hover: "画面の一部を選んで翻訳します。",
+};
+/// In the menu and on the 文章 screen, where its progress is shown.
+const FILE_TRANSLATION: Control = Control {
+    label: "ファイルを翻訳",
+    shortcut: "",
+    hover: "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。",
 };
 pub(super) const COPY_ALL: Control = Control {
     label: "全文コピー",
@@ -598,6 +770,11 @@ fn glossary_preset_status(added: &glossary::Added) -> String {
         message += "「設定を保存」で使います。ほかの話題では消してください。";
     }
     message
+}
+
+/// The chat shows the row. Text and range translations are left out of it.
+fn in_chat(row: &Row) -> bool {
+    chat::Source::from_kind(&row.record.kind).is_some()
 }
 
 /// The live rows as chat messages, oldest first. `visible` is the coherent
@@ -718,12 +895,14 @@ impl App {
         });
     }
 
-    /// The one menu behind the chat. It leads to every other screen and way of
-    /// translating; on the chat itself it also holds what to do with the talk.
+    /// The one menu behind the chat. It leads to the screens the live
+    /// translation has a use for; on the chat itself it also holds what to do
+    /// with the talk. Every other feature is behind its last row.
     fn more_menu(&mut self, ui: &mut egui::Ui) -> Option<MenuChoice> {
         let id = egui::Id::new(MORE_MENU);
         let chat = self.tab == Tab::Live;
         let ready = self.backend_ready;
+        let can_mini = self.mini_refusal().is_none();
         let can_range = self.can_read_range();
         let can_screen = can_range && self.screen_feed.is_none();
         let can_file = ready && !self.file_busy;
@@ -737,8 +916,7 @@ impl App {
         let mut choice = None;
         let mut input = None;
         egui::Popup::menu(&button).id(id).show(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.spacing_mut().button_padding.x = theme::SPACE_2;
+            space_menu_rows(ui);
             let mut row = |ui: &mut egui::Ui,
                            wanted: MenuChoice,
                            label: &str,
@@ -751,52 +929,11 @@ impl App {
             };
             row(
                 ui,
-                MenuChoice::SubtitleWindow,
-                SUBTITLE_WINDOW.label,
-                SUBTITLE_WINDOW.shortcut,
-                SUBTITLE_WINDOW.hover,
-                true,
-            );
-            row(
-                ui,
                 MenuChoice::Mini,
-                "ミニ表示",
-                "Ctrl + Shift + M",
-                "入力欄を畳み、訳文だけを小窓に表示します。",
-                ready,
-            );
-            row(
-                ui,
-                MenuChoice::Text,
-                "文章を翻訳",
-                &page_shortcut(Tab::Text),
-                "",
-                true,
-            );
-            row(
-                ui,
-                MenuChoice::Range,
-                RANGE.label,
-                RANGE.shortcut,
-                RANGE.hover,
-                can_range,
-            );
-            self.screen_menu(ui);
-            row(
-                ui,
-                MenuChoice::ScreenText,
-                "画面の文字を翻訳",
-                "",
-                LiveSourceMode::Screen.hint(),
-                can_screen,
-            );
-            row(
-                ui,
-                MenuChoice::File,
-                "ファイルを翻訳",
-                "",
-                "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。",
-                can_file,
+                MINI.label,
+                MINI.shortcut,
+                MINI.hover,
+                can_mini,
             );
             row(
                 ui,
@@ -808,18 +945,18 @@ impl App {
             );
             row(
                 ui,
-                MenuChoice::Models,
-                "モデル",
-                "",
-                "翻訳モデルの準備を開きます",
-                true,
-            );
-            row(
-                ui,
                 MenuChoice::YouTube,
                 "YouTube字幕の接続",
                 "",
                 "ChromeやEdgeの拡張機能とつなぎ、YouTubeの字幕を受け取ります。",
+                true,
+            );
+            row(
+                ui,
+                MenuChoice::Models,
+                "モデル",
+                "",
+                "翻訳モデルの準備を開きます",
                 true,
             );
             row(
@@ -835,7 +972,7 @@ impl App {
                 MenuChoice::Details,
                 "状態の詳細",
                 "",
-                "翻訳・文字認識・音声認識の準備の状態を見ます",
+                "翻訳・音声認識・文字認識の準備の状態を見ます",
                 true,
             );
             if chat {
@@ -846,6 +983,50 @@ impl App {
                 row(ui, MenuChoice::Export, "書き出し", "", "", has_rows);
                 self.display_menu(ui);
             }
+            ui.separator();
+            other_features_menu(ui, |ui| {
+                row(
+                    ui,
+                    MenuChoice::Text,
+                    "文章を翻訳",
+                    &page_shortcut(Tab::Text),
+                    "",
+                    true,
+                );
+                row(
+                    ui,
+                    MenuChoice::Range,
+                    RANGE.label,
+                    RANGE.shortcut,
+                    RANGE.hover,
+                    can_range,
+                );
+                self.screen_menu(ui);
+                row(
+                    ui,
+                    MenuChoice::ScreenText,
+                    "画面の文字を翻訳",
+                    "",
+                    LiveSourceMode::Screen.hint(),
+                    can_screen,
+                );
+                row(
+                    ui,
+                    MenuChoice::File,
+                    FILE_TRANSLATION.label,
+                    FILE_TRANSLATION.shortcut,
+                    FILE_TRANSLATION.hover,
+                    can_file,
+                );
+                row(
+                    ui,
+                    MenuChoice::SubtitleWindow,
+                    SUBTITLE_WINDOW.label,
+                    SUBTITLE_WINDOW.shortcut,
+                    SUBTITLE_WINDOW.hover,
+                    true,
+                );
+            });
         });
         choice.or(input.map(MenuChoice::Input))
     }
@@ -858,7 +1039,13 @@ impl App {
             RichText::new("入力の切り替え").size(theme::SIZE_LABEL),
             |ui| {
                 let mut picked = None;
-                for mode in LiveSourceMode::ALL {
+                // 画面の文字 is started behind その他の機能. It is listed while
+                // it is the input shown, so that the mark is true and the
+                // reader can switch away from it.
+                let listed = LiveSourceMode::ALL
+                    .into_iter()
+                    .filter(|mode| *mode != LiveSourceMode::Screen || *mode == shown);
+                for mode in listed {
                     if choice_button(ui, mode.label(), mode == shown)
                         .on_hover_text(mode.hint())
                         .clicked()
@@ -938,8 +1125,8 @@ impl App {
             }
             MenuChoice::Input(mode) => self.choose_input(ctx, mode),
             MenuChoice::File => {
-                // The progress and the cancel button are on the 履歴 screen.
-                self.tab = Tab::Files;
+                // The progress and the cancel button are on the 文章 screen.
+                self.tab = Tab::Text;
                 self.translate_file();
             }
             MenuChoice::History => self.tab = Tab::Files,
@@ -947,25 +1134,33 @@ impl App {
             MenuChoice::YouTube => self.tab = Tab::YouTube,
             MenuChoice::Settings => self.tab = Tab::Settings,
             MenuChoice::Details => self.details_open = true,
-            MenuChoice::Clear => {
-                let dir = self
-                    .journal
-                    .as_ref()
-                    .and_then(|j| j.path.parent())
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| data_root().join("sessions"));
-                match Journal::new(&dir) {
-                    Ok(journal) => {
-                        self.document_shutdown();
-                        self.journal = Some(journal);
-                        self.journal_error.clear();
-                        self.rows.clear();
-                        self.invalidate_timeline();
-                    }
-                    Err(error) => self.status = error.to_string(),
-                }
-            }
             MenuChoice::Export => self.export_history(),
+        }
+    }
+
+    /// 「クリア」: the chat starts a new talk in a new journal file. The file
+    /// of the talk it removes stays, and the 履歴 reads it again with the
+    /// other earlier talks.
+    fn clear_talk(&mut self) {
+        let dir = self
+            .journal
+            .as_ref()
+            .and_then(|j| j.path.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| data_root().join("sessions"));
+        match Journal::new(&dir) {
+            Ok(journal) => {
+                self.document_shutdown();
+                self.journal = Some(journal);
+                self.journal_error.clear();
+                // A text translation still running keeps its row, which
+                // its result or its failure comes back to.
+                let running = self.manual_busy;
+                self.rows.retain(|row| Some(row.record.id) == running);
+                self.invalidate_timeline();
+                self.earlier = Earlier::NotRead;
+            }
+            Err(error) => self.status = format!("新しい会話を始められませんでした（{error}）"),
         }
     }
 
@@ -1071,7 +1266,7 @@ impl App {
         let audio_active = self.audio_enabled || self.audio_start_requested;
         if audio && !audio_active {
             if self.backend_ready && self.asr_ready && self.audio_environment_ready() {
-                self.toggle_audio();
+                self.start_audio();
             } else {
                 self.audio_start_requested = true;
                 self.prepare_audio();
@@ -1084,16 +1279,8 @@ impl App {
         }
     }
 
-    /// Captions are coming in from the browser extension.
-    fn captions_arriving(&self) -> bool {
-        self.caption_enabled
-            && !self.caption_paused
-            && self
-                .last_caption
-                .is_some_and(|time| time.elapsed() < youtube::ARRIVING_WITHIN)
-    }
-
     /// The line beside the 聞く button: what is wrong, or what is going on.
+    /// It names the input that is translated now.
     pub(super) fn listen_state(&self) -> (&str, Color32) {
         if !self.service_error.is_empty() {
             return (&self.service_error, ERROR);
@@ -1105,7 +1292,7 @@ impl App {
         match self.current_input() {
             None => ("止まっています", TEXT_SECONDARY),
             Some(LiveSourceMode::Screen) => ("画面の文字を読み取っています", ACCENT),
-            Some(_) if self.captions_arriving() => ("YouTube字幕を受け取っています", ACCENT),
+            Some(_) if self.captions_fresh() => ("YouTube字幕を受け取っています", ACCENT),
             Some(_) if self.audio_enabled && self.asr_ready => ("PC音声を聞いています", ACCENT),
             Some(_) if self.audio_start_requested => ("音声認識を準備しています", TEXT_SECONDARY),
             Some(_) if self.caption_enabled => ("YouTube字幕を待っています", TEXT_SECONDARY),
@@ -1350,7 +1537,7 @@ impl App {
         }
     }
     fn input_card(&mut self, ui: &mut egui::Ui) {
-        card().show(ui, |ui| {
+        theme::card().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new(format!("原文 · {}字", self.input.chars().count()))
@@ -1398,7 +1585,8 @@ impl App {
             Readiness::Missing
         }
     }
-    /// The local models in use, in the order the details list them.
+    /// The local models in use, in the order the details list them: those
+    /// of the live translation first.
     fn model_statuses(&self) -> Vec<ModelStatus> {
         let translation = self.translation_readiness();
         let ocr = if self.screen_ocr_ready() {
@@ -1438,21 +1626,21 @@ impl App {
                 name: "翻訳",
                 readiness: translation,
                 detail: translation_detail,
-                opens: Tab::Setup,
+                opens: Destination::Models,
                 required: true,
-            },
-            ModelStatus {
-                name: "文字認識",
-                readiness: ocr,
-                detail: ocr_detail.into(),
-                opens: Tab::Settings,
-                required: false,
             },
             ModelStatus {
                 name: "音声認識",
                 readiness: speech,
                 detail: speech_detail.into(),
-                opens: Tab::Settings,
+                opens: Destination::Settings,
+                required: false,
+            },
+            ModelStatus {
+                name: "文字認識",
+                readiness: ocr,
+                detail: ocr_detail.into(),
+                opens: Destination::OtherSetting(OtherSetting::ScreenOcr),
                 required: false,
             },
         ];
@@ -1467,14 +1655,14 @@ impl App {
                     Readiness::Missing
                 },
                 detail: "Irodori-TTS".into(),
-                opens: Tab::Settings,
+                opens: Destination::OtherSetting(OtherSetting::Readout),
                 required: false,
             });
         }
         statuses
     }
     fn output_card(&mut self, ui: &mut egui::Ui) {
-        card().show(ui, |ui| {
+        theme::card().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new(TRANSLATION)
@@ -1530,15 +1718,18 @@ impl App {
     pub(super) fn text_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
             let ready = self.backend_ready;
-            let mut open_image = false;
+            let can_file = ready && !self.file_busy;
+            let (mut open_image, mut translate_file, mut cancel_file) = (false, false, false);
             let translate_ready =
                 self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
             let mut translate = false;
             self.page_header(
                 ui,
                 "文章翻訳",
-                "貼り付けた文章や画像の文字を翻訳します。",
+                "貼り付けた文章、画像の文字、ファイルを翻訳します。",
                 |ui| {
+                    // Laid out from the right edge, so 画像から翻訳 is read first.
+                    translate_file = FILE_TRANSLATION.button(ui, can_file).clicked();
                     if ui.add_enabled(ready, standard("画像から翻訳")).clicked() {
                         open_image = true;
                     }
@@ -1546,6 +1737,9 @@ impl App {
             );
             if open_image {
                 self.open_image();
+            }
+            if translate_file {
+                self.translate_file();
             }
             ui.add_space(theme::SPACE_2);
             // Languages, then the action they configure, on one line.
@@ -1566,6 +1760,22 @@ impl App {
                 self.manual_translate();
             }
             self.backend_notice(ui);
+            if self.file_busy {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("ファイルを翻訳しています")
+                            .size(theme::SIZE_LABEL)
+                            .color(TEXT_SECONDARY),
+                    );
+                    if ui.add(standard("中止")).clicked() {
+                        cancel_file = true;
+                    }
+                });
+                if cancel_file {
+                    self.file_cancel.store(true, Ordering::Relaxed);
+                }
+            }
             ui.add_space(theme::SPACE_2);
             let ready =
                 self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
@@ -1617,7 +1827,7 @@ impl App {
 
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
-            let can_clear = !self.rows.is_empty() || !self.asr_partial.trim().is_empty();
+            let can_clear = self.rows.iter().any(in_chat) || !self.asr_partial.trim().is_empty();
             let can_copy = self.can_copy_talk();
             let (mut clear, mut copy_all) = (false, false);
             self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |ui| {
@@ -1633,15 +1843,11 @@ impl App {
                 copy_all = COPY_ALL.button(ui, can_copy).clicked();
             });
             if clear {
-                self.follow(ui.ctx(), MenuChoice::Clear);
+                self.clear_talk();
             }
             ui.add_space(theme::SPACE_2);
             self.live_status_line(ui);
             ui.add_space(theme::SPACE_1);
-            #[cfg(test)]
-            {
-                self.ui_probe.reading_font = theme::reading_size(self.settings.font_size);
-            }
             // The chat takes the room the bar under it leaves.
             let chat = Vec2::new(
                 ui.available_width(),
@@ -1684,11 +1890,11 @@ impl App {
         }
     }
 
-    /// 全文コピー has a translation to copy.
+    /// 全文コピー has a translation in the chat to copy.
     pub(super) fn can_copy_talk(&self) -> bool {
         self.rows
             .iter()
-            .any(|row| !row.record.translation.trim().is_empty())
+            .any(|row| in_chat(row) && !row.record.translation.trim().is_empty())
     }
 
     /// 全文コピー copies all the chat shows, with the credit.
@@ -1697,68 +1903,20 @@ impl App {
     }
 
     pub(super) fn files_ui(&mut self, ui: &mut egui::Ui) {
+        if matches!(self.earlier, Earlier::NotRead) {
+            self.read_earlier_talks();
+        }
         page_column(ui, |ui| {
-            let ready = self.backend_ready && !self.file_busy;
             let has_rows = !self.rows.is_empty();
-            let mut translate_file = false;
-            let mut cancel_file = false;
             let mut export = false;
-            self.page_header(
-                ui,
-                "履歴",
-                "これまでの訳文を探せます。ファイルも翻訳できます。",
-                |ui| {
-                    if ui
-                        .add_enabled(ready, primary("ファイルを選んで翻訳"))
-                        .on_hover_text(
-                            "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。",
-                        )
-                        .clicked()
-                    {
-                        translate_file = true;
-                    }
-                },
-            );
-            if translate_file {
-                self.translate_file();
-            }
-            ui.add_space(theme::SPACE_2);
-            live_region(ui, "files-languages", 36.0, |ui| {
-                // The row belongs to the button in the header, not to the
-                // search under it, so it says so.
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(0.0, theme::CONTROL_H),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| ui.label(theme::caption("ファイル翻訳の言語")),
-                    );
-                    self.languages(ui);
-                });
-            });
-            self.backend_notice(ui);
-            if self.file_busy {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(
-                        RichText::new("ファイルを翻訳しています")
-                            .size(theme::SIZE_LABEL)
-                            .color(TEXT_SECONDARY),
-                    );
-                    if ui.add(standard("中止")).clicked() {
-                        cancel_file = true;
-                    }
-                });
-                if cancel_file {
-                    self.file_cancel.store(true, Ordering::Relaxed);
-                }
-            }
+            self.page_header(ui, "履歴", "これまでの訳文を探せます。", |_| {});
             ui.add_space(theme::SPACE_2);
             // Search and export both act on the list below, so they share its row.
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add_enabled(has_rows, standard("書き出し"))
-                        .on_hover_text("履歴をTXT・JSON・SRTに書き出します")
+                        .on_hover_text("いまの会話を、TXT・JSON・SRTに書き出します。")
                         .clicked()
                     {
                         export = true;
@@ -1778,70 +1936,139 @@ impl App {
             egui::ScrollArea::vertical()
                 .id_salt("file-history")
                 .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let search = self.search.to_lowercase();
-                    let mut shown = 0usize;
-                    for row in self.rows.iter().rev() {
-                        if !search.is_empty()
-                            && !row.record.source.to_lowercase().contains(&search)
-                            && !row.record.translation.to_lowercase().contains(&search)
-                        {
-                            continue;
-                        }
-                        shown += 1;
-                        ui.add_space(theme::SPACE_2);
-                        ui.label(
-                            RichText::new(format!(
-                                "{} · {}",
-                                history_time(&row.record.created_at),
-                                row.record.kind
-                            ))
-                            .size(theme::SIZE_CAPTION)
-                            .color(TEXT_MUTED),
-                        );
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&row.record.translation)
-                                    .size(theme::reading_size(self.settings.font_size - 2.0))
-                                    .color(TEXT),
-                            )
-                            .wrap()
-                            .selectable(true),
-                        );
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&row.record.source)
-                                    .size(theme::SIZE_LABEL)
-                                    .color(TEXT_MUTED),
-                            )
-                            .wrap()
-                            .selectable(true),
-                        );
-                        ui.add_space(theme::SPACE_2);
-                        ui.separator();
-                    }
-                    if self.rows.is_empty() {
-                        ui.add_space(theme::SPACE_4);
-                        ui.label(theme::body("翻訳履歴はここに表示されます。"));
-                    } else if shown == 0 {
-                        ui.add_space(theme::SPACE_4);
-                        ui.label(
-                            RichText::new("一致する履歴がありません。")
-                                .size(theme::SIZE_BODY)
-                                .color(TEXT_SECONDARY),
-                        );
-                    }
-                });
+                .show(ui, |ui| self.history_list(ui));
         });
+    }
+
+    /// The current talk and under it the earlier talks, one fold each.
+    fn history_list(&mut self, ui: &mut egui::Ui) {
+        self.history.follow_search(&self.search);
+        let search = self.search.to_lowercase();
+        let text_size = theme::reading_size(self.settings.font_size - 2.0);
+        let current = self.journal.as_ref().map(|journal| journal.path.clone());
+        let mut rows = self
+            .rows
+            .iter()
+            .rev()
+            .map(|row| &row.record)
+            .filter(|record| record_found(record, &search))
+            .peekable();
+        let mut found = rows.peek().is_some();
+        if talk_rows(ui, rows, self.history.shown(&current), text_size) {
+            self.history.show_more(current);
+        }
+        match &self.earlier {
+            Earlier::NotRead => {}
+            Earlier::Reading(_) => {
+                ui.add_space(theme::SPACE_4);
+                ui.label(theme::caption("これまでの会話を読み込んでいます…"));
+            }
+            Earlier::Failed(error) => {
+                ui.add_space(theme::SPACE_4);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("これまでの会話を読めませんでした（{error}）"))
+                            .size(theme::SIZE_LABEL)
+                            .color(ERROR),
+                    )
+                    .wrap(),
+                );
+            }
+            Earlier::Read(earlier) => {
+                let mut heading = false;
+                for talk in &earlier.talks {
+                    let mut records = talk
+                        .records
+                        .iter()
+                        .rev()
+                        .filter(|record| record_found(record, &search))
+                        .peekable();
+                    if records.peek().is_none() {
+                        continue;
+                    }
+                    found = true;
+                    if !heading {
+                        ui.add_space(theme::SPACE_4);
+                        ui.label(
+                            RichText::new("これまでの会話")
+                                .size(theme::SIZE_LABEL)
+                                .strong(),
+                        );
+                        heading = true;
+                    }
+                    let label = format!(
+                        "{} からの会話 · {}件",
+                        history_time(&talk.records[0].created_at),
+                        talk.records.len()
+                    );
+                    let open = self.history.is_open(&talk.file);
+                    let file = Some(talk.file.clone());
+                    let shown = self.history.shown(&file);
+                    // A closed fold never calls its body, so its records are
+                    // not laid out.
+                    let fold =
+                        egui::CollapsingHeader::new(RichText::new(label).size(theme::SIZE_LABEL))
+                            .id_salt(("earlier-talk", &talk.file))
+                            .default_open(open)
+                            .open(Some(open))
+                            .show(ui, |ui| talk_rows(ui, records, shown, text_size));
+                    if fold.header_response.clicked() {
+                        self.history.toggle(&talk.file);
+                    }
+                    if fold.body_returned == Some(true) {
+                        self.history.show_more(file);
+                    }
+                }
+            }
+        }
+        // While the earlier talks are read, it is not known yet whether
+        // they hold anything.
+        let reading = matches!(self.earlier, Earlier::Reading(_));
+        let earlier_talks =
+            matches!(&self.earlier, Earlier::Read(earlier) if !earlier.talks.is_empty());
+        if self.rows.is_empty() && !earlier_talks {
+            if !reading {
+                ui.add_space(theme::SPACE_4);
+                ui.label(theme::body("翻訳履歴はここに表示されます。"));
+            }
+        } else if !found && !reading {
+            ui.add_space(theme::SPACE_4);
+            ui.label(
+                RichText::new("一致する履歴がありません。")
+                    .size(theme::SIZE_BODY)
+                    .color(TEXT_SECONDARY),
+            );
+        }
+        if let Earlier::Read(earlier) = &self.earlier {
+            if earlier.older_left_out || earlier.unreadable > 0 {
+                ui.add_space(theme::SPACE_4);
+            }
+            if earlier.older_left_out {
+                ui.label(theme::caption(
+                    "これより前の会話は、保存フォルダーのファイルにあります。",
+                ));
+            }
+            if earlier.unreadable > 0 {
+                ui.label(theme::caption(format!(
+                    "読めない会話ファイルが{}件あります。",
+                    earlier.unreadable
+                )));
+            }
+        }
     }
 
     fn settings_translation_card(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("翻訳モデル").strong());
-        ui.label(self.setup_summary());
+        ui.label(self.current_model_label());
         secondary(ui, self.connection_label());
         if ui.add(standard("モデルを変更")).clicked() {
             self.open_setup();
         }
+        // The live translation translates in this pair. The 文章 screen,
+        // which has it too, is one of the other features.
+        ui.add_space(theme::SPACE_2);
+        secondary(ui, "翻訳する言語");
+        self.languages(ui);
     }
 
     fn settings_asr_card(&mut self, ui: &mut egui::Ui) {
@@ -1989,10 +2216,26 @@ impl App {
             .id_salt("shortcuts")
             .default_open(false)
             .show(ui, |ui| {
-                secondary(
-                    ui,
-                    "範囲翻訳: Ctrl + Alt + T　 聞く・止める: Ctrl + Alt + L",
-                );
+                // The keys of what is in front. Those of the other features
+                // are on their rows behind その他の機能.
+                let pages: Vec<_> = PAGE_KEYS
+                    .iter()
+                    .filter(|(tab, _, _)| *tab != Tab::Text)
+                    .collect();
+                let names: Vec<_> = pages.iter().map(|(_, name, _)| *name).collect();
+                let (first, last) = (pages[0], pages[pages.len() - 1]);
+                for line in [
+                    format!("聞く・止める: {LISTEN_SHORTCUT}"),
+                    format!("{}: {}", MINI.label, MINI.shortcut),
+                    format!(
+                        "{}: {}〜{}",
+                        names.join("・"),
+                        page_shortcut(first.0),
+                        last.2.symbol_or_name()
+                    ),
+                ] {
+                    secondary(ui, line);
+                }
                 if ui.add(standard("保存フォルダーを開く")).clicked() {
                     self.open_data_folder();
                 }
@@ -2026,6 +2269,51 @@ impl App {
             });
     }
 
+    /// The settings of the features that are not the live translation, out
+    /// of sight until they are asked for, or until the app sends the reader
+    /// to one of them.
+    fn settings_other_features_section(&mut self, ui: &mut egui::Ui) {
+        let reveal = self.reveal;
+        let section = egui::CollapsingHeader::new(OTHER_FEATURES)
+            .id_salt("other-features")
+            .default_open(false)
+            .open(reveal.map(|_| true))
+            .show(ui, |ui| {
+                [
+                    (
+                        OtherSetting::Readout,
+                        settings_card(ui, |ui| self.readout_settings_ui(ui)),
+                    ),
+                    (
+                        OtherSetting::ScreenOcr,
+                        settings_card(ui, |ui| self.screen_ocr_settings_ui(ui)),
+                    ),
+                ]
+            });
+        // The section grows open over a few frames; the card has its place
+        // once the section has its full height.
+        if let Some(card) = reveal
+            && section.fully_open()
+            && let Some(cards) = section.body_returned
+            && let Some((_, rect)) = cards.into_iter().find(|(other, _)| *other == card)
+        {
+            ui.scroll_to_rect_animation(
+                rect,
+                Some(egui::Align::Min),
+                egui::style::ScrollAnimation::none(),
+            );
+            self.reveal = None;
+        }
+    }
+
+    /// Opens the settings at a card behind 「その他の機能」. The page opens the
+    /// section and scrolls to the card once; after that the section is the
+    /// reader's to close.
+    pub(super) fn open_other_setting(&mut self, card: OtherSetting) {
+        self.tab = Tab::Settings;
+        self.reveal = Some(card);
+    }
+
     pub(super) fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let previous_asr = (
             self.settings.asr_backend.clone(),
@@ -2046,35 +2334,33 @@ impl App {
                 .show(ui, |ui| {
                     // Two independent columns above 1100 points so a wide
                     // window does not become one very long form. The live
-                    // translation's settings come first; reading text off the
-                    // screen is another use, so its card comes after them.
+                    // translation's settings come first, and the other
+                    // features' last, in a section of their own.
                     if ui.available_width() >= 1100.0 {
                         ui.columns(2, |columns| {
                             columns[0].spacing_mut().item_spacing.y = theme::SPACE_3;
                             columns[1].spacing_mut().item_spacing.y = theme::SPACE_3;
                             settings_card(&mut columns[0], |ui| self.settings_translation_card(ui));
-                            settings_card(&mut columns[0], |ui| self.readout_settings_ui(ui));
                             settings_card(&mut columns[0], |ui| {
                                 self.paragraph_tools_settings_ui(ui)
                             });
                             self.settings_glossary_section(&mut columns[0]);
                             settings_card(&mut columns[1], |ui| self.settings_asr_card(ui));
                             settings_card(&mut columns[1], |ui| self.settings_youtube_card(ui));
-                            settings_card(&mut columns[1], |ui| self.screen_ocr_settings_ui(ui));
                             self.settings_shortcuts_section(&mut columns[1]);
                             self.settings_diagnostics_section(&mut columns[1]);
+                            self.settings_other_features_section(&mut columns[1]);
                         });
                     } else {
                         ui.spacing_mut().item_spacing.y = theme::SPACE_3;
                         settings_card(ui, |ui| self.settings_translation_card(ui));
-                        settings_card(ui, |ui| self.readout_settings_ui(ui));
                         settings_card(ui, |ui| self.settings_asr_card(ui));
                         settings_card(ui, |ui| self.paragraph_tools_settings_ui(ui));
                         settings_card(ui, |ui| self.settings_youtube_card(ui));
                         self.settings_glossary_section(ui);
-                        settings_card(ui, |ui| self.screen_ocr_settings_ui(ui));
                         self.settings_shortcuts_section(ui);
                         self.settings_diagnostics_section(ui);
+                        self.settings_other_features_section(ui);
                     }
                     ui.add_space(theme::SPACE_6);
                     if ui.add(standard("アプリを終了")).clicked() {
@@ -2184,10 +2470,6 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(theme::GUTTER as i8, 0)),
             )
             .show(ctx, |ui| {
-                #[cfg(test)]
-                {
-                    self.ui_probe.status_rect = Some(ui.max_rect());
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(theme::caption(credit::LABEL));
                     ui.add_space(theme::SPACE_3);
@@ -2197,7 +2479,9 @@ impl App {
                             open_models = headline(ui, readiness);
                             ui.add_space(theme::SPACE_3);
                         }
-                        let readout = if self.readout.error.is_empty() {
+                        let readout = if !self.settings.readout_enabled {
+                            ("", TEXT_SECONDARY)
+                        } else if self.readout.error.is_empty() {
                             (self.readout.status.as_str(), TEXT_SECONDARY)
                         } else {
                             (self.readout.error.as_str(), ERROR)
@@ -2290,8 +2574,9 @@ impl App {
                 });
             });
         match opens {
-            Some(Tab::Setup) => self.open_setup(),
-            Some(tab) => self.tab = tab,
+            Some(Destination::Models) => self.open_setup(),
+            Some(Destination::Settings) => self.tab = Tab::Settings,
+            Some(Destination::OtherSetting(card)) => self.open_other_setting(card),
             None => {}
         }
         if close || opens.is_some() {
@@ -2299,6 +2584,8 @@ impl App {
         }
     }
 }
+#[cfg(test)]
+mod history_tests;
 #[cfg(test)]
 mod home_tests;
 #[cfg(test)]
@@ -2844,7 +3131,7 @@ mod live_layout_tests {
         app.rows = vec![row(1, false, false)];
         app.rows[0].record.created_at = "2026-11-05T12:00:00+09:00".into();
         let drawn = drawn_text(&mut app, 860.0, 620.0);
-        assert!(drawn.contains("2026/11/05 12:00 · 音声"), "{drawn}");
+        assert!(drawn.contains("2026/11/05 12:00 · PC音声"), "{drawn}");
         assert!(!drawn.contains("T12:00:00"));
     }
 
@@ -2948,7 +3235,7 @@ mod live_layout_tests {
         assert_eq!(statuses[0].readiness, Readiness::Ready);
         let speech = statuses.iter().find(|s| s.name == "音声認識").unwrap();
         assert_eq!(speech.readiness, Readiness::Missing);
-        assert!(speech.opens == Tab::Settings);
+        assert_eq!(speech.opens, Destination::Settings);
         let drawn = drawn_text(&mut app, 1280.0, 880.0);
         assert!(drawn.contains("Nemotronを起動できません"), "{drawn}");
         app.backend_ready = false;
@@ -2956,7 +3243,7 @@ mod live_layout_tests {
         let translation = &app.model_statuses()[0];
         assert_eq!(translation.readiness, Readiness::Missing);
         assert!(translation.readiness.needs_action());
-        assert!(translation.opens == Tab::Setup);
+        assert_eq!(translation.opens, Destination::Models);
         app.backend_loading = true;
         assert_eq!(app.model_statuses()[0].readiness, Readiness::Preparing);
     }
@@ -2974,11 +3261,6 @@ mod live_layout_tests {
             menu.height() >= 32.0,
             "the menu button is {} points tall",
             menu.height()
-        );
-        assert!(
-            app.ui_probe.reading_font >= 20.0,
-            "reading font {} is below 20 points",
-            app.ui_probe.reading_font
         );
         let body = app.live_chat.body().unwrap();
         assert!(
@@ -3091,6 +3373,16 @@ mod live_layout_tests {
         frame(app, 5, vec![press(false)]);
     }
 
+    /// Clicks `label` in the settings of the other features, which stay
+    /// closed until their section is opened.
+    fn click_other_setting(app: &mut App, label: &str) {
+        app.tab = Tab::Settings;
+        let mut window = super::home_tests::Window::new(1280.0, 2000.0);
+        window.settle(app);
+        window.click(app, OTHER_FEATURES);
+        window.click(app, label);
+    }
+
     fn ready_voice() -> plamo_translate::speech_setup::SpeechInstallation {
         plamo_translate::speech_setup::SpeechInstallation {
             executable: Default::default(),
@@ -3139,7 +3431,7 @@ mod live_layout_tests {
         let mut app = readout_app(Tab::Settings);
         app.readout.ready = Some(ready_voice());
         app.settings.auto_read = true;
-        click_label(&mut app, "日本語の訳文を自動で読み上げる", 1280.0, 880.0);
+        click_other_setting(&mut app, "日本語の訳文を自動で読み上げる");
         assert!(
             !app.settings.auto_read,
             "the settings checkbox turns it off"
@@ -3209,17 +3501,66 @@ mod live_layout_tests {
         );
 
         let mut app = App::inert();
-        app.tab = Tab::Settings;
-        click_label(&mut app, "読み上げを使う", 1280.0, 880.0);
+        click_other_setting(&mut app, "読み上げを使う");
         assert!(
             app.settings.readout_enabled,
             "the settings switch turns it on"
         );
-        click_label(&mut app, "読み上げを使う", 1280.0, 880.0);
+        click_other_setting(&mut app, "読み上げを使う");
         assert!(!app.settings.readout_enabled);
-        assert_eq!(
-            app.readout.status, "読み上げを停止しました。",
+        assert!(
+            app.readout.voice_cancel.load(Ordering::Acquire),
             "turning it off stops the voice"
+        );
+        let stopped = "読み上げを停止しました。";
+        assert!(
+            !drawn_text(&mut app, 1280.0, 880.0).contains(stopped),
+            "the status row says nothing of readout once it is off"
+        );
+        click_other_setting(&mut app, "読み上げを使う");
+        assert!(
+            !drawn_text(&mut app, 1280.0, 880.0).contains(stopped),
+            "nor is that status back when it is turned on again"
+        );
+    }
+
+    #[test]
+    fn a_start_with_readout_off_reads_nothing_of_its_install_until_the_switch_is_turned_on() {
+        let mut app = App::inert();
+        // The readout part of App::new, which a test cannot run whole.
+        app.initialize_readout();
+        assert!(
+            !app.readout.install_checked,
+            "a start with 読み上げを使う off reads nothing of the readout install"
+        );
+        click_other_setting(&mut app, "読み上げを使う");
+        assert!(
+            app.readout.install_checked,
+            "turning the switch on reads it"
+        );
+    }
+
+    #[test]
+    fn turning_readout_off_stops_the_download_of_its_voice() {
+        let mut app = readout_app(Tab::Settings);
+        app.readout.preparing = true;
+        click_other_setting(&mut app, "読み上げを使う");
+        assert!(!app.settings.readout_enabled);
+        assert!(
+            app.readout.cancel.load(Ordering::Relaxed),
+            "the voice is not downloaded for readout that is off"
+        );
+    }
+
+    #[test]
+    fn a_missing_fixed_voice_names_the_section_where_the_voice_is_chosen() {
+        let mut app = readout_app(Tab::Live);
+        app.readout.ready = Some(ready_voice());
+        app.settings.tts_voice_profile = "an-added-voice-that-is-gone".into();
+        app.read_translation("日本語の訳文です。".into());
+        assert_eq!(
+            app.readout.error,
+            "選択した固定声がありません。設定の「その他の機能」で声を選び直してください。"
         );
     }
 }

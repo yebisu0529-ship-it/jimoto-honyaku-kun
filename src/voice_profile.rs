@@ -333,11 +333,7 @@ fn native_command(config: &SpeechInstallation) -> Command {
     if let Some(parent) = config.model.parent() {
         command.env("SPEECH_MODEL_DIR", parent);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    crate::platform::hide_console(&mut command);
     command
 }
 

@@ -1,5 +1,4 @@
-﻿param([switch]$WithoutAudioModel)
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $taskAppRoot = $PSScriptRoot
 $taskExe = Join-Path $taskAppRoot 'plamo-translate.exe'
 if (-not (Test-Path -LiteralPath $taskExe)) { $taskExe = Join-Path $taskAppRoot 'target/x86_64-pc-windows-msvc/release/plamo-translate.exe' }

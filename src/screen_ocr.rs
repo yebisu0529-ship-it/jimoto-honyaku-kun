@@ -56,7 +56,9 @@ impl Recognizer {
                         self.control.clone(),
                     )?)
                 }
-                _ => anyhow::bail!("文字認識の方式を設定で選び直してください。"),
+                _ => {
+                    anyhow::bail!("文字認識の方式を、設定の「その他の機能」で選び直してください。")
+                }
             });
         }
         match owned.as_ref().unwrap() {
@@ -150,6 +152,8 @@ impl App {
         self.ocr.pending = None;
         self.ocr.busy = None;
         self.ocr.cancel.store(true, Ordering::Release);
+        // A preparation still running keeps its dialog until it stops.
+        self.ocr.confirm = false;
         self.discard_screen_ocr_runtime();
     }
     pub(super) fn discard_screen_ocr_runtime(&mut self) {
@@ -219,7 +223,8 @@ impl App {
         }
     }
     fn begin_ocr_install(&mut self) {
-        if self.ocr.installing {
+        if self.ocr.installing || !matches!(self.settings.ocr_backend.as_str(), "indra" | "paddle")
+        {
             return;
         }
         self.ocr.installing = true;
@@ -457,6 +462,70 @@ mod tests {
         assert!(app.ocr.pending.is_some());
         assert!(app.ocr.confirm);
         assert!(app.ocr.error.is_empty());
+    }
+    /// What the setup dialog draws, nothing while it is closed.
+    fn dialog(app: &mut App) -> Vec<String> {
+        let context = egui::Context::default();
+        let mut drawn = Vec::new();
+        for frame in 0..3 {
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 880.0),
+                    )),
+                    time: Some(f64::from(frame) / 60.0),
+                    ..Default::default()
+                },
+                |ctx| app.screen_ocr_setup_ui(ctx),
+            );
+            drawn = crate::chat::testing::texts(&output)
+                .into_iter()
+                .map(|(text, _, _)| text)
+                .collect();
+        }
+        drawn
+    }
+    #[test]
+    fn choosing_windows_ocr_in_the_settings_closes_the_setup_dialog() {
+        let mut app = App::inert();
+        app.settings.ocr_backend = "paddle".into();
+        app.request_screen_ocr_setup();
+        assert!(
+            dialog(&mut app).contains(&"文字認識の追加準備".to_owned()),
+            "the dialog is open for PaddleOCR"
+        );
+        // What the settings card does when another recogniser is chosen.
+        app.settings.ocr_backend = "windows".into();
+        app.reset_screen_ocr();
+        assert_eq!(
+            dialog(&mut app),
+            Vec::<String>::new(),
+            "choosing Windows OCR closes the dialog"
+        );
+
+        app.settings.ocr_backend = "paddle".into();
+        app.request_screen_ocr_setup();
+        app.ocr.installing = true;
+        app.settings.ocr_backend = "indra".into();
+        app.reset_screen_ocr();
+        assert!(
+            dialog(&mut app).contains(&"中止".to_owned()),
+            "a running preparation keeps its dialog until it stops"
+        );
+    }
+    #[test]
+    fn asking_to_prepare_windows_ocr_starts_nothing() {
+        let mut app = App::inert();
+        app.settings.ocr_backend = "windows".into();
+        app.begin_ocr_install();
+        // Were the check broken, this would stop the PaddleOCR download it
+        // started before its first request.
+        app.ocr.cancel.store(true, Ordering::Release);
+        assert!(
+            !app.ocr.installing && app.ocr.setup_worker.is_none(),
+            "Windows OCR has nothing to prepare"
+        );
     }
     #[test]
     fn late_recognition_cannot_clear_a_newer_request() {

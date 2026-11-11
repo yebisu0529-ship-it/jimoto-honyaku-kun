@@ -200,9 +200,6 @@ impl NemotronEngine {
     pub fn clear(&self) -> u64 {
         self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1
     }
-    pub fn cancel(&self) -> u64 {
-        self.clear()
-    }
     /// Flush the current utterance; the same connection remains usable afterwards.
     pub fn finish(&self) -> Result<()> {
         ensure!(self.is_ready(), "Nemotronの読み込みが完了していません。");
@@ -390,11 +387,7 @@ fn run(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    crate::platform::hide_console(&mut command);
     // Hold the lock while spawning so stop() cannot miss a newly created process.
     {
         let mut child = shared.child.lock().unwrap_or_else(|e| e.into_inner());
@@ -513,8 +506,9 @@ fn run(
                 }
             }
         } else {
-            // Throw away old-generation input even while waiting for a clear ack.
-            // New input stays queued until reset completes (bounded to 16 frames).
+            // Until the session is ready and every reset is acknowledged, input
+            // waits in the queue (bounded to 16 frames). Input of an older
+            // generation is dropped above, when it is read.
         }
         match socket.read() {
             Ok(Message::Text(text)) => {
@@ -998,15 +992,13 @@ mod tests {
         assert!(state.partial.is_empty());
     }
     #[test]
-    fn commit_keeps_clock_monotonic_and_clear_starts_new_generation() {
+    fn commit_keeps_clock_monotonic() {
         let mut state = StreamState::new(1);
         state.event(&json!({"type":"conversation.item.input_audio_transcription.completed","transcript":"one","audio_processed":2.0})).unwrap();
         state
             .event(&json!({"type":"input_audio_buffer.committed"}))
             .unwrap();
         assert!(matches!(state.event(&json!({"type":"conversation.item.input_audio_transcription.completed","transcript":"two","audio_processed":1.0})).unwrap(),Some(NemotronEvent::Final{start_ms:2000,end_ms:3000,..})));
-        let state = StreamState::new(2);
-        assert_eq!(state.last_end_ms, 0);
     }
     #[test]
     fn rejects_wrong_model_and_invalid_clock() {

@@ -215,10 +215,18 @@ impl App {
         if self.setup.force_cpu {
             measured.gpus.clear();
         }
+        let saved: Vec<&str> = self
+            .setup
+            .saved
+            .iter()
+            .chain(self.setup.in_use.iter().map(|model| &model.id))
+            .map(String::as_str)
+            .collect();
         self.setup.recommendation = Some(model_catalog::recommend_replacing(
             &measured,
             Policy::Realtime,
             self.held_gpu_bytes(),
+            &saved,
         ));
     }
     /// A new measurement or a changed CPU setting: start over from the preselected row.
@@ -335,7 +343,7 @@ impl App {
         }
         self.backend_ready = false;
         if external_running {
-            self.service_error="別の翻訳環境が動いています。終了してから設定の「モデルを読み込む」を押してください。".into();
+            self.service_error="別の翻訳環境が動いています。終了してから、設定の「詳細（トラブル時）」にある「翻訳エンジンを起動」を押してください。".into();
         } else {
             self.start_translation_server();
         }
@@ -350,9 +358,6 @@ impl App {
             .and_then(|c| c.models.into_iter().find(|m| m.filename == filename))
             .map(|m| m.label)
             .unwrap_or_else(|| "PLaMo 3 Translate".into())
-    }
-    pub(super) fn setup_summary(&self) -> String {
-        self.current_model_label()
     }
     pub(super) fn connection_label(&self) -> &'static str {
         if self.backend_ready {
@@ -495,7 +500,7 @@ impl App {
             }
         });
         ui.label(theme::caption(
-            "モデルはPFN公式、実行環境はllama.cpp公式から取得します。PC情報は外部へ送信しません。",
+            "モデルと実行環境は、それぞれの公式の配布先から取得します。PC情報は外部へ送信しません。",
         ));
     }
 

@@ -9,6 +9,7 @@
 $ErrorActionPreference = 'Stop'
 $taskAppRoot = $PSScriptRoot
 Set-Location -LiteralPath $taskAppRoot
+$env:PLAMO_APP_DIR = $taskAppRoot
 $taskHelper = Join-Path $taskAppRoot 'jimoto-setup.exe'
 if (-not (Test-Path -LiteralPath $taskHelper)) { $taskHelper = Join-Path $taskAppRoot 'target/x86_64-pc-windows-msvc/release/jimoto-setup.exe' }
 if (-not (Test-Path -LiteralPath $taskHelper)) {

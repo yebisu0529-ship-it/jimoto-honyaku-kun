@@ -343,13 +343,10 @@ fn apply_smi_memory(gpu: &mut Gpu, row: &SmiRow) {
 #[cfg(windows)]
 fn hidden_output(program: &str, args: &[&str]) -> Option<String> {
     use std::{
-        os::windows::process::CommandExt,
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
-    let mut child = Command::new(program)
-        .args(args)
-        .creation_flags(0x08000000)
+    let mut child = crate::platform::hide_console(Command::new(program).args(args))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

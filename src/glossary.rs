@@ -5,6 +5,32 @@ use std::collections::HashSet;
 /// both stop here.
 pub const MAX_ENTRIES: usize = 100;
 
+/// The most characters one side of an entry can have.
+pub const MAX_SIDE_CHARS: usize = 256;
+
+/// Why the translation prompt cannot take one side of an entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    Empty,
+    /// It holds the start of PLaMo's own markup.
+    Reserved,
+    TooLong,
+}
+
+/// The one rule for each side of an entry. The box refuses a line with such a
+/// side, and the translation prompt an entry with one.
+pub fn fault(side: &str) -> Option<Fault> {
+    if side.trim().is_empty() {
+        Some(Fault::Empty)
+    } else if side.contains("<|plamo:") {
+        Some(Fault::Reserved)
+    } else if side.chars().count() > MAX_SIDE_CHARS {
+        Some(Fault::TooLong)
+    } else {
+        None
+    }
+}
+
 /// The two sides of a line: split at its first tab, or else at its first `=`.
 fn split(line: &str) -> Option<(&str, &str)> {
     line.split_once('\t').or_else(|| line.split_once('='))
@@ -23,13 +49,20 @@ pub fn parse(input: &str) -> Result<Vec<(String, String)>, String> {
                 index + 1
             ));
         };
-        if source.trim().is_empty() || target.trim().is_empty() {
-            return Err(format!(
-                "{}行目: 原語と訳語の両方を入力してください。",
-                index + 1
-            ));
+        let (source, target) = (source.trim(), target.trim());
+        for (name, side) in [("原語", source), ("訳語", target)] {
+            let reason = match fault(side) {
+                None => continue,
+                Some(Fault::Empty) => "原語と訳語の両方を入力してください。".to_owned(),
+                Some(Fault::Reserved) => format!("{name}に「<|plamo:」は使えません。"),
+                Some(Fault::TooLong) => format!(
+                    "{name}は{MAX_SIDE_CHARS}文字までです（今は{}文字）。",
+                    side.chars().count()
+                ),
+            };
+            return Err(format!("{}行目: {reason}", index + 1));
         }
-        entries.push((source.trim().to_owned(), target.trim().to_owned()));
+        entries.push((source.to_owned(), target.to_owned()));
     }
     if entries.len() > MAX_ENTRIES {
         return Err(format!(
@@ -220,6 +253,60 @@ mod tests {
                 engine::build_prompt("Hello.", &options).is_ok(),
                 accepted,
                 "the prompt with {count} entries"
+            );
+        }
+    }
+
+    #[test]
+    fn a_side_the_prompt_would_refuse_is_refused_with_its_line_number_and_the_reason() {
+        let long = "長".repeat(257);
+        for (line, reason) in [
+            (
+                format!("{long} = 訳語"),
+                "原語は256文字までです（今は257文字）。",
+            ),
+            (
+                format!("term = {long}"),
+                "訳語は256文字までです（今は257文字）。",
+            ),
+            (
+                "<|plamo:tag|>x = 訳語".to_owned(),
+                "原語に「<|plamo:」は使えません。",
+            ),
+            (
+                "term = <|plamo:item|>".to_owned(),
+                "訳語に「<|plamo:」は使えません。",
+            ),
+        ] {
+            assert_eq!(
+                parse(&format!("ok = 良い\n{line}")),
+                Err(format!("2行目: {reason}")),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_box_takes_the_same_sides_as_the_prompt_does() {
+        let (longest, long) = ("長".repeat(256), "長".repeat(257));
+        for (source, target) in [
+            ("term", "訳語"),
+            (longest.as_str(), longest.as_str()),
+            (long.as_str(), "訳語"),
+            ("term", long.as_str()),
+            ("<|plamo:tag|>", "訳語"),
+            ("term", "<|plamo:msg|>"),
+        ] {
+            let options = TranslationOptions {
+                glossary: entries(&[(source, target)]),
+                ..Default::default()
+            };
+            assert_eq!(
+                parse(&format!("{source} = {target}")).is_ok(),
+                engine::build_prompt("Hello.", &options).is_ok(),
+                "{} = {}",
+                source.chars().count(),
+                target.chars().count()
             );
         }
     }

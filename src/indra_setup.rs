@@ -125,14 +125,50 @@ pub(crate) fn installation_root(config: &IndraInstallation) -> Result<PathBuf> {
         .and_then(Path::parent)
         .context("Indraモデルの配置が不正です。")?;
     ensure!(
-        load(root)?.as_ref() == Some(config),
+        load_verified(root)?.as_ref() == Some(config),
         "Indraのインストール記録が選択された環境と一致しません。"
     );
     Ok(root.into())
 }
 
-/// Read only a fully committed installation. Never installs or downloads.
+/// Cheap start check of a fully committed installation: its record, the
+/// pinned files beside it and the size of every model and notice. No file is
+/// hashed here; `installation_root` hashes them when Indra starts. Never
+/// installs or downloads.
 pub fn load(root: &Path) -> Result<Option<IndraInstallation>> {
+    Ok(committed(root)?.map(|(_, manifest)| manifest.installation))
+}
+
+/// `load`, then every model, every notice and the Python executable hashed.
+fn load_verified(root: &Path) -> Result<Option<IndraInstallation>> {
+    let Some((root, manifest)) = committed(root)? else {
+        return Ok(None);
+    };
+    let data = metadata()?;
+    let cancel = AtomicBool::new(false);
+    for artifact in &data.models {
+        installer::verify_file(
+            &manifest.installation.model_path.join(&artifact.name),
+            artifact,
+            &cancel,
+        )?;
+    }
+    for artifact in &data.notices {
+        installer::verify_file(
+            &root.join("notices").join(&artifact.name),
+            artifact,
+            &cancel,
+        )?;
+    }
+    ensure!(
+        hash(&fs::read(&manifest.installation.python_path)?) == manifest.python_sha256,
+        "Indra専用Pythonの実行ファイルが変更されています。"
+    );
+    Ok(Some(manifest.installation))
+}
+
+/// What `load` checks, with the folder and the record the hashes are read against.
+fn committed(root: &Path) -> Result<Option<(PathBuf, Manifest)>> {
     if !root.exists() {
         return Ok(None);
     }
@@ -160,25 +196,23 @@ pub fn load(root: &Path) -> Result<Option<IndraInstallation>> {
     ] {
         verify_bytes(&path, bytes)?;
     }
-    let cancel = AtomicBool::new(false);
-    for artifact in &data.models {
-        installer::verify_file(
-            &manifest.installation.model_path.join(&artifact.name),
-            artifact,
-            &cancel,
-        )?;
-    }
-    for artifact in &data.notices {
-        installer::verify_file(
-            &root.join("notices").join(&artifact.name),
-            artifact,
-            &cancel,
-        )?;
+    for (folder, artifacts) in [
+        (&manifest.installation.model_path, &data.models),
+        (&root.join("notices"), &data.notices),
+    ] {
+        for artifact in artifacts {
+            let path = folder.join(&artifact.name);
+            installer::safe_file(&path)?;
+            ensure!(
+                fs::metadata(&path)?.len() == artifact.bytes,
+                "ファイルサイズが一致しません: {}",
+                artifact.name
+            );
+        }
     }
     installer::safe_file(&manifest.installation.python_path)?;
     ensure!(
-        fs::metadata(&manifest.installation.python_path)?.len() <= 64 * 1024 * 1024
-            && hash(&fs::read(&manifest.installation.python_path)?) == manifest.python_sha256,
+        fs::metadata(&manifest.installation.python_path)?.len() <= 64 * 1024 * 1024,
         "Indra専用Pythonの実行ファイルが変更されています。"
     );
     let cfg = String::from_utf8(read_small(&root.join(".venv/pyvenv.cfg"))?)?;
@@ -187,7 +221,7 @@ pub fn load(root: &Path) -> Result<Option<IndraInstallation>> {
             .contains("include-system-site-packages = true"),
         "Indra環境にシステムのパッケージが混在しています。"
     );
-    Ok(Some(manifest.installation))
+    Ok(Some((root, manifest)))
 }
 fn prepare_uv(
     root: &Path,
@@ -285,7 +319,7 @@ pub fn install(
     installer::safe_components(root, true)?;
     let root = fs::canonicalize(root)?;
     let _lock = installer::RootLock::acquire(&root)?;
-    if let Some(existing) = load(&root)
+    if let Some(existing) = load_verified(&root)
         .context("既存のIndra環境を保持しました。インストール記録を確認してください。")?
     {
         return Ok(existing);
@@ -415,7 +449,7 @@ pub fn install(
         })?,
     )?;
     ensure!(
-        load(&root)?.as_ref() == Some(&installation),
+        load_verified(&root)?.as_ref() == Some(&installation),
         "Indraのインストール完了記録を確認できませんでした。"
     );
     on_progress(Progress {
@@ -457,6 +491,84 @@ mod tests {
             );
             assert!(a.url.starts_with("https://files.pythonhosted.org/"));
         }
+    }
+    /// A folder as `install` leaves it, except that every model and notice has
+    /// only its recorded size, not its content.
+    fn prepared(root: &Path) -> IndraInstallation {
+        let root = fs::canonicalize(root).unwrap();
+        let data = metadata().unwrap();
+        let installation = expected(&root, &data);
+        let python = b"python".as_slice();
+        for (path, bytes) in [
+            (root.join("metadata.json"), METADATA),
+            (root.join("runtime/indra_server.py"), SERVER),
+            (root.join("runtime/setup-indra.ps1"), SETUP),
+            (root.join("runtime/indra-requirements.lock"), REQUIREMENTS),
+            (
+                root.join(".venv/pyvenv.cfg"),
+                b"home = C:\\Python\n".as_slice(),
+            ),
+            (installation.python_path.clone(), python),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        for (folder, artifacts) in [
+            (installation.model_path.clone(), &data.models),
+            (root.join("notices"), &data.notices),
+        ] {
+            fs::create_dir_all(&folder).unwrap();
+            for artifact in artifacts {
+                fs::File::create(folder.join(&artifact.name))
+                    .unwrap()
+                    .set_len(artifact.bytes)
+                    .unwrap();
+            }
+        }
+        let manifest = Manifest {
+            metadata_sha256: metadata_hash(),
+            setup_sha256: hash(SETUP),
+            server_sha256: hash(SERVER),
+            python_sha256: hash(python),
+            installation: installation.clone(),
+        };
+        fs::write(
+            root.join("installation.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        installation
+    }
+    #[test]
+    fn the_start_check_reads_sizes_and_only_starting_indra_reads_the_models() {
+        let root = std::env::temp_dir().join(format!("indra-start-check-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let installation = prepared(&root);
+        assert_eq!(
+            load(&root).unwrap(),
+            Some(installation.clone()),
+            "the start check accepts a prepared folder without hashing it"
+        );
+        let refused = installation_root(&installation).unwrap_err().to_string();
+        assert!(
+            refused.contains("SHA256が一致しません"),
+            "starting Indra still refuses a model with the right size and wrong content: {refused}"
+        );
+        let model = installation
+            .model_path
+            .join(&metadata().unwrap().models[0].name);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(model)
+            .unwrap()
+            .set_len(1)
+            .unwrap();
+        let refused = load(&root).unwrap_err().to_string();
+        assert!(
+            refused.contains("ファイルサイズが一致しません"),
+            "the start check refuses a model of the wrong size: {refused}"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn cancelled_setup_preserves_other_data() {

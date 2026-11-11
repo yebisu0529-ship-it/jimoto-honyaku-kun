@@ -1,8 +1,8 @@
 //! The mini view is the chat in a small window, with the main window's words
 //! and its one listen button. A reading or a text translation asked for there
 //! shows its result on a card in the chat's place.
-use super::home_tests::Window;
-use super::listen_tests::{INPUTS, armed, chat_without_speech};
+use super::home_tests::{Window, key, row};
+use super::listen_tests::{INPUTS, SCREEN, armed, chat_without_speech, drawn, hint, marked};
 use super::*;
 use crate::chat::testing::{
     box_of, cut_at_the_top, dots, filled, find_text, has_text_containing, line_cut_at_the_top,
@@ -56,33 +56,6 @@ fn mini() -> App {
     app
 }
 
-fn drawn(app: &mut App, (width, height): (f32, f32)) -> Window {
-    let mut window = Window::new(width, height);
-    window.settle(app);
-    window
-}
-
-/// A fixed message of the talk.
-fn row(id: u64, kind: &str, translation: &str) -> Row {
-    Row {
-        record: Record {
-            id,
-            start_ms: 0,
-            end_ms: 1000,
-            source: format!("Original {id}."),
-            translation: translation.into(),
-            standard_translation: None,
-            kind: kind.into(),
-            video_id: String::new(),
-            created_at: String::new(),
-            paragraph: None,
-        },
-        pending: false,
-        error: None,
-        generation: 0,
-    }
-}
-
 /// The same message while it is still being said.
 fn forming(mut row: Row) -> Row {
     row.record.paragraph = Some(ParagraphMeta {
@@ -114,16 +87,6 @@ fn in_view(window: &Window, app: &App, id: u64) -> bool {
         .any(|(text, rect, _)| *text == words && body.contains_rect(*rect))
 }
 
-fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    }
-}
-
 fn escape() -> egui::Event {
     key(egui::Key::Escape, egui::Modifiers::NONE)
 }
@@ -147,6 +110,12 @@ fn release_on(window: &mut Window, app: &mut App, label: &str) {
 fn open_menu(window: &mut Window, app: &mut App) {
     window.click(app, "⋯");
     window.settle(app);
+}
+
+/// Opens the 「⋯」 menu and, in it, the row of the other features.
+fn open_other_features(window: &mut Window, app: &mut App) {
+    open_menu(window, app);
+    window.click(app, OTHER_FEATURES);
 }
 
 /// Rests the pointer on `label` after it was used elsewhere. The hover text
@@ -233,19 +202,6 @@ fn status_line(window: &Window) -> (Vec<(String, Color32)>, bool) {
     (parts, lines[0].elided)
 }
 
-/// The words in the middle of the chat while it has no message.
-fn hint(app: &mut App, size: (f32, f32)) -> String {
-    let window = drawn(app, size);
-    let panel = app.live_chat.panel().expect("the chat is drawn");
-    let inside: Vec<_> = texts(&window.output)
-        .into_iter()
-        .filter(|(_, rect, _)| panel.contains_rect(*rect))
-        .map(|(text, _, _)| text)
-        .collect();
-    assert_eq!(inside.len(), 1, "{inside:?}");
-    inside.into_iter().next().unwrap()
-}
-
 /// A text translation in flight, as `translate` leaves it once its worker has
 /// started. The test answers for the worker with `answer`.
 fn in_flight(app: &mut App, id: u64) {
@@ -279,10 +235,8 @@ fn translation_begun(app: &mut App) -> u64 {
 fn done(id: u64, result: std::result::Result<&str, &str>) -> Event {
     Event::Done {
         id,
-        lane: Lane::Manual,
         result: result.map(Into::into).map_err(Into::into),
         elapsed: 0.1,
-        generation: 0,
     }
 }
 
@@ -352,7 +306,9 @@ fn the_button_listens_in_the_chosen_input_and_stops_every_input_as_in_the_main_w
         }
         (heard, stops, armed(&app), window.has("● 聞く"))
     };
-    for (label, mode) in INPUTS {
+    // This PC has no screen to read, so 聞く turns nothing on for the screen.
+    let screen = (SCREEN, LiveSourceMode::Screen, (false, false));
+    for (label, mode, expected) in INPUTS.into_iter().chain([screen]) {
         let small = pressed(mode, true);
         assert_eq!(
             small,
@@ -360,13 +316,6 @@ fn the_button_listens_in_the_chosen_input_and_stops_every_input_as_in_the_main_w
             "{label}: the button of the mini view and the button of the main window differ"
         );
         let ((heard, asks, status), stops, after, listens_again) = small;
-        let expected = match mode {
-            LiveSourceMode::Auto => (true, true),
-            LiveSourceMode::Captions => (true, false),
-            LiveSourceMode::Audio => (false, true),
-            // This PC has no screen to read, and says so.
-            LiveSourceMode::Screen => (false, false),
-        };
         assert_eq!(heard, expected, "{label}: 聞く");
         assert_eq!(
             asks, expected.1,
@@ -569,17 +518,26 @@ fn a_failure_to_save_a_service_error_and_a_failed_readout_are_on_the_status_line
     );
 
     let mut app = mini();
+    app.settings.readout_enabled = true;
     app.readout.error = READOUT.into();
     let window = drawn(&mut app, USUAL);
     assert_eq!(
         status_line(&window).0,
-        [stopped, (READOUT.to_owned(), theme::ERROR)],
+        [stopped.clone(), (READOUT.to_owned(), theme::ERROR)],
         "a failure to read aloud comes last"
+    );
+    app.settings.readout_enabled = false;
+    let window = drawn(&mut app, USUAL);
+    assert_eq!(
+        status_line(&window).0,
+        [stopped],
+        "a failure to read aloud is not said while readout is off"
     );
 
     let mut app = mini();
     app.journal_error = "Could not append translation history".into();
     app.service_error = SERVICE.into();
+    app.settings.readout_enabled = true;
     app.readout.error = READOUT.into();
     let mut window = drawn(&mut app, SMALLEST);
     let (parts, cut_short) = status_line(&window);
@@ -1209,6 +1167,78 @@ fn escape_lets_go_of_selected_text_before_it_leaves_the_mini_view() {
 }
 
 #[test]
+fn escape_closes_the_menu_before_it_lets_go_of_selected_text() {
+    let mut app = mini();
+    app.rows = talk(2);
+    let mut window = drawn(&mut app, USUAL);
+    let words = window.at("1番目の訳文です。");
+    let from = words.left_center() + egui::vec2(2.0, 0.0);
+    let to = words.right_center() - egui::vec2(2.0, 0.0);
+    window.draw(&mut app, vec![egui::Event::PointerMoved(from)]);
+    window.draw(
+        &mut app,
+        vec![press(from, egui::PointerButton::Primary, true)],
+    );
+    for step in 1..=4 {
+        let at = from + (to - from) * (step as f32 / 4.0);
+        window.draw(&mut app, vec![egui::Event::PointerMoved(at)]);
+    }
+    window.draw(
+        &mut app,
+        vec![press(to, egui::PointerButton::Primary, false)],
+    );
+    // The menu is drawn before the chat, so it closes on the Esc before the
+    // chat reads the key.
+    open_menu(&mut window, &mut app);
+    assert!(window.has("最前面") && !selected(&window.output).is_empty());
+
+    window.draw(&mut app, vec![escape()]);
+    window.settle(&mut app);
+    assert!(!window.has("最前面"), "Esc did not close the menu");
+    assert_eq!(
+        selected(&window.output),
+        ["1番目の訳文です。"],
+        "the Esc that closed the menu let go of the selection too"
+    );
+    window.draw(&mut app, vec![escape()]);
+    window.settle(&mut app);
+    assert!(selected(&window.output).is_empty());
+    assert!(app.window_mode.is_mini());
+}
+
+#[test]
+fn the_model_screen_has_no_way_into_the_mini_view_and_says_why() {
+    let row_ink = |ready: bool, tab: Tab| {
+        let mut app = chat_without_speech();
+        app.backend_ready = ready;
+        app.tab = tab;
+        let mut window = Window::new(MAIN.0, MAIN.1);
+        window.open_menu(&mut app);
+        window.ink("ミニ表示")
+    };
+    let faded = row_ink(false, Tab::Files);
+    assert_ne!(row_ink(true, Tab::Files), faded);
+    assert_eq!(
+        row_ink(true, Tab::Setup),
+        faded,
+        "the row is not faded on the model screen"
+    );
+
+    for (ready, words) in [
+        (true, "モデルの画面では、ミニ表示を使えません。"),
+        (false, "モデルの準備ができると、ミニ表示を使えます。"),
+    ] {
+        let mut app = chat_without_speech();
+        app.backend_ready = ready;
+        app.tab = Tab::Setup;
+        let mut window = drawn(&mut app, MAIN);
+        window.draw(&mut app, vec![mini_key()]);
+        assert!(!app.window_mode.is_mini());
+        assert_eq!(app.status, words);
+    }
+}
+
+#[test]
 fn the_text_screen_brings_its_result_into_the_mini_view_and_every_other_screen_opens_the_chat() {
     let enter = |tab: Tab, prepare: fn(&mut App)| {
         let mut app = chat_without_speech();
@@ -1606,18 +1636,15 @@ fn none_of_the_old_words_of_the_mini_view_is_drawn() {
             change(&mut app);
             let mut window = drawn(&mut app, size);
             check(&window, scene, size);
-            for behind in ["入力の切り替え", "表示"] {
+            for behind in ["入力の切り替え", "表示", OTHER_FEATURES] {
                 open_menu(&mut window, &mut app);
-                assert!(
-                    window.has("字幕ウィンドウ"),
-                    "{scene}: the menu is not open"
-                );
+                assert!(window.has("最前面"), "{scene}: the menu is not open");
                 check(&window, scene, size);
                 window.click(&mut app, behind);
                 check(&window, scene, size);
                 window.draw(&mut app, vec![escape()]);
                 window.settle(&mut app);
-                assert!(!window.has("字幕ウィンドウ"), "{scene}: the menu is open");
+                assert!(!window.has("最前面"), "{scene}: the menu is open");
             }
         }
     }
@@ -1632,24 +1659,11 @@ fn open_card(app: &mut App) {
     app.reset_screen_ocr();
 }
 
-fn two_screens() -> Vec<platform::Screen> {
-    [(1, "DISPLAY1"), (2, "DISPLAY2")]
-        .map(|(id, name)| platform::Screen {
-            id,
-            name: name.into(),
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-            scale: 1.0,
-        })
-        .into()
-}
-
-/// The 「⋯」 menu as it is drawn: its frame, and the words of its rows from
-/// the top without the arrow or the shortcut at the end of a row.
-fn menu(window: &Window) -> (egui::Rect, Vec<(String, egui::Rect)>) {
-    let frame = box_of(&window.output, "入力の切り替え", theme::SURFACE);
+/// The menu whose first row is `first` as it is drawn: its frame, and the
+/// words of its rows from the top without the arrow or the shortcut at the
+/// end of a row.
+fn menu(window: &Window, first: &str) -> (egui::Rect, Vec<(String, egui::Rect)>) {
+    let frame = box_of(&window.output, first, theme::SURFACE);
     let mut rows: Vec<_> = texts(&window.output)
         .into_iter()
         .filter(|(text, rect, _)| {
@@ -1659,19 +1673,6 @@ fn menu(window: &Window) -> (egui::Rect, Vec<(String, egui::Rect)>) {
         .collect();
     rows.sort_by(|a, b| a.1.center().y.total_cmp(&b.1.center().y));
     (frame, rows)
-}
-
-/// The inputs behind 入力の切り替え that are drawn as the chosen one.
-fn marked(window: &Window) -> Vec<&'static str> {
-    INPUTS
-        .iter()
-        .filter(|(label, _)| {
-            filled(&window.output, theme::ACCENT_SOFT)
-                .iter()
-                .any(|rect| rect.contains_rect(window.at(label)))
-        })
-        .map(|(label, _)| *label)
-        .collect()
 }
 
 /// Chooses `label` behind 入力の切り替え in the 「⋯」 menu, the way a pointer does.
@@ -1689,48 +1690,67 @@ fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window()
             app.rows = talk(2);
             app.screens = two_screens().into_iter().take(screens).collect();
             let mut window = drawn(&mut app, size);
-            assert!(!window.has("字幕ウィンドウ"), "the menu opens unasked");
+            assert!(!window.has("最前面"), "the menu opens unasked");
             assert!(
                 window.at("⋯").right() > size.0 - 30.0,
                 "⋯ is not at the right"
             );
             open_menu(&mut window, &mut app);
+            let inside = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+            let steps = |rows: &[(String, egui::Rect)], line_under: Option<&str>| {
+                for pair in rows.windows(2) {
+                    let step = pair[1].1.center().y - pair[0].1.center().y;
+                    if Some(pair[0].0.as_str()) == line_under {
+                        assert!(
+                            step > 33.0 && step < 48.0,
+                            "no separator under {}: {step}",
+                            pair[0].0
+                        );
+                    } else {
+                        assert!(
+                            (step - 32.0).abs() < 0.5,
+                            "{} is {step} under {}",
+                            pair[1].0,
+                            pair[0].0
+                        );
+                    }
+                }
+            };
 
-            let (frame, rows) = menu(&window);
+            let (frame, rows) = menu(&window, "入力の切り替え");
             assert!(
-                egui::Rect::from_min_size(egui::Pos2::ZERO, size.into()).contains_rect(frame),
+                inside.contains_rect(frame),
                 "the menu leaves the window with {screens} screens at {size:?}: {frame:?}"
             );
-            let mut expected = vec![
-                "入力の切り替え",
-                "表示",
-                "最前面",
-                "全文コピー",
-                "範囲翻訳",
-                "画面選択",
-                "字幕ウィンドウ",
-            ];
+            let words: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
+            assert_eq!(
+                words,
+                [
+                    "入力の切り替え",
+                    "表示",
+                    "最前面",
+                    "全文コピー",
+                    OTHER_FEATURES
+                ],
+                "{screens} screens at {size:?}"
+            );
+            steps(&rows, Some("全文コピー"));
+
+            // Behind the last row: reading a range, the screen to read, and
+            // the subtitle window.
+            window.click(&mut app, OTHER_FEATURES);
+            let (frame, rows) = menu(&window, "範囲翻訳");
+            assert!(
+                inside.contains_rect(frame),
+                "{OTHER_FEATURES} leaves the window with {screens} screens at {size:?}: {frame:?}"
+            );
+            let mut expected = vec!["範囲翻訳", "画面選択", "字幕ウィンドウ"];
             if screens == 1 {
                 expected.retain(|row| *row != "画面選択");
             }
             let words: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
             assert_eq!(words, expected, "{screens} screens at {size:?}");
-            for pair in rows.windows(2) {
-                let step = pair[1].1.center().y - pair[0].1.center().y;
-                if pair[0].0 == "全文コピー" {
-                    assert!(
-                        step > 33.0 && step < 48.0,
-                        "no separator under 全文コピー: {step}"
-                    );
-                } else {
-                    assert!(
-                        (step - 32.0).abs() < 0.5,
-                        "{} is {step} under {}",
-                        pair[1].0,
-                        pair[0].0
-                    );
-                }
-            }
+            steps(&rows, None);
             let (range, shortcut) = (window.at("範囲翻訳"), window.at("Ctrl + Alt + T"));
             assert!(
                 shortcut.left() > range.right()
@@ -1761,11 +1781,11 @@ fn the_menu_button_is_called_other_and_escape_closes_the_menu_before_the_mini_vi
         "a screen reader is not told the name of the button"
     );
     window.settle(&mut app);
-    assert!(window.has("字幕ウィンドウ"));
+    assert!(window.has("最前面"));
 
     window.draw(&mut app, vec![escape()]);
     window.settle(&mut app);
-    assert!(!window.has("字幕ウィンドウ"), "Esc did not close the menu");
+    assert!(!window.has("最前面"), "Esc did not close the menu");
     assert!(app.window_mode.is_mini(), "Esc left the mini view as well");
     window.draw(&mut app, vec![escape()]);
     assert!(
@@ -1785,7 +1805,7 @@ fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
         let inside = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
         let tops: Vec<f32> = INPUTS
             .iter()
-            .map(|(label, _)| {
+            .map(|(label, _, _)| {
                 let words = window.at(label);
                 assert!(inside.contains_rect(words), "{label} leaves the window");
                 words.top()
@@ -1794,6 +1814,10 @@ fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
         assert!(
             tops.windows(2).all(|pair| pair[0] < pair[1]),
             "the inputs are out of order at {size:?}: {tops:?}"
+        );
+        assert!(
+            !window.has(SCREEN),
+            "{SCREEN} is listed while it is not the input"
         );
         assert_eq!(marked(&window), ["自動（字幕を優先）"], "the default");
 
@@ -1815,7 +1839,7 @@ fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
 #[test]
 fn an_input_chosen_while_stopped_waits_for_the_button_and_one_chosen_while_listening_is_on_at_once()
 {
-    for (label, mode) in INPUTS {
+    for (label, mode, on) in INPUTS {
         let mut app = mini();
         let mut window = drawn(&mut app, USUAL);
         choose(&mut window, &mut app, label);
@@ -1825,16 +1849,10 @@ fn an_input_chosen_while_stopped_waits_for_the_button_and_one_chosen_while_liste
         assert!(app.status.is_empty(), "{label}: {}", app.status);
 
         window.click(&mut app, "● 聞く");
-        let expected = match mode {
-            LiveSourceMode::Auto => (true, true),
-            LiveSourceMode::Captions => (true, false),
-            LiveSourceMode::Audio => (false, true),
-            LiveSourceMode::Screen => (false, false),
-        };
-        assert_eq!(armed(&app), expected, "{label}: 聞く");
+        assert_eq!(armed(&app), on, "{label}: 聞く");
     }
 
-    for (label, mode) in INPUTS {
+    for (label, mode, on) in INPUTS {
         let mut app = mini();
         let mut window = drawn(&mut app, USUAL);
         window.click(&mut app, "● 聞く");
@@ -1842,20 +1860,9 @@ fn an_input_chosen_while_stopped_waits_for_the_button_and_one_chosen_while_liste
         let generation = app.caption_generation;
         choose(&mut window, &mut app, label);
         assert!(app.listen_input == mode);
-        match mode {
-            LiveSourceMode::Auto => {
-                assert_eq!(armed(&app), (true, true), "{label}");
-                assert_eq!(app.caption_generation, generation, "{label} restarted");
-            }
-            LiveSourceMode::Captions => assert_eq!(armed(&app), (true, false), "{label}"),
-            LiveSourceMode::Audio => assert_eq!(armed(&app), (false, true), "{label}"),
-            LiveSourceMode::Screen => {
-                assert_eq!(
-                    app.status, NO_SCREEN,
-                    "the range to read is asked for first"
-                );
-                assert_eq!(armed(&app), (true, true), "what runs goes on until then");
-            }
+        assert_eq!(armed(&app), on, "{label}");
+        if mode == LiveSourceMode::Auto {
+            assert_eq!(app.caption_generation, generation, "{label} restarted");
         }
     }
 }
@@ -1956,7 +1963,7 @@ fn reading_a_range_from_the_menu_stays_in_the_mini_view_and_reports_on_the_card(
         let mut app = mini();
         app.backend_ready = ready;
         let mut window = drawn(&mut app, USUAL);
-        open_menu(&mut window, &mut app);
+        open_other_features(&mut window, &mut app);
         window.ink("範囲翻訳")
     };
     assert_ne!(
@@ -1969,7 +1976,7 @@ fn reading_a_range_from_the_menu_stays_in_the_mini_view_and_reports_on_the_card(
     app.tab = Tab::Files;
     app.rows = talk(2);
     let mut window = drawn(&mut app, USUAL);
-    open_menu(&mut window, &mut app);
+    open_other_features(&mut window, &mut app);
     window.click(&mut app, "範囲翻訳");
     // This PC has no screen to read, and says so.
     assert_eq!(app.status, NO_SCREEN);
@@ -1986,13 +1993,13 @@ fn the_screen_to_read_is_chosen_in_the_menu_and_the_subtitle_window_opens_from_i
     let mut app = mini();
     app.screens = two_screens();
     let mut window = drawn(&mut app, USUAL);
-    open_menu(&mut window, &mut app);
+    open_other_features(&mut window, &mut app);
     window.click(&mut app, "画面選択");
     window.click(&mut app, "2: DISPLAY2");
     assert_eq!(app.screen_index, 1);
 
     assert!(!app.subtitle_window.open);
-    open_menu(&mut window, &mut app);
+    open_other_features(&mut window, &mut app);
     window.click(&mut app, "字幕ウィンドウ");
     assert!(app.subtitle_window.open);
     assert!(app.window_mode.is_mini());

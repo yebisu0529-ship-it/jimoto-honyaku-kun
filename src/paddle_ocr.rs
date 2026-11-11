@@ -4,6 +4,7 @@ use crate::{
     paddle_setup::{self, PaddleInstallation},
 };
 use anyhow::{Context, Result, ensure};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ExtendedColorType, ImageEncoder, RgbaImage, codecs::png::PngEncoder};
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
@@ -154,7 +155,7 @@ impl PaddleEngine {
         let png = encode_png(image)?;
         self.control.ensure_listener(PORT)?;
         let body = json!({"model":MODEL,"messages":[{"role":"user","content":[
-            {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}",base64(&png))}},
+            {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}",STANDARD.encode(&png))}},
             {"type":"text","text":"OCR:"}]}],"temperature":0,"max_tokens":4096,"stream":false});
         let response = self
             .client
@@ -254,47 +255,13 @@ fn encode_png(image: &RgbaImage) -> Result<Vec<u8>> {
         .context("PaddleOCRにはPNG形式で8MiB以内になる画像を指定してください。")?;
     Ok(bytes.0)
 }
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for part in bytes.chunks(3) {
-        let a = part[0];
-        let b = part.get(1).copied().unwrap_or(0);
-        let c = part.get(2).copied().unwrap_or(0);
-        out.push(ALPHABET[(a >> 2) as usize] as char);
-        out.push(ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize] as char);
-        out.push(if part.len() > 1 {
-            ALPHABET[(((b & 15) << 2) | (c >> 6)) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if part.len() > 2 {
-            ALPHABET[(c & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
     #[test]
-    fn image_encoding_is_bounded_and_base64_preserves_binary_png() {
-        for (raw, encoded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64(raw.as_bytes()), encoded);
-        }
-        assert_eq!(base64(&[0, 255, 128]), "AP+A");
+    fn image_encoding_is_bounded_and_keeps_every_pixel() {
         assert!(encode_png(&RgbaImage::new(0, 0)).is_err());
         assert!(encode_png(&RgbaImage::new(16_001, 1000)).is_err());
         let image = RgbaImage::from_pixel(2, 2, image::Rgba([20, 40, 60, 255]));

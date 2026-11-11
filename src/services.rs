@@ -14,11 +14,23 @@ pub(super) fn kill_owned_child(child: &mut Child) {
         kill.args(["/PID", &child.id().to_string(), "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        command_hidden(&mut kill);
+        platform::hide_console(&mut kill);
         let _ = kill.status();
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+/// The context llama-server is given for a model: less for the smaller sizes.
+/// The size is read from the file name, since a folder above it can be named anything.
+fn context_size(model: &Path) -> &'static str {
+    let name = model.file_name().unwrap_or_default().to_string_lossy();
+    if name.contains("0.8b") {
+        "8192"
+    } else if name.contains("2b-") {
+        "16384"
+    } else {
+        "32768"
+    }
 }
 pub(super) struct AsrStatus {
     backend: String,
@@ -218,7 +230,7 @@ impl App {
         }
         if self.audio_start_requested && self.asr_ready && self.backend_ready && !self.audio_enabled
         {
-            self.toggle_audio();
+            self.start_audio();
         }
     }
     pub(super) fn poll_services(&mut self) {
@@ -246,22 +258,17 @@ impl App {
             return;
         }
         if let Some(pid) = self.backend_pid.take()
-            && let Some(child) = self.children.iter_mut().find(|c| c.id() == pid)
+            && let Some(index) = self.children.iter().position(|c| c.id() == pid)
         {
-            kill_owned_child(child);
+            let mut child = self.children.swap_remove(index);
+            kill_owned_child(&mut child);
         }
         let alias = Path::new(&self.settings.model)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("plamo-3-translate")
             .to_owned();
-        let context = if self.settings.model.contains("0.8b") {
-            "8192"
-        } else if self.settings.model.contains("2b-") {
-            "16384"
-        } else {
-            "32768"
-        };
+        let context = context_size(Path::new(&self.settings.model));
         let mut cmd = Command::new(&self.settings.llama_server);
         cmd.current_dir(app_root()).args([
             "-m",
@@ -365,7 +372,7 @@ impl App {
             .append(true)
             .open(dir.join(format!("{name}.log")))?;
         cmd.stdout(log.try_clone()?).stderr(log);
-        command_hidden(&mut cmd);
+        platform::hide_console(&mut cmd);
         let child = cmd.spawn()?;
         if name == "plamo-server" {
             self.backend_pid = Some(child.id());
@@ -375,6 +382,34 @@ impl App {
         }
         self.children.push(child);
         Ok(())
+    }
+    /// Forgets the processes that have ended and reports one that ended with an
+    /// error. A process the app stops itself leaves `children` before it is
+    /// killed, so its exit is never read as a failure.
+    pub(super) fn reap_children(&mut self) {
+        self.children.retain_mut(|child| match child.try_wait() {
+            Ok(Some(status)) => {
+                if self.backend_pid == Some(child.id()) {
+                    self.backend_pid = None;
+                    self.backend_loading = false;
+                    self.backend_ready = false;
+                    self.backend_started_at = None;
+                }
+                if self.asr_pid == Some(child.id()) {
+                    self.asr_pid = None;
+                    self.asr_started_at = None;
+                    self.asr_ready = false;
+                    self.audio_start_requested = false;
+                }
+                if !status.success() {
+                    self.status =
+                        "モデルの起動に失敗しました。保存先のlogsを確認してください。".into();
+                    self.service_error = self.status.clone();
+                }
+                false
+            }
+            _ => true,
+        });
     }
     pub(super) fn audio_environment_ready(&self) -> bool {
         if self.settings.asr_backend == "nemotron" {
@@ -489,6 +524,9 @@ impl App {
         self.audio_installing = false;
         self.audio_progress = None;
         if backend != self.settings.asr_backend {
+            if !self.wants(Step::Speech) {
+                self.finish_step(Step::Speech);
+            }
             return;
         }
         let cancelled = self.audio_cancel.load(Ordering::Relaxed);
@@ -502,6 +540,8 @@ impl App {
                 self.stop_step(Step::Speech, cancelled, error);
             }
             Err(error) => {
+                // What the download fetched is kept, so the remainder is measured again.
+                self.setup.plan = None;
                 self.service_error = error;
                 self.audio_start_requested = false;
             }
@@ -559,7 +599,7 @@ impl App {
         thread::spawn(move || {
             let selected_backend = backend.clone();
             let result=(||->Result<()>{fs::create_dir_all(root.join("logs"))?;let log=fs::OpenOptions::new().create(true).append(true).open(root.join("logs/audio-setup.log"))?;
-                let mut cmd=Command::new("powershell.exe");cmd.args(["-NoProfile","-ExecutionPolicy","Bypass","-File"]).arg(script).arg("-InstallRoot").arg(root).arg("-Backend").arg(backend).arg("-Device").arg(device).stdout(log.try_clone()?).stderr(log);command_hidden(&mut cmd);let mut child=cmd.spawn()?;
+                let mut cmd=Command::new("powershell.exe");cmd.args(["-NoProfile","-ExecutionPolicy","Bypass","-File"]).arg(script).arg("-InstallRoot").arg(root).arg("-Backend").arg(backend).arg("-Device").arg(device).stdout(log.try_clone()?).stderr(log);platform::hide_console(&mut cmd);let mut child=cmd.spawn()?;
                 loop {
                     if cancel.load(Ordering::Relaxed) {
                         kill_owned_child(&mut child);
@@ -711,6 +751,44 @@ mod tests {
         assert!(app.tab == Tab::Setup);
         assert!(!app.audio_confirmation);
         assert_eq!(app.status, "先に翻訳モデルを準備してください。");
+    }
+    #[test]
+    fn a_server_stopped_for_a_model_change_is_not_reported_as_a_failed_start() {
+        let folder = tempfile::tempdir().unwrap();
+        // Stands in for llama-server: it ignores its arguments and runs until stopped.
+        let server = folder.path().join("server.cmd");
+        fs::write(&server, "@ping -n 60 127.0.0.1 >nul\r\n").unwrap();
+        let model = folder.path().join("plamo-3-translate-2b-Q4_K_M.gguf");
+        fs::write(&model, b"").unwrap();
+        let mut app = App::inert();
+        app.settings.llama_server = server.to_string_lossy().into();
+        app.settings.model = model.to_string_lossy().into();
+        app.start_translation_server();
+        let first = app.backend_pid.expect("the first server runs");
+        app.backend_loading = false;
+        app.start_translation_server();
+        app.reap_children();
+        assert_eq!(app.service_error, "");
+        assert_eq!(app.status, "");
+        let running: Vec<u32> = app.children.iter().map(Child::id).collect();
+        assert_eq!(
+            running,
+            Vec::from_iter(app.backend_pid),
+            "only the new server"
+        );
+        assert_ne!(app.backend_pid, Some(first));
+    }
+    #[test]
+    fn the_context_size_comes_from_the_model_file_name_and_not_its_folder() {
+        for (model, context) in [
+            (r"D:\models\plamo-3-translate-0.8b-Q4_K_M.gguf", "8192"),
+            (r"D:\models\plamo-3-translate-2b-Q4_K_M.gguf", "16384"),
+            (r"D:\models\plamo-3-translate-8b-Q4_K_M.gguf", "32768"),
+            (r"D:\ai-2b-tests\plamo-3-translate-8b-Q4_K_M.gguf", "32768"),
+            (r"D:\0.8b\plamo-3-translate-31b-Q4_K_M.gguf", "32768"),
+        ] {
+            assert_eq!(context_size(Path::new(model)), context, "{model}");
+        }
     }
     #[test]
     fn a_failed_preparation_outside_the_chain_still_reports_in_its_own_dialog() {

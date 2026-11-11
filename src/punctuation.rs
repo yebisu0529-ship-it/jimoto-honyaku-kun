@@ -152,9 +152,7 @@ fn validate_input(text: &str) -> Result<()> {
         "Punctuation input contains a NUL character"
     );
     ensure!(
-        !text
-            .chars()
-            .any(|c| matches!(c as u32,0x2e80..=0x9fff|0xac00..=0xd7af|0x20000..=0x323af)),
+        !text.chars().any(crate::live_text::cjk),
         "Automatic punctuation is enabled for English input only"
     );
     Ok(())
@@ -456,6 +454,13 @@ mod tests {
         .unwrap();
         assert!(result.boundaries.is_empty());
         assert!(validate_input("日本語を自動で処理しない").is_err());
+    }
+    #[test]
+    fn text_with_a_compatibility_ideograph_is_not_taken_for_english() {
+        assert!(
+            validate_input("The \u{FA11} family opened a library").is_err(),
+            "U+FA11 is a CJK ideograph to the live text as well"
+        );
     }
 
     #[cfg(windows)]

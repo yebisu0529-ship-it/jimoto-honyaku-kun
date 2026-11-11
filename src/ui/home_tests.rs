@@ -1,6 +1,6 @@
 //! The chat is the home screen and every other screen is behind one menu.
 use super::*;
-use crate::chat::testing::{find_text, press, texts};
+use crate::chat::testing::{find_text, press, texts, wheel};
 use plamo_translate::hardware::Hardware;
 
 /// One window whose egui state lasts from frame to frame, so a menu that has
@@ -109,6 +109,12 @@ impl Window {
         self.click(app, "⋯ その他");
     }
 
+    /// Opens the menu and, in it, the row of the other features.
+    pub(super) fn open_other_features(&mut self, app: &mut App) {
+        self.open_menu(app);
+        self.click(app, OTHER_FEATURES);
+    }
+
     /// Rests the pointer over the text, long enough for its hover text.
     pub(super) fn hover(&mut self, app: &mut App, label: &str) {
         self.context
@@ -140,6 +146,50 @@ pub(super) fn chat() -> App {
     app.setup.hardware = Some(hardware());
     app
 }
+
+/// A fixed message of the talk.
+pub(super) fn row(id: u64, kind: &str, translation: &str) -> Row {
+    Row {
+        record: Record {
+            id,
+            start_ms: 0,
+            end_ms: 1000,
+            source: format!("Original {id}."),
+            translation: translation.into(),
+            standard_translation: None,
+            kind: kind.into(),
+            video_id: String::new(),
+            created_at: String::new(),
+            paragraph: None,
+        },
+        pending: false,
+        error: None,
+        generation: 0,
+    }
+}
+
+pub(super) fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// The rows behind その他の機能 in the menu of the main window, in order.
+const OTHER: [&str; 6] = [
+    "文章を翻訳",
+    "範囲翻訳",
+    "画面選択",
+    "画面の文字を翻訳",
+    FILE,
+    "字幕ウィンドウ",
+];
+
+const FILE: &str = "ファイルを翻訳";
+const FILE_HINT: &str = "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。";
 
 const SCREENS: [(Tab, &str); 5] = [
     (Tab::Text, "文章を翻訳"),
@@ -208,13 +258,12 @@ fn the_app_opens_on_the_chat_with_its_name_one_menu_and_the_listen_button() {
 }
 
 #[test]
-fn a_missing_model_opens_the_model_screen_with_a_way_back() {
+fn the_way_back_to_the_chat_works_without_a_model() {
     let mut app = chat();
     app.backend_ready = false;
     app.open_setup();
     let mut window = Window::new(860.0, 620.0);
     window.settle(&mut app);
-    assert!(app.tab == Tab::Setup);
     for shown in [
         "このPCに合うモデルを準備",
         "← チャットに戻る",
@@ -226,73 +275,146 @@ fn a_missing_model_opens_the_model_screen_with_a_way_back() {
     assert!(app.tab == Tab::Live);
 }
 
-#[test]
-fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
-    let mut app = chat();
-    let mut window = Window::new(860.0, 620.0);
-    window.open_menu(&mut app);
-    let items = [
-        "字幕ウィンドウ",
-        "ミニ表示",
-        "文章を翻訳",
-        "範囲翻訳",
-        "画面の文字を翻訳",
-        "ファイルを翻訳",
-        "履歴",
-        "モデル",
-        "YouTube字幕の接続",
-        "設定",
-        "状態の詳細",
-    ];
-    let tops: Vec<f32> = items.iter().map(|item| window.at(item).top()).collect();
-    assert!(
-        tops.windows(2).all(|pair| pair[0] < pair[1]),
-        "the items are out of order: {tops:?}"
-    );
-    for (item, shortcut) in [
-        ("ミニ表示", "Ctrl + Shift + M"),
-        ("文章を翻訳", "Ctrl + 1"),
-        ("範囲翻訳", "Ctrl + Alt + T"),
-        ("履歴", "Ctrl + 3"),
-        ("設定", "Ctrl + 4"),
-    ] {
+/// Each shortcut is drawn at the end of its row.
+fn assert_shortcuts(window: &Window, rows: &[(&str, &str)]) {
+    for (item, shortcut) in rows {
         let (row, hint) = (window.at(item), window.at(shortcut));
         assert!(
             hint.left() > row.right() && (hint.center().y - row.center().y).abs() < 2.0,
             "{shortcut} is not at the end of the {item} row"
         );
     }
-    for (item, shortcut) in [
-        ("字幕ウィンドウ", "Ctrl"),
-        ("画面の文字を翻訳", "Ctrl"),
-        ("ファイルを翻訳", "Ctrl"),
-        ("モデル", "Ctrl"),
-        ("YouTube字幕の接続", "Ctrl"),
-        ("状態の詳細", "Ctrl"),
-    ] {
+}
+
+/// No shortcut is drawn on any of the rows.
+fn assert_no_shortcut(window: &Window, rows: &[&str]) {
+    for item in rows {
         let row = window.at(item);
         assert!(
             !texts(&window.output).iter().any(|(text, rect, _)| {
-                text.starts_with(shortcut) && (rect.center().y - row.center().y).abs() < 2.0
+                text.starts_with("Ctrl") && (rect.center().y - row.center().y).abs() < 2.0
             }),
             "{item} has no shortcut to show"
         );
     }
+}
+
+#[test]
+fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
+    let mut app = chat();
+    let mut window = Window::new(860.0, 620.0);
+    window.open_menu(&mut app);
+    let items = [
+        "ミニ表示",
+        "履歴",
+        "YouTube字幕の接続",
+        "モデル",
+        "設定",
+        "状態の詳細",
+        "入力の切り替え",
+        "書き出し",
+        "表示",
+        OTHER_FEATURES,
+    ];
+    let tops: Vec<f32> = items.iter().map(|item| window.at(item).top()).collect();
+    assert!(
+        tops.windows(2).all(|pair| pair[0] < pair[1]),
+        "the items are out of order: {tops:?}"
+    );
+    assert_shortcuts(
+        &window,
+        &[
+            ("ミニ表示", "Ctrl + Shift + M"),
+            ("履歴", "Ctrl + 3"),
+            ("設定", "Ctrl + 4"),
+        ],
+    );
+    assert_no_shortcut(
+        &window,
+        &[
+            "YouTube字幕の接続",
+            "モデル",
+            "状態の詳細",
+            "書き出し",
+            OTHER_FEATURES,
+        ],
+    );
     assert!(
         !window.has("新しく始める"),
         "新しく始める is still in the menu"
     );
-    let last = window.at("状態の詳細").bottom();
-    for item in ["書き出し", "入力の切り替え", "表示"] {
+    let step = |from: &str, to: &str| window.at(to).top() - window.at(from).top();
+    assert!(
+        step("表示", OTHER_FEATURES) > step("書き出し", "表示") + 4.0,
+        "no line above {OTHER_FEATURES}"
+    );
+    assert!(
+        window.at(OTHER_FEATURES).bottom() < 620.0 - theme::CONTROL_H,
+        "the menu runs into the status row at the smallest window"
+    );
+
+    window.hover(&mut app, "ミニ表示");
+    window.settle(&mut app);
+    assert!(
+        window.has("同じチャットを、小さな窓で読みます。"),
+        "the hover text of ミニ表示"
+    );
+}
+
+#[test]
+fn the_menu_has_none_of_the_other_features_until_their_row_is_opened() {
+    for tab in [Tab::Live, Tab::Files] {
+        let mut app = chat();
+        app.tab = tab;
+        app.screens = two_screens();
+        let mut window = Window::new(860.0, 620.0);
+        window.open_menu(&mut app);
+        for other in OTHER {
+            assert!(!window.has(other), "{other} is at the top of the menu");
+        }
+        window.click(&mut app, OTHER_FEATURES);
+        for other in OTHER {
+            assert!(window.has(other), "{other} is not behind {OTHER_FEATURES}");
+        }
+    }
+}
+
+#[test]
+fn the_other_features_are_behind_one_row_in_order_with_their_shortcuts() {
+    let mut app = chat();
+    app.screens = two_screens();
+    let mut window = Window::new(860.0, 620.0);
+    window.open_other_features(&mut app);
+    let tops: Vec<f32> = OTHER.iter().map(|item| window.at(item).top()).collect();
+    assert!(
+        tops.windows(2).all(|pair| pair[0] < pair[1]),
+        "the other features are out of order: {tops:?}"
+    );
+    assert_shortcuts(
+        &window,
+        &[("文章を翻訳", "Ctrl + 1"), ("範囲翻訳", "Ctrl + Alt + T")],
+    );
+    assert_no_shortcut(
+        &window,
+        &["画面選択", "画面の文字を翻訳", FILE, "字幕ウィンドウ"],
+    );
+    for item in OTHER {
+        let row = window.at(item);
         assert!(
-            window.at(item).top() > last,
-            "{item} is not below the screens"
+            row.left() >= 0.0 && row.right() <= 860.0,
+            "{item} leaves the window"
         );
     }
     assert!(
-        window.at("表示").bottom() < 620.0 - theme::CONTROL_H,
-        "the menu runs into the status row at the smallest window"
+        window.at("字幕ウィンドウ").bottom() < 620.0 - theme::CONTROL_H,
+        "the rows run into the status row at the smallest window"
     );
+
+    // A click on ファイルを翻訳 asks the system for a file, which a test cannot
+    // answer. Its row still says what the button on the 履歴 screen said.
+    window.hover(&mut app, FILE);
+    window.settle(&mut app);
+    assert!(window.has(FILE_HINT), "the hover text of {FILE}");
 }
 
 #[test]
@@ -301,7 +423,7 @@ fn the_menu_on_another_screen_has_the_screens_and_not_what_belongs_to_the_chat()
     app.tab = Tab::Files;
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
-    assert!(window.has("設定") && window.has("字幕ウィンドウ"));
+    assert!(window.has("設定") && window.has(OTHER_FEATURES));
     for chat_only in ["入力の切り替え", "表示"] {
         assert!(
             !window.has(chat_only),
@@ -315,7 +437,11 @@ fn each_screen_in_the_menu_opens_and_the_back_button_returns_to_the_chat() {
     for (screen, item) in SCREENS {
         let mut app = chat();
         let mut window = Window::new(860.0, 620.0);
-        window.open_menu(&mut app);
+        if screen == Tab::Text {
+            window.open_other_features(&mut app);
+        } else {
+            window.open_menu(&mut app);
+        }
         window.click(&mut app, item);
         assert!(app.tab == screen, "{item} did not open its screen");
         assert!(
@@ -341,7 +467,7 @@ fn each_screen_in_the_menu_opens_and_the_back_button_returns_to_the_chat() {
 fn the_other_items_do_what_their_buttons_did() {
     let mut app = chat();
     let mut window = Window::new(860.0, 620.0);
-    window.open_menu(&mut app);
+    window.open_other_features(&mut app);
     window.click(&mut app, "字幕ウィンドウ");
     assert!(app.subtitle_window.open);
 
@@ -356,7 +482,7 @@ fn the_other_items_do_what_their_buttons_did() {
     let mut app = chat();
     app.status = "before".into();
     let mut window = Window::new(860.0, 620.0);
-    window.open_menu(&mut app);
+    window.open_other_features(&mut app);
     window.click(&mut app, "範囲翻訳");
     assert!(app.tab == Tab::Text);
     assert_eq!(app.status, "取得できる画面がありません。");
@@ -365,7 +491,7 @@ fn the_other_items_do_what_their_buttons_did() {
     let mut app = chat();
     app.status = "before".into();
     let mut window = Window::new(860.0, 620.0);
-    window.open_menu(&mut app);
+    window.open_other_features(&mut app);
     window.click(&mut app, "画面の文字を翻訳");
     assert!(app.tab == Tab::Live);
     assert_eq!(app.status, "取得できる画面がありません。");
@@ -378,21 +504,22 @@ fn items_that_need_the_model_are_faded_until_it_is_ready_and_the_others_never_ar
         let mut app = chat();
         app.backend_ready = ready;
         let mut window = Window::new(860.0, 620.0);
-        window.open_menu(&mut app);
+        window.open_other_features(&mut app);
         [
-            "字幕ウィンドウ",
             "ミニ表示",
-            "文章を翻訳",
-            "範囲翻訳",
-            "画面の文字を翻訳",
-            "ファイルを翻訳",
             "履歴",
-            "モデル",
             "YouTube字幕の接続",
+            "モデル",
             "設定",
             "状態の詳細",
             "入力の切り替え",
             "表示",
+            OTHER_FEATURES,
+            "文章を翻訳",
+            "範囲翻訳",
+            "画面の文字を翻訳",
+            "ファイルを翻訳",
+            "字幕ウィンドウ",
         ]
         .map(|item| (item, window.ink(item)))
     };
@@ -408,25 +535,16 @@ fn items_that_need_the_model_are_faded_until_it_is_ready_and_the_others_never_ar
 
 #[test]
 fn the_screen_to_read_is_chosen_in_the_menu_when_there_are_several() {
-    let screen = |id: u32, name: &str| platform::Screen {
-        id,
-        name: name.into(),
-        x: 0,
-        y: 0,
-        width: 1920,
-        height: 1080,
-        scale: 1.0,
-    };
     let mut app = chat();
-    app.screens = vec![screen(1, "DISPLAY1")];
+    app.screens = two_screens().into_iter().take(1).collect();
     let mut window = Window::new(860.0, 620.0);
-    window.open_menu(&mut app);
+    window.open_other_features(&mut app);
     assert!(
         !window.has("画面選択"),
         "one screen leaves nothing to choose"
     );
 
-    app.screens.push(screen(2, "DISPLAY2"));
+    app.screens = two_screens();
     window.settle(&mut app);
     window.click(&mut app, "画面選択");
     window.click(&mut app, "2: DISPLAY2");
@@ -599,32 +717,24 @@ fn the_credit_stays_at_the_bottom_right_of_every_screen() {
 #[test]
 fn ctrl_number_still_opens_its_screen_from_every_screen() {
     for (from, _, _) in PAGE_KEYS {
-        for (screen, _, key) in PAGE_KEYS {
+        for (screen, _, pressed) in PAGE_KEYS {
             let mut app = chat();
             app.tab = from;
             let mut window = Window::new(860.0, 620.0);
-            window.draw(
-                &mut app,
-                vec![egui::Event::Key {
-                    key,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::CTRL,
-                }],
-            );
+            window.draw(&mut app, vec![key(pressed, egui::Modifiers::CTRL)]);
             assert!(
                 app.tab == screen,
                 "Ctrl+{} did not open its screen",
-                key.name()
+                pressed.name()
             );
         }
     }
 }
 
 /// What the status row painted before the chat took one state in its place:
-/// the name of a model and, unless it is ready, its state as one text.
-const CHIPS: [&str; 4] = ["翻訳", "文字認識", "音声認識未準備", "読み上げ未準備"];
+/// the name of a model and, unless it is ready, its state as one text. The
+/// models of the live translation come first.
+const CHIPS: [&str; 4] = ["翻訳", "音声認識未準備", "文字認識", "読み上げ未準備"];
 
 const LOAD_FAILED: &str =
     "モデルを読み込めませんでした。「モデルの準備」で小さいモデルやCPU実行を試してください。";
@@ -722,23 +832,73 @@ fn the_state_belongs_to_the_chat_and_the_other_screens_leave_the_row_to_the_mess
 }
 
 #[test]
-fn the_history_screen_says_what_its_language_row_is_for() {
+fn the_history_screen_finds_and_exports_the_talk_and_files_are_translated_on_the_text_screen() {
     let mut app = chat();
     app.tab = Tab::Files;
+    app.file_busy = true;
     let mut window = Window::new(860.0, 620.0);
     window.settle(&mut app);
-    let label = window.at("ファイル翻訳の言語");
-    let source = window.at("自動判定");
-    assert!(label.right() < source.left(), "{label:?} {source:?}");
-    assert!(
-        (label.center().y - source.center().y).abs() < 3.0,
-        "{label:?} {source:?}"
-    );
+    for shown in ["これまでの訳文を探せます。", "原文・訳文を検索", "書き出し"]
+    {
+        assert!(window.has(shown), "{shown} is not on the 履歴 screen");
+    }
+    for gone in [
+        "ファイルを選んで翻訳",
+        FILE,
+        "ファイル翻訳の言語",
+        "自動判定",
+        "ファイルを翻訳しています",
+        "中止",
+    ] {
+        assert!(!window.has(gone), "{gone} is still on the 履歴 screen");
+    }
 
-    // On the 文章 screen the same row is beside its own 翻訳する button.
+    // The 文章 screen has the button beside 画像から翻訳, its languages beside
+    // 翻訳する, and the file that is being translated.
     app.tab = Tab::Text;
     window.settle(&mut app);
-    assert!(window.has("自動判定") && !window.has("ファイル翻訳の言語"));
+    assert!(window.has("貼り付けた文章、画像の文字、ファイルを翻訳します。"));
+    let (image, file) = (window.at("画像から翻訳"), window.at(FILE));
+    assert!(
+        image.right() < file.left() && (image.center().y - file.center().y).abs() < 2.0,
+        "{FILE} is not beside 画像から翻訳: {image:?} {file:?}"
+    );
+    assert!(window.has("自動判定") && window.has("翻訳する"));
+    assert!(window.has("ファイルを翻訳しています"));
+    window.click(&mut app, "中止");
+    assert!(
+        app.file_cancel.load(Ordering::Relaxed),
+        "中止 does not stop the file"
+    );
+
+    app.file_busy = false;
+    window.hover(&mut app, FILE);
+    window.settle(&mut app);
+    assert!(window.has(FILE_HINT), "the hover text of {FILE}");
+
+    // As the button on the 履歴 screen was, it is faded without the model and
+    // while a file is translated. A click asks the system for a file, which a
+    // test cannot answer.
+    let ink = |ready: bool, busy: bool| {
+        let mut app = chat();
+        app.tab = Tab::Text;
+        app.backend_ready = ready;
+        app.file_busy = busy;
+        let mut window = Window::new(860.0, 620.0);
+        window.settle(&mut app);
+        window.ink(FILE)
+    };
+    let faded = ink(false, false);
+    assert_ne!(
+        ink(true, false),
+        faded,
+        "{FILE} is faded with the model ready"
+    );
+    assert_eq!(
+        ink(true, true),
+        faded,
+        "{FILE} is not faded while a file is translated"
+    );
 }
 
 #[test]
@@ -792,6 +952,12 @@ fn the_details_list_every_model_with_the_words_the_status_row_used() {
     app.settings.readout_enabled = true;
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
+    window.hover(&mut app, "状態の詳細");
+    window.settle(&mut app);
+    assert!(
+        window.has("翻訳・音声認識・文字認識の準備の状態を見ます"),
+        "the hover text of the row"
+    );
     window.click(&mut app, "状態の詳細");
     assert!(app.details_open);
     assert!(window.has("状態の詳細"));
@@ -850,13 +1016,7 @@ fn the_details_close_on_escape_and_when_another_item_is_chosen() {
     window.settle(&mut app);
     window.draw(
         &mut app,
-        vec![egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
+        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
     );
     assert!(!app.details_open);
 
@@ -864,6 +1024,140 @@ fn the_details_close_on_escape_and_when_another_item_is_chosen() {
     window.open_menu(&mut app);
     window.click(&mut app, "設定");
     assert!(!app.details_open);
+}
+
+/// All of the heading is drawn inside the window, above the bar of 設定を保存.
+fn assert_in_view(window: &Window, heading: &str, size: (f32, f32)) {
+    assert!(window.has(heading), "{size:?}: {heading} is not drawn");
+    let (rect, save) = (window.at(heading), window.at("設定を保存"));
+    assert!(
+        rect.top() >= 0.0 && rect.bottom() <= save.top(),
+        "{size:?}: {heading} is out of view at {rect:?}"
+    );
+}
+
+/// Clicks a row of 状態の詳細, and waits while the page it leads to opens a
+/// section and scrolls.
+fn follow_details_row(window: &mut Window, app: &mut App, row: &str) {
+    app.details_open = true;
+    window.settle(app);
+    window.click(app, row);
+    window.settle(app);
+    window.settle(app);
+}
+
+/// The row of 状態の詳細 leads to its card inside その他の機能, at the smallest
+/// window and at the size where the settings have two columns.
+fn assert_row_opens_its_card(row: &str, heading: &str, readout: bool) {
+    for size in [(860.0, 620.0), (1280.0, 880.0)] {
+        let mut app = chat();
+        // Windows OCR needs nothing more; Indra OCR needs data that is not here.
+        app.settings.ocr_backend = "indra".into();
+        app.settings.readout_enabled = readout;
+        let mut window = Window::new(size.0, size.1);
+        follow_details_row(&mut window, &mut app, row);
+        assert!(app.tab == Tab::Settings, "{size:?}: {row} leads elsewhere");
+        assert_in_view(&window, heading, size);
+    }
+}
+
+#[test]
+fn the_character_recognition_row_of_the_details_opens_its_card_in_the_settings() {
+    assert_row_opens_its_card("文字認識未準備", "画面・画像の文字認識", false);
+}
+
+#[test]
+fn the_readout_row_of_the_details_opens_its_card_in_the_settings() {
+    assert_row_opens_its_card("読み上げ未準備", "訳文の読み上げ", true);
+}
+
+#[test]
+fn turning_on_automatic_readout_without_a_voice_opens_the_settings_at_the_readout_card() {
+    for size in [(860.0, 620.0), (1280.0, 880.0)] {
+        let mut app = chat();
+        app.settings.readout_enabled = true;
+        let mut window = Window::new(size.0, size.1);
+        window.settle(&mut app);
+        window.click(&mut app, "自動読み上げ");
+        window.settle(&mut app);
+        window.settle(&mut app);
+        assert!(
+            app.tab == Tab::Settings && app.readout.confirm && !app.settings.auto_read,
+            "{size:?}: the voice is not asked for"
+        );
+        assert_in_view(&window, "訳文の読み上げ", size);
+    }
+}
+
+#[test]
+fn the_rows_of_speech_and_translation_open_what_they_did_and_leave_the_other_features_closed() {
+    let mut app = chat();
+    app.backend_ready = false;
+    // Tall enough that the whole page of the settings is drawn.
+    let mut window = Window::new(860.0, 3200.0);
+    follow_details_row(&mut window, &mut app, "音声認識未準備");
+    assert!(app.tab == Tab::Settings);
+    assert!(window.has(OTHER_FEATURES));
+    for other in OTHER_SETTINGS {
+        assert!(!window.has(other), "{other} is shown: the section opened");
+    }
+    follow_details_row(&mut window, &mut app, "翻訳未準備");
+    assert!(
+        app.tab == Tab::Setup,
+        "翻訳 no longer opens the model screen"
+    );
+}
+
+#[test]
+fn after_an_arrival_the_settings_from_the_menu_neither_reopen_the_section_nor_scroll() {
+    let mut app = chat();
+    app.settings.ocr_backend = "indra".into();
+    let mut window = Window::new(860.0, 620.0);
+    follow_details_row(&mut window, &mut app, "文字認識未準備");
+    assert_in_view(&window, "画面・画像の文字認識", (860.0, 620.0));
+
+    // The reader scrolls back to the top of the page and returns to the chat.
+    window.draw(
+        &mut app,
+        vec![egui::Event::PointerMoved(egui::pos2(430.0, 300.0))],
+    );
+    window.draw(&mut app, vec![wheel(20_000.0)]);
+    window.settle(&mut app);
+    window.settle(&mut app);
+    assert!(window.has("翻訳モデル"), "the page is not back at its top");
+    window.click(&mut app, BACK_TO_CHAT);
+    window.open_menu(&mut app);
+    window.click(&mut app, "設定");
+    window.settle(&mut app);
+    assert!(
+        window.has("翻訳モデル") && !window.has("画面・画像の文字認識"),
+        "the page scrolled to the card again"
+    );
+
+    // The section is open as the reader left it, and once closed it stays so.
+    window.resize(860.0, 3200.0);
+    window.settle(&mut app);
+    assert!(
+        window.has("画面・画像の文字認識"),
+        "the section closed by itself"
+    );
+    window.click(&mut app, OTHER_FEATURES);
+    window.click(&mut app, BACK_TO_CHAT);
+    window.open_menu(&mut app);
+    window.click(&mut app, "設定");
+    window.settle(&mut app);
+    assert!(
+        !window.has("画面・画像の文字認識"),
+        "the section opened again"
+    );
+    window.click(&mut app, BACK_TO_CHAT);
+    window.draw(&mut app, vec![key(egui::Key::Num4, egui::Modifiers::CTRL)]);
+    window.settle(&mut app);
+    assert!(app.tab == Tab::Settings);
+    assert!(
+        !window.has("画面・画像の文字認識"),
+        "Ctrl + 4 opened the section again"
+    );
 }
 
 #[test]
@@ -886,23 +1180,7 @@ fn the_chat_header_shows_clear_to_the_left_of_the_menu_and_enables_with_content(
     let empty_ink = window.ink("クリア");
 
     // Enabled when the chat has a row.
-    app.rows.push(Row {
-        record: Record {
-            id: 1,
-            start_ms: 0,
-            end_ms: 1000,
-            source: "Hello".into(),
-            translation: "こんにちは".into(),
-            standard_translation: None,
-            kind: "音声".into(),
-            video_id: String::new(),
-            created_at: String::new(),
-            paragraph: None,
-        },
-        pending: false,
-        error: None,
-        generation: 0,
-    });
+    app.rows.push(row(1, "音声", "こんにちは"));
     window.settle(&mut app);
     let enabled_ink = window.ink("クリア");
     assert_ne!(
@@ -954,27 +1232,8 @@ fn the_chat_header_copies_the_whole_talk_from_beside_clear() {
     );
     let empty_ink = window.ink("全文コピー");
 
-    for (id, source, translation) in [
-        (1, "Hello.", "こんにちは。"),
-        (2, "Thank you.", "ありがとう。"),
-    ] {
-        app.rows.push(Row {
-            record: Record {
-                id,
-                start_ms: 0,
-                end_ms: 1000,
-                source: source.into(),
-                translation: translation.into(),
-                standard_translation: None,
-                kind: "音声".into(),
-                video_id: String::new(),
-                created_at: String::new(),
-                paragraph: None,
-            },
-            pending: false,
-            error: None,
-            generation: 0,
-        });
+    for (id, translation) in [(1, "こんにちは。"), (2, "ありがとう。")] {
+        app.rows.push(row(id, "音声", translation));
     }
     window.settle(&mut app);
     assert_ne!(
@@ -1048,25 +1307,200 @@ fn clicking_clear_empties_the_chat_and_starts_a_new_session_preserving_earlier_r
 }
 
 #[test]
-fn reading_text_off_the_screen_comes_after_the_live_translation_settings() {
+fn copy_all_and_clear_follow_what_the_chat_shows() {
+    let inks = |rows: Vec<Row>| {
+        let mut app = chat();
+        app.rows = rows;
+        let mut window = Window::new(860.0, 620.0);
+        window.settle(&mut app);
+        (window.ink("全文コピー"), window.ink("クリア"))
+    };
+    let faded = inks(Vec::new());
+    assert_eq!(
+        inks(vec![
+            row(1, "文章", "文章の訳文です。"),
+            row(2, "画面OCR", "範囲の訳文です。")
+        ]),
+        faded,
+        "text and range translations are not in the chat"
+    );
+    let shown = inks(vec![row(1, "音声", "こんにちは。")]);
+    assert!(
+        shown.0 != faded.0 && shown.1 != faded.1,
+        "a PC-audio message is in the chat"
+    );
+}
+
+#[test]
+fn clear_keeps_a_text_translation_that_is_still_coming_and_its_end_arrives() {
+    for result in [
+        Ok("完成した訳文です。"),
+        Err("翻訳サーバーに接続できませんでした。"),
+    ] {
+        let history = tempfile::tempdir().unwrap();
+        let mut app = chat();
+        app.journal = Some(Journal::new(history.path()).unwrap());
+        app.rows.push(row(100, "音声", "こんにちは。"));
+        // The worker cannot reach a translator at this address and gives up
+        // at once. Its answer is taken away, and the test gives its own.
+        app.settings.translation.endpoint = "no translator".into();
+        app.input = "Hello.".into();
+        app.manual_translate();
+        let id = app.manual_busy.expect("the translation is in flight");
+        assert!(matches!(
+            app.rx.recv_timeout(Duration::from_secs(10)),
+            Ok(Event::Done { .. })
+        ));
+        let ctx = egui::Context::default();
+        app.tx
+            .send(Event::Partial {
+                id,
+                text: "途中の訳".into(),
+            })
+            .unwrap();
+        app.process(&ctx);
+
+        let mut window = Window::new(860.0, 620.0);
+        window.settle(&mut app);
+        window.click(&mut app, "クリア");
+        app.tx
+            .send(Event::Done {
+                id,
+                result: result.map(Into::into).map_err(Into::into),
+                elapsed: 0.1,
+            })
+            .unwrap();
+        app.process(&ctx);
+        match result {
+            Ok(text) => {
+                assert_eq!(app.output, text, "the 訳文 card keeps the unfinished text");
+                let saved = fs::read_to_string(&app.journal.as_ref().unwrap().path).unwrap();
+                assert!(saved.contains(text), "the history misses the result");
+            }
+            Err(error) => assert_eq!(app.status, error, "the failure is shown nowhere"),
+        }
+    }
+}
+
+/// The settings in one column, and in the left and the right column of a
+/// wide window. The live translation comes first; the other features come
+/// last, in a section of their own.
+const ONE_COLUMN: [&str; 8] = [
+    "翻訳モデル",
+    "音声認識",
+    "文章をつなぐ翻訳",
+    "YouTube字幕の接続",
+    "用語集と文脈",
+    "ショートカットと保存先",
+    "詳細（トラブル時）",
+    OTHER_FEATURES,
+];
+const LEFT: [&str; 3] = ["翻訳モデル", "文章をつなぐ翻訳", "用語集と文脈"];
+const RIGHT: [&str; 5] = [
+    "音声認識",
+    "YouTube字幕の接続",
+    "ショートカットと保存先",
+    "詳細（トラブル時）",
+    OTHER_FEATURES,
+];
+/// The settings of the other features. They stay out of sight until their
+/// section is opened.
+const OTHER_SETTINGS: [&str; 2] = ["訳文の読み上げ", "画面・画像の文字認識"];
+
+fn assert_in_order(window: &Window, width: f32, headings: &[&str]) {
+    let tops: Vec<f32> = headings
+        .iter()
+        .map(|heading| window.at(heading).top())
+        .collect();
+    assert!(
+        tops.windows(2).all(|pair| pair[0] < pair[1]),
+        "{width}: {headings:?} are out of order: {tops:?}"
+    );
+}
+
+#[test]
+fn the_settings_start_with_the_language_pair_and_open_the_other_features_on_request() {
     for width in [860.0, 1400.0] {
         let mut app = chat();
         let mut window = Window::new(width, 3200.0);
         window.open_menu(&mut app);
         window.click(&mut app, "設定");
         window.settle(&mut app);
-        let ocr = window.at("画面・画像の文字認識");
-        for live in ["音声認識", "YouTube字幕の接続"] {
-            assert!(
-                window.at(live).top() < ocr.top(),
-                "{width}: {live} must come before 画面・画像の文字認識"
-            );
-        }
         if width < 1100.0 {
+            assert_in_order(&window, width, &ONE_COLUMN);
+        } else {
+            assert_in_order(&window, width, &LEFT);
+            assert_in_order(&window, width, &RIGHT);
+            let middle = width / 2.0;
+            for heading in LEFT {
+                assert!(
+                    window.at(heading).right() < middle,
+                    "{heading} is not on the left"
+                );
+            }
+            for heading in RIGHT {
+                assert!(
+                    window.at(heading).left() > middle,
+                    "{heading} is not on the right"
+                );
+            }
+        }
+
+        // The live translation translates in the language pair, so it is set
+        // in the card of the model, under its own label.
+        let (model, pair) = (window.at("翻訳モデル"), window.at("翻訳する言語"));
+        let (source, target) = (window.at("自動判定"), window.at("日本語"));
+        let next = window.at(if width < 1100.0 {
+            "音声認識"
+        } else {
+            "文章をつなぐ翻訳"
+        });
+        assert!(
+            model.top() < pair.top()
+                && pair.bottom() <= source.top()
+                && source.bottom() < next.top(),
+            "{width}: the pair is not in the card of the model"
+        );
+        assert!(source.right() < target.left() && window.has("交換") && window.has("常体"));
+
+        for other in OTHER_SETTINGS {
             assert!(
-                window.at("用語集と文脈").top() < ocr.top(),
-                "in one column 用語集と文脈 must come before 画面・画像の文字認識"
+                !window.has(other),
+                "{width}: {other} is shown before {OTHER_FEATURES} is opened"
             );
         }
+        window.click(&mut app, OTHER_FEATURES);
+        let mut opened = vec![OTHER_FEATURES];
+        opened.extend(OTHER_SETTINGS);
+        assert_in_order(&window, width, &opened);
+        window.click(&mut app, "読み上げを使う");
+        assert!(
+            app.settings.readout_enabled,
+            "{width}: the switch of readout"
+        );
     }
+}
+
+#[test]
+fn the_settings_list_the_shortcuts_of_what_is_in_front() {
+    let mut app = chat();
+    app.tab = Tab::Settings;
+    let mut window = Window::new(860.0, 3200.0);
+    window.settle(&mut app);
+    window.click(&mut app, "ショートカットと保存先");
+    assert_in_order(
+        &window,
+        860.0,
+        &[
+            "聞く・止める: Ctrl + Alt + L",
+            "ミニ表示: Ctrl + Shift + M",
+            "チャット・履歴・設定: Ctrl + 2〜4",
+        ],
+    );
+    assert!(
+        !texts(&window.output)
+            .iter()
+            .any(|(text, _, _)| text.contains("範囲翻訳")),
+        "a key of the other features is listed"
+    );
 }

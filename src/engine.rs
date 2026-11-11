@@ -1,5 +1,5 @@
 //! Local-only PLaMo 3 translation and local ASR transport.
-use crate::glossary::MAX_ENTRIES;
+use crate::glossary::{self, Fault, MAX_ENTRIES, MAX_SIDE_CHARS};
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Url, blocking::Client, redirect::Policy};
 use serde_json::{Value, json};
@@ -143,12 +143,16 @@ fn validate_options(options: &TranslationOptions) -> Result<()> {
         "用語集は{MAX_ENTRIES}項目までです。"
     );
     for (source, target) in &options.glossary {
-        safe_field("用語集の原語", source, 256)?;
-        safe_field("用語集の訳語", target, 256)?;
-        ensure!(
-            !source.trim().is_empty() && !target.trim().is_empty(),
-            "用語集に空の原語または訳語があります。"
-        );
+        for (name, side) in [("用語集の原語", source), ("用語集の訳語", target)] {
+            match glossary::fault(side) {
+                None => {}
+                Some(Fault::Empty) => bail!("用語集に空の原語または訳語があります。"),
+                Some(Fault::Reserved) => bail!("{name}にPLaMo予約トークンは使用できません。"),
+                Some(Fault::TooLong) => {
+                    bail!("{name}が長すぎます（上限{MAX_SIDE_CHARS}文字）。分割してください。")
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -305,7 +309,8 @@ impl Translator {
             !ids.is_empty(),
             "翻訳サーバーにモデルが読み込まれていません。"
         );
-        // The launcher gives llama-server a stable alias. Also accept official file IDs.
+        // The launcher gives llama-server the model's file stem as its alias. Also
+        // accept plamo3 and the other PLaMo 3 Translate file IDs.
         let model = ids
             .iter()
             .find(|id| {

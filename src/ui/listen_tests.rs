@@ -1,6 +1,6 @@
 //! 「聞く」 turns on the input that was chosen, 「止める」 turns off every input,
 //! and Ctrl+Alt+L is the same button.
-use super::home_tests::{Window, hardware};
+use super::home_tests::{Window, hardware, key};
 use super::*;
 use crate::chat::testing::{filled, find_text, texts};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -25,13 +25,16 @@ fn ctrl_alt(code: Code) -> u32 {
     HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), code).id()
 }
 
-/// The four inputs as the menu names them.
-pub(super) const INPUTS: [(&str, LiveSourceMode); 4] = [
-    ("自動（字幕を優先）", LiveSourceMode::Auto),
-    ("YouTube字幕だけ", LiveSourceMode::Captions),
-    ("PC音声だけ", LiveSourceMode::Audio),
-    ("画面の文字", LiveSourceMode::Screen),
+/// The inputs the list always has, as it names them, with the captions and
+/// the PC audio each turns on.
+pub(super) const INPUTS: [(&str, LiveSourceMode, (bool, bool)); 3] = [
+    ("自動（字幕を優先）", LiveSourceMode::Auto, (true, true)),
+    ("YouTube字幕だけ", LiveSourceMode::Captions, (true, false)),
+    ("PC音声だけ", LiveSourceMode::Audio, (false, true)),
 ];
+/// The input the list has only while it is the one shown. It is started from
+/// 画面の文字を翻訳 behind その他の機能.
+pub(super) const SCREEN: &str = "画面の文字";
 
 /// 「聞く」 pressed on the keyboard.
 fn listen(app: &mut App) {
@@ -112,6 +115,25 @@ fn without_a_translation_model_the_shortcut_starts_nothing_and_says_why() {
 }
 
 #[test]
+fn without_a_translation_model_the_range_shortcut_reads_nothing_and_says_why() {
+    let ctx = egui::Context::default();
+    let mut app = chat_without_speech();
+    app.backend_ready = false;
+    app.press_hotkey(&ctx, ctrl_alt(Code::KeyT));
+    assert_eq!(app.status, "モデルの準備ができると、範囲翻訳を使えます。");
+    assert!(!app.capture_busy && app.tab == Tab::Live);
+
+    let mut app = chat_without_speech();
+    app.capture_busy = true;
+    app.status = "before".into();
+    app.press_hotkey(&ctx, ctrl_alt(Code::KeyT));
+    assert_eq!(
+        app.status, "before",
+        "a reading already running is left alone"
+    );
+}
+
+#[test]
 fn the_other_shortcut_still_reads_a_range() {
     let ctx = egui::Context::default();
     let mut app = chat_without_speech();
@@ -123,8 +145,20 @@ fn the_other_shortcut_still_reads_a_range() {
     assert!(!app.caption_enabled && !app.audio_start_requested);
 }
 
+/// The inputs behind 入力の切り替え, from the top.
+fn listed(window: &Window) -> Vec<&'static str> {
+    let mut drawn: Vec<_> = INPUTS
+        .iter()
+        .map(|(label, _, _)| *label)
+        .chain([SCREEN])
+        .filter(|label| window.has(label))
+        .collect();
+    drawn.sort_by(|a, b| window.at(a).top().total_cmp(&window.at(b).top()));
+    drawn
+}
+
 #[test]
-fn the_four_inputs_are_one_menu_item_on_the_chat_and_on_no_other_screen() {
+fn the_inputs_are_one_menu_item_on_the_chat_and_on_no_other_screen() {
     let mut app = chat_without_speech();
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
@@ -133,13 +167,9 @@ fn the_four_inputs_are_one_menu_item_on_the_chat_and_on_no_other_screen() {
         "they are behind the item"
     );
     window.click(&mut app, "入力の切り替え");
-    let tops: Vec<f32> = INPUTS
-        .iter()
-        .map(|(label, _)| window.at(label).top())
-        .collect();
-    assert!(
-        tops.windows(2).all(|pair| pair[0] < pair[1]),
-        "the inputs are out of order: {tops:?}"
+    assert_eq!(
+        listed(&window),
+        ["自動（字幕を優先）", "YouTube字幕だけ", "PC音声だけ"]
     );
 
     for tab in [Tab::Text, Tab::Files, Tab::Settings, Tab::Setup] {
@@ -151,19 +181,75 @@ fn the_four_inputs_are_one_menu_item_on_the_chat_and_on_no_other_screen() {
     }
 }
 
-#[test]
-fn the_menu_marks_the_input_that_is_on_or_else_the_one_the_next_listen_turns_on() {
-    let marked = |window: &Window| {
-        INPUTS
-            .iter()
-            .filter(|(label, _)| {
-                filled(&window.output, theme::ACCENT_SOFT)
+/// The inputs behind 入力の切り替え that are drawn as the chosen one.
+pub(super) fn marked(window: &Window) -> Vec<&'static str> {
+    INPUTS
+        .iter()
+        .map(|(label, _, _)| *label)
+        .chain([SCREEN])
+        .filter(|label| {
+            window.has(label)
+                && filled(&window.output, theme::ACCENT_SOFT)
                     .iter()
                     .any(|rect| rect.contains_rect(window.at(label)))
-            })
-            .map(|(label, _)| *label)
-            .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn the_list_has_the_screen_only_while_it_is_the_input_shown() {
+    let three = ["自動（字幕を優先）", "YouTube字幕だけ", "PC音声だけ"];
+    let four = [
+        "自動（字幕を優先）",
+        "YouTube字幕だけ",
+        "PC音声だけ",
+        SCREEN,
+    ];
+    let open_list = |window: &mut Window, app: &mut App| {
+        window.open_menu(app);
+        window.click(app, "入力の切り替え");
     };
+    let mut app = chat_without_speech();
+    let mut window = Window::new(860.0, 620.0);
+    open_list(&mut window, &mut app);
+    assert_eq!(
+        listed(&window),
+        three,
+        "{SCREEN} is listed while it is not the input"
+    );
+    window.draw(
+        &mut app,
+        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+    );
+
+    // 画面の文字を翻訳 makes it the input, also on this PC, which has no
+    // screen to read.
+    window.open_other_features(&mut app);
+    window.click(&mut app, "画面の文字を翻訳");
+    open_list(&mut window, &mut app);
+    assert_eq!(listed(&window), four);
+    assert_eq!(marked(&window), [SCREEN]);
+
+    // The mark tells the truth, so the reader can switch away from it.
+    window.click(&mut app, "PC音声だけ");
+    assert!(app.listen_input == LiveSourceMode::Audio);
+    open_list(&mut window, &mut app);
+    assert_eq!(listed(&window), three);
+    assert_eq!(marked(&window), ["PC音声だけ"]);
+
+    // While the screen is read, it is the input that is on.
+    let mut app = chat_without_speech();
+    app.start_screen_feed(1, (0, 0, 120, 40));
+    let mut window = Window::new(860.0, 620.0);
+    open_list(&mut window, &mut app);
+    assert_eq!(listed(&window), four);
+    assert_eq!(marked(&window), [SCREEN]);
+    window.click(&mut app, "YouTube字幕だけ");
+    assert!(app.screen_feed.is_none() && app.caption_enabled);
+}
+
+#[test]
+fn the_menu_marks_the_input_that_is_on_or_else_the_one_the_next_listen_turns_on() {
     let mut app = chat_without_speech();
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
@@ -187,7 +273,7 @@ fn the_menu_marks_the_input_that_is_on_or_else_the_one_the_next_listen_turns_on(
 
 #[test]
 fn a_choice_made_while_stopped_waits_for_the_next_listen() {
-    for (label, mode) in INPUTS {
+    for (label, mode, on) in INPUTS {
         let mut app = chat_without_speech();
         let settings = serde_json::to_value(&app.settings).unwrap();
         let mut window = Window::new(860.0, 620.0);
@@ -203,28 +289,15 @@ fn a_choice_made_while_stopped_waits_for_the_next_listen() {
         );
 
         listen(&mut app);
-        match mode {
-            LiveSourceMode::Auto => assert_eq!(armed(&app), (true, true), "{label}"),
-            LiveSourceMode::Captions => assert_eq!(armed(&app), (true, false), "{label}"),
-            LiveSourceMode::Audio => assert_eq!(armed(&app), (false, true), "{label}"),
-            LiveSourceMode::Screen => {
-                assert_eq!(armed(&app), (false, false), "{label}");
-                assert_eq!(
-                    app.status, "取得できる画面がありません。",
-                    "this PC has no screen to read, and says so"
-                );
-            }
-        }
+        assert_eq!(armed(&app), on, "{label}");
         listen(&mut app);
-        if mode != LiveSourceMode::Screen {
-            assert_eq!(armed(&app), (false, false), "{label}: 止める");
-        }
+        assert_eq!(armed(&app), (false, false), "{label}: 止める");
     }
 }
 
 #[test]
 fn a_choice_made_while_listening_switches_at_once() {
-    for (label, mode) in INPUTS {
+    for (label, mode, on) in INPUTS {
         let mut app = chat_without_speech();
         listen(&mut app);
         assert_eq!(armed(&app), (true, true));
@@ -232,27 +305,12 @@ fn a_choice_made_while_listening_switches_at_once() {
         let mut window = Window::new(860.0, 620.0);
         choose(&mut window, &mut app, label);
         assert!(app.listen_input == mode);
-        match mode {
-            LiveSourceMode::Auto => {
-                assert_eq!(armed(&app), (true, true), "{label}");
-                assert_eq!(
-                    app.caption_generation, generation,
-                    "{label} did not restart"
-                );
-            }
-            LiveSourceMode::Captions => assert_eq!(armed(&app), (true, false), "{label}"),
-            LiveSourceMode::Audio => assert_eq!(armed(&app), (false, true), "{label}"),
-            LiveSourceMode::Screen => {
-                assert_eq!(
-                    app.status, "取得できる画面がありません。",
-                    "the range to read is asked for first"
-                );
-                assert_eq!(
-                    armed(&app),
-                    (true, true),
-                    "and what runs goes on until then"
-                );
-            }
+        assert_eq!(armed(&app), on, "{label}");
+        if mode == LiveSourceMode::Auto {
+            assert_eq!(
+                app.caption_generation, generation,
+                "{label} did not restart"
+            );
         }
     }
 
@@ -268,16 +326,34 @@ fn a_choice_made_while_listening_switches_at_once() {
 fn the_menu_entry_for_the_screen_still_starts_reading_at_once_and_is_the_same_choice() {
     let mut app = chat_without_speech();
     let mut window = Window::new(860.0, 620.0);
-    window.open_menu(&mut app);
+    window.open_other_features(&mut app);
     window.click(&mut app, "画面の文字を翻訳");
     assert!(app.listen_input == LiveSourceMode::Screen);
     assert_eq!(
         app.status, "取得できる画面がありません。",
         "it asks for a range now, without a press of 聞く"
     );
+    app.status.clear();
+    listen(&mut app);
+    assert_eq!(armed(&app), (false, false));
+    assert_eq!(
+        app.status, "取得できる画面がありません。",
+        "the next 聞く asks for the range again"
+    );
+
+    // While something listens, the range is asked for first, and what runs
+    // goes on until then.
+    let mut app = chat_without_speech();
+    listen(&mut app);
+    let mut window = Window::new(860.0, 620.0);
+    window.open_other_features(&mut app);
+    window.click(&mut app, "画面の文字を翻訳");
+    assert!(app.listen_input == LiveSourceMode::Screen);
+    assert_eq!(app.status, "取得できる画面がありません。");
+    assert_eq!(armed(&app), (true, true));
 }
 
-fn drawn(app: &mut App, width: f32, height: f32) -> Window {
+pub(super) fn drawn(app: &mut App, (width, height): (f32, f32)) -> Window {
     let mut window = Window::new(width, height);
     window.settle(app);
     window
@@ -286,7 +362,7 @@ fn drawn(app: &mut App, width: f32, height: f32) -> Window {
 #[test]
 fn the_button_listens_in_the_automatic_mode_and_stops_every_input() {
     let mut app = chat_without_speech();
-    let mut window = drawn(&mut app, 860.0, 620.0);
+    let mut window = drawn(&mut app, (860.0, 620.0));
     assert!(window.has("● 聞く") && window.has("止まっています"));
     assert!(!window.has("■ 止める"));
 
@@ -318,14 +394,14 @@ fn the_button_stops_pc_audio_and_the_screen_feed_that_are_on() {
     let mut app = chat_without_speech();
     app.audio_enabled = true;
     app.asr_ready = true;
-    let mut window = drawn(&mut app, 860.0, 620.0);
+    let mut window = drawn(&mut app, (860.0, 620.0));
     window.click(&mut app, "■ 止める");
     assert!(!app.audio_enabled && !app.caption_enabled);
     assert!(window.has("● 聞く"));
 
     let mut app = chat_without_speech();
     app.start_screen_feed(1, (0, 0, 120, 40));
-    let mut window = drawn(&mut app, 860.0, 620.0);
+    let mut window = drawn(&mut app, (860.0, 620.0));
     window.click(&mut app, "■ 止める");
     assert!(app.screen_feed.is_none() && !app.caption_enabled);
 }
@@ -401,7 +477,7 @@ fn the_line_beside_the_button_says_what_is_going_on() {
     for (words, change, button, color) in states {
         let mut app = chat_without_speech();
         change(&mut app);
-        let window = drawn(&mut app, 860.0, 620.0);
+        let window = drawn(&mut app, (860.0, 620.0));
         assert_eq!(find_text(&window.output, words).1, color, "{words}");
         assert!(window.has(button), "{words}: the button is not {button}");
         let drawn_states: Vec<_> = STATE_WORDS
@@ -417,17 +493,37 @@ fn the_line_beside_the_button_says_what_is_going_on() {
 }
 
 #[test]
+fn the_line_names_pc_audio_once_the_captions_are_no_longer_translated() {
+    let mut app = chat_without_speech();
+    app.caption_enabled = true;
+    app.caption_paused = false;
+    app.last_caption = Instant::now().checked_sub(Duration::from_secs(6));
+    app.audio_enabled = true;
+    app.asr_ready = true;
+    let window = drawn(&mut app, (860.0, 620.0));
+    let drawn_states: Vec<_> = STATE_WORDS
+        .into_iter()
+        .filter(|state| window.has(state))
+        .collect();
+    assert_eq!(
+        drawn_states,
+        ["PC音声を聞いています"],
+        "the last caption came six seconds ago"
+    );
+}
+
+#[test]
 fn without_a_translation_model_the_button_cannot_start_and_the_line_says_what_is_needed() {
     let ink = |ready: bool| {
         let mut app = chat_without_speech();
         app.backend_ready = ready;
-        drawn(&mut app, 860.0, 620.0).ink("● 聞く")
+        drawn(&mut app, (860.0, 620.0)).ink("● 聞く")
     };
     assert_ne!(ink(true), ink(false), "the button is not faded");
 
     let mut app = chat_without_speech();
     app.backend_ready = false;
-    let mut window = drawn(&mut app, 860.0, 620.0);
+    let mut window = drawn(&mut app, (860.0, 620.0));
     assert!(window.has("翻訳モデルの準備が必要です"));
     assert!(window.has("モデルの準備"), "the way to the model screen");
     window.click(&mut app, "● 聞く");
@@ -450,12 +546,12 @@ fn a_model_that_goes_away_while_listening_does_not_keep_the_button_from_stopping
     let mut app = chat_without_speech();
     app.caption_enabled = true;
     app.backend_ready = false;
-    let mut window = drawn(&mut app, 860.0, 620.0);
+    let mut window = drawn(&mut app, (860.0, 620.0));
     let mut ready = chat_without_speech();
     ready.caption_enabled = true;
     assert_eq!(
         window.ink("■ 止める"),
-        drawn(&mut ready, 860.0, 620.0).ink("■ 止める"),
+        drawn(&mut ready, (860.0, 620.0)).ink("■ 止める"),
         "the button is faded"
     );
     window.click(&mut app, "■ 止める");
@@ -467,7 +563,7 @@ fn an_error_is_the_line_beside_the_button_in_red() {
     let mut app = chat_without_speech();
     app.service_error = "音声認識を読み込めませんでした。".into();
     app.caption_enabled = true;
-    let window = drawn(&mut app, 860.0, 620.0);
+    let window = drawn(&mut app, (860.0, 620.0));
     let (_, color) = find_text(&window.output, "音声認識を読み込めませんでした。");
     assert_eq!(color, theme::ERROR);
     assert!(
@@ -480,7 +576,7 @@ fn an_error_is_the_line_beside_the_button_in_red() {
 #[test]
 fn speech_that_is_not_prepared_follows_the_same_path_as_before() {
     let mut app = chat_without_speech();
-    let mut window = drawn(&mut app, 860.0, 620.0);
+    let mut window = drawn(&mut app, (860.0, 620.0));
     window.click(&mut app, "● 聞く");
     assert!(app.audio_confirmation && app.audio_start_requested);
     assert!(app.tab == Tab::Live, "the model screen is not opened");
@@ -491,30 +587,6 @@ fn speech_that_is_not_prepared_follows_the_same_path_as_before() {
     window.settle(&mut app);
     assert!(app.caption_enabled);
     assert!(window.has("■ 止める") && window.has("YouTube字幕を待っています"));
-}
-
-#[test]
-fn the_hover_text_names_the_shortcut() {
-    let mut app = chat_without_speech();
-    let mut window = drawn(&mut app, 860.0, 620.0);
-    window.hover(&mut app, "● 聞く");
-    assert!(
-        texts(&window.output)
-            .iter()
-            .any(|(text, _, _)| text.contains("Ctrl + Alt + L")),
-        "{:?}",
-        texts(&window.output)
-    );
-
-    app.caption_enabled = true;
-    let mut window = drawn(&mut app, 860.0, 620.0);
-    window.hover(&mut app, "■ 止める");
-    assert!(
-        texts(&window.output)
-            .iter()
-            .any(|(text, _, _)| text.contains("Ctrl + Alt + L")),
-        "stopping has the key in its hover text as well"
-    );
 }
 
 #[test]
@@ -531,7 +603,7 @@ fn the_mini_window_and_the_subtitle_window_see_the_same_state() {
     let mut app = chat_without_speech();
     app.document_update_subtitle_window();
     assert_eq!(app.subtitle_window.playback(), Playback::Stopped);
-    let mut window = drawn(&mut app, 860.0, 620.0);
+    let mut window = drawn(&mut app, (860.0, 620.0));
     window.click(&mut app, "● 聞く");
     app.accept_caption(caption);
     app.document_update_subtitle_window();
@@ -545,7 +617,7 @@ fn the_mini_window_and_the_subtitle_window_see_the_same_state() {
     );
 
     let mut app = chat_without_speech();
-    let mut window = drawn(&mut app, 860.0, 620.0);
+    let mut window = drawn(&mut app, (860.0, 620.0));
     window.click(&mut app, "● 聞く");
     window.click(&mut app, "■ 止める");
     app.document_update_subtitle_window();
@@ -565,8 +637,8 @@ fn the_chat_has_no_five_way_switch_and_no_explanation_line() {
         app.caption_enabled = true;
         app.audio_enabled = true;
         app.asr_ready = true;
-        let window = drawn(&mut app, width, height);
-        for gone in ["停止", "字幕", "PC音声", "両方", "画面"] {
+        let window = drawn(&mut app, (width, height));
+        for gone in ["停止", "字幕", "両方"] {
             assert!(
                 !window.has(gone),
                 "{gone} is still drawn at {width}x{height}"
@@ -577,7 +649,6 @@ fn the_chat_has_no_five_way_switch_and_no_explanation_line() {
             "停止中",
             "字幕を受信中",
             "音声を認識中",
-            "入力を待っています",
             "入力を選ぶと翻訳が始まります",
         ] {
             assert!(
@@ -596,7 +667,7 @@ fn the_bar_is_under_the_chat_above_the_status_row_and_inside_the_gutters() {
         let mut app = chat_without_speech();
         app.settings.readout_enabled = true;
         app.service_error = "Long service error. ".repeat(60);
-        let window = drawn(&mut app, width, height);
+        let window = drawn(&mut app, (width, height));
         let bar = app.ui_probe.listen_bar.expect("the bar is drawn");
         let button = app.ui_probe.listen_button.expect("the button is drawn");
         let chat = app.live_chat.panel().expect("the chat is drawn");
@@ -639,10 +710,10 @@ fn the_bar_is_under_the_chat_above_the_status_row_and_inside_the_gutters() {
     }
 }
 
-/// The words in the middle of the chat while it has no message, at the
-/// smallest window. They stay inside the chat.
-fn hint(app: &mut App) -> String {
-    let window = drawn(app, 860.0, 620.0);
+/// The words in the middle of the chat while it has no message. They stay
+/// inside the chat.
+pub(super) fn hint(app: &mut App, size: (f32, f32)) -> String {
+    let window = drawn(app, size);
     let panel = app.live_chat.panel().expect("the chat is drawn");
     let inside: Vec<_> = texts(&window.output)
         .into_iter()
@@ -656,7 +727,7 @@ fn hint(app: &mut App) -> String {
 #[test]
 fn the_empty_chat_says_what_to_do_next_in_each_state() {
     let mut app = chat_without_speech();
-    let stopped = hint(&mut app);
+    let stopped = hint(&mut app, (860.0, 620.0));
     assert!(stopped.starts_with(chat::EMPTY_HINT), "{stopped}");
     assert!(
         stopped.ends_with("\n下の「● 聞く」を押すと始まります。"),
@@ -667,7 +738,7 @@ fn the_empty_chat_says_what_to_do_next_in_each_state() {
     app.audio_enabled = true;
     app.asr_ready = true;
     assert_eq!(
-        hint(&mut app),
+        hint(&mut app, (860.0, 620.0)),
         "英語の動画や音声を再生してください。\n訳が、ここに出ます。"
     );
 
@@ -675,21 +746,21 @@ fn the_empty_chat_says_what_to_do_next_in_each_state() {
     let mut app = chat_without_speech();
     app.audio_start_requested = true;
     assert_eq!(
-        hint(&mut app),
+        hint(&mut app, (860.0, 620.0)),
         "音声認識を準備しています。\n終わると、英語の動画や音声の訳がここに出ます。"
     );
 
     let mut app = chat_without_speech();
     app.caption_enabled = true;
     assert_eq!(
-        hint(&mut app),
+        hint(&mut app, (860.0, 620.0)),
         "YouTubeで動画を開き、字幕（CC）をオンにして再生してください。\n字幕の訳が、ここに出ます。"
     );
 
     let mut app = chat_without_speech();
     app.start_screen_feed(1, (0, 0, 120, 40));
     assert_eq!(
-        hint(&mut app),
+        hint(&mut app, (860.0, 620.0)),
         "選んだ範囲の文字が変わると、ここに訳が出ます。"
     );
 }
@@ -698,19 +769,19 @@ fn the_empty_chat_says_what_to_do_next_in_each_state() {
 fn without_a_translation_model_the_empty_chat_points_at_the_model_and_not_at_the_button() {
     let mut app = chat_without_speech();
     app.backend_ready = false;
-    let missing = hint(&mut app);
+    let missing = hint(&mut app, (860.0, 620.0));
     assert!(
         missing.contains("「モデルの準備」") && !missing.contains("聞く"),
         "{missing}"
     );
     assert!(
-        drawn(&mut app, 860.0, 620.0).has("モデルの準備"),
+        drawn(&mut app, (860.0, 620.0)).has("モデルの準備"),
         "the button the words name is on the screen"
     );
 
     app.backend_loading = true;
     assert_eq!(
-        hint(&mut app),
+        hint(&mut app, (860.0, 620.0)),
         "翻訳モデルを準備しています。\n終わると、下の「● 聞く」を押せます。"
     );
 }

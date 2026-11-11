@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Cue {
     pub start_ms: u64,
     pub end_ms: u64,
@@ -21,21 +21,41 @@ fn parse(input: &str, vtt: bool) -> Result<Vec<Cue>> {
         .replace("\r\n", "\n")
         .replace('\r', "\n");
     let mut cues = Vec::new();
-    let mut block = Vec::new();
-    let mut header = true;
-    for line in normalized.lines().chain(std::iter::once("")) {
-        if header && vtt {
-            header = false;
-            if line == "WEBVTT" || line.starts_with("WEBVTT ") || line.starts_with("WEBVTT\t") {
-                continue;
-            }
+    let mut block: Vec<&str> = Vec::new();
+    let mut lines = normalized.lines().chain(std::iter::once("")).peekable();
+    if vtt
+        && lines
+            .next_if(|line| {
+                *line == "WEBVTT" || line.starts_with("WEBVTT ") || line.starts_with("WEBVTT\t")
+            })
+            .is_some()
+    {
+        // Header lines such as `Kind: captions` or `X-TIMESTAMP-MAP=…` come
+        // before the first empty line.
+        while lines
+            .next_if(|line| !line.is_empty() && !line.contains("-->"))
+            .is_some()
+        {}
+    }
+    for line in lines {
+        // A WebVTT cue ends at an empty line, or at a line with `-->` after its
+        // timing line (its first or second line), which begins the next cue.
+        // A line of spaces inside a cue is part of its text.
+        if vtt && line.contains("-->") && block.iter().take(2).any(|kept| kept.contains("-->")) {
+            parse_block(&block, vtt, &mut cues)?;
+            block.clear();
         }
-        if line.trim().is_empty() {
+        let ends_block = if vtt {
+            line.is_empty()
+        } else {
+            line.trim().is_empty()
+        };
+        if ends_block {
             if !block.is_empty() {
                 parse_block(&block, vtt, &mut cues)?;
                 block.clear();
             }
-        } else {
+        } else if !block.is_empty() || !line.trim().is_empty() {
             block.push(line);
         }
     }
@@ -88,6 +108,10 @@ fn parse_block(lines: &[&str], vtt: bool, cues: &mut Vec<Cue>) -> Result<()> {
         timestamp(end, vtt).with_context(|| format!("Cue {number}: invalid end timestamp"))?;
     anyhow::ensure!(end_ms >= start_ms, "Cue {number} ends before it starts");
     let text = lines[timing_index + 1..].join("\n");
+    // A WebVTT cue may have no text; it shows nothing.
+    if vtt && text.trim().is_empty() {
+        return Ok(());
+    }
     anyhow::ensure!(!text.trim().is_empty(), "Cue {number} has no subtitle text");
     let text = if vtt {
         unescape(&strip_vtt_tags(&text))
@@ -306,6 +330,51 @@ mod tests {
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].text, "Hello & 2 < 5 <b> 日本");
         assert_eq!(parse_vtt(&to_vtt(&cues)).unwrap()[0].text, cues[0].text);
+    }
+    #[test]
+    fn youtube_captions_saved_by_yt_dlp_keep_their_header_out_of_the_cues() {
+        let cues = parse_vtt(
+            "WEBVTT\nKind: captions\nLanguage: en\n\n00:00:00.320 --> 00:00:02.389 align:start position:0%\nhello everyone\n",
+        )
+        .unwrap();
+        assert_eq!(cues.len(), 1);
+        assert_eq!((cues[0].start_ms, cues[0].end_ms), (320, 2_389));
+        assert_eq!(cues[0].text, "hello everyone");
+    }
+    #[test]
+    fn hls_captions_keep_their_timestamp_map_out_of_the_cues() {
+        let cues = parse_vtt(
+            "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n\n00:00:01.000 --> 00:00:02.500\nfirst line\n",
+        )
+        .unwrap();
+        assert_eq!(cues.len(), 1);
+        assert_eq!((cues[0].start_ms, cues[0].end_ms), (1_000, 2_500));
+        assert_eq!(cues[0].text, "first line");
+    }
+    #[test]
+    fn a_caption_line_holding_only_a_space_stays_in_its_cue_and_a_blank_cue_is_skipped() {
+        let cues = parse_vtt(
+            "WEBVTT\n\n00:00:00.320 --> 00:00:02.389 align:start position:0%\n \nhello<00:00:00.640><c> everyone</c>\n\n00:00:02.389 --> 00:00:02.399 align:start position:0%\n \n\n00:00:02.399 --> 00:00:05.110 align:start position:0%\nwelcome\n",
+        )
+        .unwrap();
+        assert_eq!(cues.len(), 2, "the cue holding only a space is skipped");
+        assert_eq!(cues[0].text.trim(), "hello everyone");
+        assert_eq!(
+            (cues[1].start_ms, cues[1].text.as_str()),
+            (2_399, "welcome")
+        );
+    }
+    #[test]
+    fn cues_separated_by_a_line_of_spaces_keep_their_own_times_and_texts() {
+        let cues = parse_vtt(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nfirst\n   \n00:00:03.000 --> 00:00:04.500\nsecond\n",
+        )
+        .unwrap();
+        let cues: Vec<_> = cues
+            .iter()
+            .map(|cue| (cue.start_ms, cue.end_ms, cue.text.trim()))
+            .collect();
+        assert_eq!(cues, [(1_000, 2_000, "first"), (3_000, 4_500, "second")]);
     }
     #[test]
     fn bad_timestamps_are_rejected() {

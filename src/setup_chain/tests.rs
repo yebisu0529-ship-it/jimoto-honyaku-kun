@@ -2,6 +2,7 @@ use super::*;
 use crate::setup::{bytes, start_label, tests::app_with_fixture_gpu};
 use plamo_translate::{
     hardware::Hardware, installer::InstallResult, nemotron_setup, punctuation_setup,
+    speech_setup::SpeechInstallation,
 };
 
 const GIB: u64 = 1_073_741_824;
@@ -63,6 +64,14 @@ fn installed() -> InstallResult {
 }
 fn settings_of(app: &App) -> serde_json::Value {
     serde_json::to_value(&app.settings).unwrap()
+}
+fn downloaded_voice() -> SpeechInstallation {
+    SpeechInstallation {
+        executable: Default::default(),
+        model: Default::default(),
+        backend: String::new(),
+        voice: String::new(),
+    }
 }
 /// Keeps the model store in a folder of the test's own.
 fn stored_in(mut app: App, store: &tempfile::TempDir) -> App {
@@ -216,6 +225,7 @@ fn each_step_reports_its_own_failure_and_changes_no_setting() {
         ),
     ] {
         let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
+        app.settings.readout_enabled = true;
         started(&mut app, &[step]);
         let before = settings_of(&app);
         process(&mut app, event);
@@ -249,7 +259,7 @@ fn cancelling_stops_the_step_that_runs_and_adopts_nothing_from_it() {
         ),
     ] {
         let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
-        app.settings.english_punctuation = false;
+        app.settings.readout_enabled = true;
         let earlier = if step == Step::Translation {
             vec![]
         } else {
@@ -274,6 +284,185 @@ fn cancelling_stops_the_step_that_runs_and_adopts_nothing_from_it() {
         app.retry_chain();
         assert_eq!(next_step(&mut app), Some(step), "{step:?} again");
     }
+}
+#[test]
+fn a_helper_step_whose_box_was_unchecked_before_it_starts_finishes_without_preparing() {
+    let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
+    started(&mut app, &[Step::Punctuation, Step::Speech]);
+    app.settings.english_punctuation = false;
+    // The saved helper is still loading, so a preparation asked for now would
+    // only wait for that load.
+    app.paragraph_tools.loading = true;
+    app.launch(Step::Punctuation);
+    assert_eq!(
+        app.setup.chain.as_ref().unwrap().done(),
+        [Step::Punctuation]
+    );
+    assert!(
+        !app.paragraph_tools.preparing && app.paragraph_tools.worker.is_none(),
+        "nothing is prepared"
+    );
+    assert_eq!(next_step(&mut app), Some(Step::Speech), "the chain goes on");
+}
+#[test]
+fn a_helper_result_that_arrives_after_the_box_was_unchecked_finishes_the_step() {
+    type Answer = fn() -> std::result::Result<Option<paragraph_tools::ReadyTools>, String>;
+    let answers: [(&str, bool, Answer); 3] = [
+        ("stopped by unchecking the box", true, stopped),
+        ("failed", false, failed),
+        ("found nothing saved", false, || Ok(None)),
+    ];
+    let mut unfinished = Vec::new();
+    for (case, cancelled, answer) in answers {
+        let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
+        started(&mut app, &[Step::Punctuation, Step::Speech]);
+        app.settings.english_punctuation = false;
+        app.paragraph_tools
+            .cancel
+            .store(cancelled, Ordering::Release);
+        process(
+            &mut app,
+            Event::ParagraphTools(paragraph_tools::ToolsEvent::Prepared {
+                result: answer(),
+                cancelled,
+            }),
+        );
+        let chain = app.setup.chain.as_ref().unwrap();
+        if !chain.is_running() || chain.done() != [Step::Punctuation] {
+            unfinished.push(case);
+        }
+    }
+    assert_eq!(unfinished, Vec::<&str>::new());
+}
+#[test]
+fn a_voice_step_whose_switch_was_turned_off_before_it_starts_finishes_without_downloading() {
+    let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
+    started(&mut app, &[Step::Voice]);
+    app.settings.readout_enabled = false;
+    // The voice is still being downloaded from its own dialog, so a download
+    // asked for now would only wait for that one.
+    app.readout.preparing = true;
+    app.launch(Step::Voice);
+    assert!(
+        app.setup.chain.is_none(),
+        "the last step is finished, so the chain is"
+    );
+    assert_eq!(app.status, READY_STATUS);
+}
+#[test]
+fn a_voice_result_that_arrives_after_the_switch_was_turned_off_finishes_the_step() {
+    type Arrival = fn(&mut App) -> Event;
+    let answers: [(&str, Arrival); 3] = [
+        ("the download stopped by the switch", |app| {
+            app.readout.preparing = true;
+            app.readout.cancel.store(true, Ordering::Relaxed);
+            Event::Readout(readout::ReadoutEvent::Installed(stopped()))
+        }),
+        ("the download finished", |app| {
+            app.readout.preparing = true;
+            Event::Readout(readout::ReadoutEvent::Installed(Ok(downloaded_voice())))
+        }),
+        ("making the voice stopped by the switch", |app| {
+            app.readout.ready = Some(downloaded_voice());
+            app.readout.voice_preparing = true;
+            app.readout.voice_cancel.store(true, Ordering::Release);
+            Event::Readout(readout::ReadoutEvent::VoicePrepared {
+                key: "default-v1".into(),
+                result: stopped(),
+            })
+        }),
+    ];
+    let mut unfinished = Vec::new();
+    for (case, arrival) in answers {
+        let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
+        started(&mut app, &[Step::Voice]);
+        app.settings.readout_enabled = false;
+        let event = arrival(&mut app);
+        process(&mut app, event);
+        if app.setup.chain.is_some() {
+            unfinished.push(case);
+        }
+    }
+    assert_eq!(unfinished, Vec::<&str>::new());
+}
+#[test]
+fn choosing_qwen_while_nemotron_is_prepared_ends_the_speech_step() {
+    type Answer = fn() -> std::result::Result<(), String>;
+    let answers: [(&str, Answer); 2] =
+        [("stopped by the switch", stopped), ("finished", || Ok(()))];
+    let mut waiting = Vec::new();
+    for (case, answer) in answers {
+        let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
+        started(&mut app, &[Step::Speech, Step::Voice]);
+        app.settings.asr_backend = "qwen".into();
+        process(
+            &mut app,
+            Event::AudioPrepared {
+                backend: "nemotron".into(),
+                result: answer(),
+            },
+        );
+        if app.chain_drives(Step::Speech) || next_step(&mut app) != Some(Step::Voice) {
+            waiting.push(case);
+        }
+    }
+    assert_eq!(waiting, Vec::<&str>::new());
+}
+#[test]
+fn a_part_prepared_without_the_chain_is_measured_again() {
+    type Report = (&'static str, fn(&mut App));
+    let reports: [Report; 4] = [
+        ("the helper prepared from the settings", |app| {
+            app.finish_step(Step::Punctuation)
+        }),
+        ("Nemotron prepared from its dialog", |app| {
+            process(
+                app,
+                Event::AudioPrepared {
+                    backend: "nemotron".into(),
+                    result: Ok(()),
+                },
+            )
+        }),
+        ("a Nemotron download stopped in its dialog", |app| {
+            process(
+                app,
+                Event::AudioPrepared {
+                    backend: "nemotron".into(),
+                    result: stopped(),
+                },
+            )
+        }),
+        ("the voice downloaded from its dialog", |app| {
+            process(
+                app,
+                Event::Readout(readout::ReadoutEvent::Installed(Ok(downloaded_voice()))),
+            )
+        }),
+    ];
+    let stale = Plan {
+        steps: vec![(Step::Translation, 1)],
+    };
+    let mut unmeasured = Vec::new();
+    for stopped_chain in [false, true] {
+        for (report, act) in reports {
+            let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
+            if stopped_chain {
+                started(&mut app, &[Step::Translation]);
+                app.stop_step(Step::Translation, true, String::new());
+            }
+            app.setup.plan = Some((app.plan_key().unwrap(), stale.clone()));
+            act(&mut app);
+            if app.download_plan() == Some(stale.clone()) {
+                unmeasured.push((report, stopped_chain));
+            }
+        }
+    }
+    assert_eq!(
+        unmeasured,
+        Vec::<(&str, bool)>::new(),
+        "(what was prepared, with a stopped chain)"
+    );
 }
 #[test]
 fn a_new_installation_gets_nemotron_and_an_existing_choice_is_kept() {

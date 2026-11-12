@@ -52,6 +52,7 @@ $taskFiles = @(
 $taskFiles += @{ Source = 'assets/icons/jimoto.svg'; Entry = 'assets/icons/jimoto.svg' }
 $taskFiles += @{ Source = 'assets/screenshots/first-run.png'; Entry = 'assets/screenshots/first-run.png' }
 $taskFiles += @{ Source = 'assets/screenshots/live.png'; Entry = 'assets/screenshots/live.png' }
+$taskFiles += @{ Source = 'assets/screenshots/simple-translation.png'; Entry = 'assets/screenshots/simple-translation.png' }
 $taskFiles += @{ Source = 'assets/fonts/OFL.txt'; Entry = 'assets/fonts/OFL.txt' }
 $taskFiles += @{ Source = 'assets/fonts/README.md'; Entry = 'assets/fonts/README.md' }
 

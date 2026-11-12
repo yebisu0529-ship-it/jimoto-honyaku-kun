@@ -3,7 +3,7 @@ param(
     [string]$AppRoot = '',
     [string]$OutDir = '',
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$')]
-    [string]$Version = '0.6.0',
+    [string]$Version = '1.0.0',
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,8 @@ if (-not $AppRoot) { $AppRoot = Split-Path -Parent $PSScriptRoot }
 $taskRoot = (Resolve-Path -LiteralPath $AppRoot).ProviderPath
 if (-not $OutDir) { $OutDir = Join-Path $taskRoot 'dist' }
 $taskOutFull = [IO.Path]::GetFullPath($OutDir)
-$taskName = 'Jimoto-Honyaku-kun-' + $Version + '-win-x64'
+$taskApp = 'talk-style-live-translation'
+$taskName = $taskApp + '-' + $Version + '-win-x64'
 $taskZip = Join-Path $taskOutFull ($taskName + '.zip')
 $taskSidecar = $taskZip + '.sha256'
 $taskManifestOut = Join-Path $taskOutFull ($taskName + '.manifest.json')
@@ -109,7 +110,7 @@ try {
         }
     }
     $taskManifest = [ordered]@{
-        app = 'Jimoto-Honyaku-kun'
+        app = $taskApp
         version = $Version
         platform = 'windows-x86_64'
         files = $taskEntries

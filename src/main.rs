@@ -2132,6 +2132,17 @@ fn demo_talk(rows: usize) -> Vec<Row> {
     talk
 }
 
+/// The demo talk heard as PC audio alone, the input the app starts with: the
+/// picture at the top of the README.
+fn demo_pc_audio_talk(rows: usize) -> Vec<Row> {
+    let mut talk = demo_talk(rows);
+    for row in &mut talk {
+        row.record.kind = "音声".into();
+        row.record.video_id.clear();
+    }
+    talk
+}
+
 /// The part still forming in the subtitle window previews, with its original:
 /// long, two lines at the smallest window, and one line at the largest text.
 const FORMING_LONG: (&str, &str) = (
@@ -2804,6 +2815,13 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 Listening::Both,
             ),
             (
+                "03-live-pc-audio-only",
+                Tab::Live,
+                true,
+                Overlay::Nothing,
+                Listening::PcAudio,
+            ),
+            (
                 "04-settings",
                 Tab::Settings,
                 false,
@@ -3000,7 +3018,11 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 app.current_live_id = Some(3);
             }
             if tab == Tab::Live {
-                app.rows = demo_talk(5);
+                app.rows = if name.ends_with("-pc-audio-only") {
+                    demo_pc_audio_talk(5)
+                } else {
+                    demo_talk(5)
+                };
                 app.current_live_id = Some(5);
                 app.live_chat.toggle_original(3, 0);
             }

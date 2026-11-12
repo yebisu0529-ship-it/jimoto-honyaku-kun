@@ -1,7 +1,7 @@
 //! The mini view is the chat in a small window, with the main window's words
 //! and its one listen button. A reading or a text translation asked for there
 //! shows its result on a card in the chat's place.
-use super::home_tests::{Window, key, row};
+use super::home_tests::{Window, chat, key, row};
 use super::listen_tests::{
     CAPTIONS_ARRIVING, INPUTS, SCREEN, armed, caption, chat_without_speech, drawn, extension, hint,
     marked, with_youtube_captions,
@@ -19,6 +19,70 @@ const USUAL: (f32, f32) = (520.0, 360.0);
 const SIZES: [(f32, f32); 2] = [SMALLEST, USUAL];
 /// The main window at its smallest.
 const MAIN: (f32, f32) = (860.0, 620.0);
+
+/// The controls that are in the toolbar while it has room for them and in
+/// the 「⋯」 menu while it has not, from the left in the toolbar and from the
+/// top in the menu.
+const MOVABLE: [&str; 3] = ["クリア", "全文コピー", "最前面"];
+/// The same controls in the order they keep their place in the toolbar:
+/// 全文コピー is the first to go into the menu and クリア the last.
+const KEEP: [&str; 3] = ["クリア", "最前面", "全文コピー"];
+
+/// What the toolbar holds from the left and the 「⋯」 menu from the top, at
+/// one size with or without the read-aloud switch.
+struct Room {
+    size: (f32, f32),
+    readout: bool,
+    toolbar: &'static [&'static str],
+    menu: &'static [&'static str],
+}
+
+const ROOM: [Room; 4] = [
+    Room {
+        size: USUAL,
+        readout: false,
+        toolbar: &["通常表示", "● 聞く", "クリア", "全文コピー", "最前面", "⋯"],
+        menu: &["入力の切り替え", "表示", OTHER_FEATURES],
+    },
+    Room {
+        size: USUAL,
+        readout: true,
+        toolbar: &[
+            "通常表示",
+            "● 聞く",
+            "自動読み上げ",
+            "クリア",
+            "最前面",
+            "⋯",
+        ],
+        menu: &["入力の切り替え", "表示", "全文コピー", OTHER_FEATURES],
+    },
+    Room {
+        size: SMALLEST,
+        readout: false,
+        toolbar: &["通常表示", "● 聞く", "クリア", "最前面", "⋯"],
+        menu: &["入力の切り替え", "表示", "全文コピー", OTHER_FEATURES],
+    },
+    Room {
+        size: SMALLEST,
+        readout: true,
+        toolbar: &["通常表示", "● 聞く", "自動読み上げ", "⋯"],
+        menu: &[
+            "入力の切り替え",
+            "表示",
+            "クリア",
+            "全文コピー",
+            "最前面",
+            OTHER_FEATURES,
+        ],
+    },
+];
+
+/// The words of the main window's クリア and 全文コピー when the pointer
+/// rests on them.
+const CLEAR_HINT: &str = "表示中の会話を消して、新しく始めます。消した会話は「履歴」に残ります。";
+const COPY_ALL_HINT: &str = "表示中の会話をすべて、PLaMoのクレジットを付けてコピーします。";
+const TOPMOST_HINT: &str = "ほかの窓より手前に置きます。通常表示に戻ると外れます。";
 
 const NO_SCREEN: &str = "取得できる画面がありません。";
 const READING: &str = "画像から文字を読み取っています…";
@@ -1235,11 +1299,11 @@ fn escape_closes_the_menu_before_it_lets_go_of_selected_text() {
         vec![press(to, egui::PointerButton::Primary, false)],
     );
     open_menu(&mut window, &mut app);
-    assert!(window.has("最前面") && !selected(&window.output).is_empty());
+    assert!(window.has("入力の切り替え") && !selected(&window.output).is_empty());
 
     window.draw(&mut app, vec![escape()]);
     window.settle(&mut app);
-    assert!(!window.has("最前面"), "Esc did not close the menu");
+    assert!(!window.has("入力の切り替え"), "Esc did not close the menu");
     assert_eq!(
         selected(&window.output),
         ["1番目の訳文です。"],
@@ -1425,6 +1489,18 @@ fn button_of(window: &Window, label: &str) -> egui::Rect {
         .unwrap_or_else(|| panic!("{label} has no button"))
 }
 
+/// The words of the toolbar from the left: every text above the chat.
+fn toolbar(window: &Window, app: &App) -> Vec<String> {
+    let chat = app.live_chat.panel().expect("the chat is drawn");
+    let mut above: Vec<_> = texts(&window.output)
+        .into_iter()
+        .filter(|(_, rect, _)| rect.bottom() <= chat.top())
+        .map(|(text, rect, _)| (text, rect.left()))
+        .collect();
+    above.sort_by(|a, b| a.1.total_cmp(&b.1));
+    above.into_iter().map(|(text, _)| text).collect()
+}
+
 fn assert_apart_and_inside(texts: &[(String, egui::Rect)], (width, height): (f32, f32)) {
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
     for (index, (first, a)) in texts.iter().enumerate() {
@@ -1443,10 +1519,11 @@ fn assert_apart_and_inside(texts: &[(String, egui::Rect)], (width, height): (f32
 
 #[test]
 fn nothing_leaves_the_window_or_overlaps_and_a_long_error_does_not_move_the_chat() {
-    for size in SIZES {
+    for room in ROOM {
+        let (size, readout) = (room.size, room.readout);
         let listening = |error: &str| {
             let mut app = mini();
-            app.settings.readout_enabled = true;
+            app.settings.readout_enabled = readout;
             app.caption_enabled = true;
             app.audio_enabled = true;
             app.asr_ready = true;
@@ -1454,18 +1531,24 @@ fn nothing_leaves_the_window_or_overlaps_and_a_long_error_does_not_move_the_chat
             app.service_error = error.into();
             app
         };
+        // While it listens, 聞く is 止める.
+        let controls: Vec<String> = room
+            .toolbar
+            .iter()
+            .map(|label| label.replace("● 聞く", "■ 止める"))
+            .collect();
         let mut app = listening("");
         let window = drawn(&mut app, size);
         let chat = app.live_chat.panel().expect("the chat is drawn");
-        for shown in [
-            "通常表示",
-            "■ 止める",
-            "自動読み上げ",
+        for shown in controls.iter().map(String::as_str).chain([
             "8番目の訳文です。",
             "PC音声を聞いています",
             credit::LABEL,
-        ] {
-            assert!(window.has(shown), "{shown} is not drawn at {size:?}");
+        ]) {
+            assert!(
+                window.has(shown),
+                "{shown} is not drawn at {size:?}, read-aloud {readout}"
+            );
         }
         assert_apart_and_inside(&around(&window, ""), size);
         assert!(
@@ -1473,21 +1556,25 @@ fn nothing_leaves_the_window_or_overlaps_and_a_long_error_does_not_move_the_chat
             "a line of a message is cut at the top at {size:?}"
         );
 
-        // The toolbar is one row of controls 32 points tall, above the chat.
-        let tops: Vec<f32> = ["通常表示", "■ 止める", "自動読み上げ"]
+        // The toolbar is one row of controls 32 points tall, above the chat,
+        // and no control is drawn over another.
+        let faces: Vec<(String, egui::Rect)> = controls
             .iter()
-            .map(|label| {
-                let button = button_of(&window, label);
-                assert!(
-                    (button.height() - 32.0).abs() < 0.5,
-                    "{label} is {} tall at {size:?}",
-                    button.height()
-                );
-                assert!(button.bottom() <= chat.top());
-                button.top()
-            })
+            .map(|label| (label.clone(), button_of(&window, label)))
             .collect();
-        assert!(tops.iter().all(|top| *top == tops[0]), "{tops:?}");
+        assert_apart_and_inside(&faces, size);
+        for (label, face) in &faces {
+            assert!(
+                (face.height() - 32.0).abs() < 0.5,
+                "{label} is {} tall at {size:?}",
+                face.height()
+            );
+            assert!(face.bottom() <= chat.top());
+        }
+        assert!(
+            faces.iter().all(|(_, face)| face.top() == faces[0].1.top()),
+            "{faces:?}"
+        );
 
         // The credit is at the bottom right, under the chat.
         let credit = window.at(credit::LABEL);
@@ -1514,6 +1601,89 @@ fn nothing_leaves_the_window_or_overlaps_and_a_long_error_does_not_move_the_chat
             Some(chat),
             "the empty talk moved the chat at {size:?}"
         );
+    }
+}
+
+#[test]
+fn a_control_is_in_the_menu_only_while_the_toolbar_has_no_room_for_it_at_every_width_and_scale() {
+    // At 1.1, one zoom-in step above 100%, the words of the controls are a
+    // fraction of a point wider than at 1 and 1.25.
+    for scale in [1.0, 1.1, 1.25] {
+        // How wide each control and the gap between two are drawn, from a
+        // toolbar that holds all three.
+        let mut app = mini();
+        let mut window = Window::new(USUAL.0, USUAL.1);
+        window.scale(scale);
+        window.settle(&mut app);
+        let widths = KEEP.map(|label| button_of(&window, label).width());
+        let gap = button_of(&window, "● 聞く").left() - button_of(&window, "通常表示").right();
+
+        for readout in [false, true] {
+            let mut app = mini();
+            app.settings.readout_enabled = readout;
+            let mut window = Window::new(SMALLEST.0, SMALLEST.1);
+            window.scale(scale);
+            // How many the toolbar held when the menu was last opened.
+            let mut opened_at = None;
+            // Every width the window can have, in whole pixels.
+            let pixels = |points: f32| (points * scale).round() as u32;
+            for wide in pixels(SMALLEST.0)..=pixels(USUAL.0) {
+                let size = (wide as f32 / scale, SMALLEST.1);
+                let at = format!("at {wide} pixels wide, {scale}x, read-aloud {readout}");
+                window.resize(size.0, size.1);
+                window.settle(&mut app);
+                let shown = toolbar(&window, &app);
+                let held: Vec<&str> = shown
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|label| MOVABLE.contains(label))
+                    .collect();
+                // The first ones of KEEP stay, and the toolbar and the menu
+                // have theirs in the order of MOVABLE.
+                let (stay, rest): (Vec<&str>, Vec<&str>) = MOVABLE
+                    .into_iter()
+                    .partition(|label| KEEP[..held.len()].contains(label));
+                assert_eq!(held, stay, "{at}");
+                let faces: Vec<(String, egui::Rect)> = shown
+                    .iter()
+                    .map(|label| (label.clone(), button_of(&window, label)))
+                    .collect();
+                assert_apart_and_inside(&faces, size);
+                for pair in faces.windows(2) {
+                    let apart = pair[1].1.left() - pair[0].1.right();
+                    assert!(
+                        apart > gap - 0.01,
+                        "{} is {apart} from {} {at}",
+                        pair[1].0,
+                        pair[0].0
+                    );
+                }
+                if let Some(next) = KEEP.get(held.len()) {
+                    let [.., (_, last), (_, menu)] = faces.as_slice() else {
+                        panic!("the toolbar is {shown:?} {at}");
+                    };
+                    let room = menu.left() - last.right() - 2.0 * gap;
+                    let needs = widths[held.len()];
+                    assert!(
+                        needs > room - 0.01,
+                        "{next} needs {needs} and is in the menu with {room} of room {at}"
+                    );
+                }
+                if opened_at != Some(held.len()) {
+                    opened_at = Some(held.len());
+                    open_menu(&mut window, &mut app);
+                    let (_, rows) = menu(&window, "入力の切り替え");
+                    let listed: Vec<&str> = rows
+                        .iter()
+                        .map(|(text, _)| text.as_str())
+                        .filter(|text| MOVABLE.contains(text))
+                        .collect();
+                    assert_eq!(listed, rest, "the menu {at}");
+                    window.draw(&mut app, vec![escape(), egui::Event::PointerGone]);
+                    window.settle(&mut app);
+                }
+            }
+        }
     }
 }
 
@@ -2084,13 +2254,16 @@ fn none_of_the_old_words_of_the_mini_view_is_drawn() {
             check(&window, scene, size);
             for behind in ["入力の切り替え", "表示", OTHER_FEATURES] {
                 open_menu(&mut window, &mut app);
-                assert!(window.has("最前面"), "{scene}: the menu is not open");
+                assert!(
+                    window.has("入力の切り替え"),
+                    "{scene}: the menu is not open"
+                );
                 check(&window, scene, size);
                 window.click(&mut app, behind);
                 check(&window, scene, size);
                 window.draw(&mut app, vec![escape()]);
                 window.settle(&mut app);
-                assert!(!window.has("最前面"), "{scene}: the menu is open");
+                assert!(!window.has("入力の切り替え"), "{scene}: the menu is open");
             }
         }
     }
@@ -2126,14 +2299,39 @@ fn choose(window: &mut Window, app: &mut App, label: &str) {
 }
 
 #[test]
+fn the_toolbar_keeps_clear_then_topmost_then_copy_all_while_they_fit_and_the_menu_lists_the_rest() {
+    for room in ROOM {
+        let (size, readout) = (room.size, room.readout);
+        let mut app = mini();
+        app.settings.readout_enabled = readout;
+        app.rows = talk(2);
+        let mut window = drawn(&mut app, size);
+        assert_eq!(
+            toolbar(&window, &app),
+            room.toolbar,
+            "the toolbar at {size:?}, read-aloud {readout}"
+        );
+        open_menu(&mut window, &mut app);
+        let (_, rows) = menu(&window, "入力の切り替え");
+        let words: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(
+            words, room.menu,
+            "the menu at {size:?}, read-aloud {readout}"
+        );
+    }
+}
+
+#[test]
 fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window() {
-    for size in SIZES {
+    for room in ROOM {
+        let size = room.size;
         for screens in [1, 2] {
             let mut app = mini();
+            app.settings.readout_enabled = room.readout;
             app.rows = talk(2);
             app.screens = two_screens().into_iter().take(screens).collect();
             let mut window = drawn(&mut app, size);
-            assert!(!window.has("最前面"), "the menu opens unasked");
+            assert!(!window.has("入力の切り替え"), "the menu opens unasked");
             assert!(
                 window.at("⋯").right() > size.0 - 30.0,
                 "⋯ is not at the right"
@@ -2167,17 +2365,11 @@ fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window()
             );
             let words: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
             assert_eq!(
-                words,
-                [
-                    "入力の切り替え",
-                    "表示",
-                    "最前面",
-                    "全文コピー",
-                    OTHER_FEATURES
-                ],
-                "{screens} screens at {size:?}"
+                words, room.menu,
+                "{screens} screens at {size:?}, read-aloud {}",
+                room.readout
             );
-            steps(&rows, Some("全文コピー"));
+            steps(&rows, Some(room.menu[room.menu.len() - 2]));
 
             window.click(&mut app, OTHER_FEATURES);
             let (frame, rows) = menu(&window, "範囲翻訳");
@@ -2222,11 +2414,11 @@ fn the_menu_button_is_called_other_and_escape_closes_the_menu_before_the_mini_vi
         "a screen reader is not told the name of the button"
     );
     window.settle(&mut app);
-    assert!(window.has("最前面"));
+    assert!(window.has("入力の切り替え"));
 
     window.draw(&mut app, vec![escape()]);
     window.settle(&mut app);
-    assert!(!window.has("最前面"), "Esc did not close the menu");
+    assert!(!window.has("入力の切り替え"), "Esc did not close the menu");
     assert!(app.window_mode.is_mini(), "Esc left the mini view as well");
     window.draw(&mut app, vec![escape()]);
     assert!(
@@ -2378,27 +2570,20 @@ fn the_display_options_of_the_menu_are_the_chat_s_own_settings() {
 
 #[test]
 fn the_topmost_switch_of_the_menu_raises_the_window_and_lowers_it_again() {
-    let level = |window: &Window| -> Vec<egui::WindowLevel> {
-        window.output.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .iter()
-            .filter_map(|command| match command {
-                egui::ViewportCommand::WindowLevel(level) => Some(*level),
-                _ => None,
-            })
-            .collect()
-    };
+    // At its smallest with the read-aloud switch, the toolbar has no room for
+    // 最前面.
     let mut app = mini();
-    let mut window = drawn(&mut app, USUAL);
+    app.settings.readout_enabled = true;
+    let mut window = drawn(&mut app, SMALLEST);
     open_menu(&mut window, &mut app);
     release_on(&mut window, &mut app, "最前面");
-    assert_eq!(level(&window), [egui::WindowLevel::AlwaysOnTop]);
+    assert_eq!(window_level(&window), [egui::WindowLevel::AlwaysOnTop]);
     assert!(app.window_mode.always_on_top());
 
     window.settle(&mut app);
     open_menu(&mut window, &mut app);
     release_on(&mut window, &mut app, "最前面");
-    assert_eq!(level(&window), [egui::WindowLevel::Normal]);
+    assert_eq!(window_level(&window), [egui::WindowLevel::Normal]);
     assert!(!app.window_mode.always_on_top());
 }
 
@@ -2409,7 +2594,8 @@ fn copy_all_in_the_menu_copies_the_talk_with_the_credit_also_from_behind_the_car
         if card {
             app.capture(&egui::Context::default());
         }
-        let mut window = drawn(&mut app, USUAL);
+        // At its smallest, the toolbar has no room for 全文コピー.
+        let mut window = drawn(&mut app, SMALLEST);
         open_menu(&mut window, &mut app);
         let empty = window.ink("全文コピー");
         window.click(&mut app, "全文コピー");
@@ -2434,6 +2620,248 @@ fn copy_all_in_the_menu_copies_the_talk_with_the_credit_also_from_behind_the_car
             card,
             "the copy changed what is shown"
         );
+    }
+}
+
+/// What the last frame asked of the window's level: on top of the others or
+/// back among them.
+fn window_level(window: &Window) -> Vec<egui::WindowLevel> {
+    window.output.viewport_output[&egui::ViewportId::ROOT]
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            egui::ViewportCommand::WindowLevel(level) => Some(*level),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The control is drawn as on: filled in the colour of what is chosen.
+fn drawn_on(window: &Window, label: &str) -> bool {
+    let words = window.at(label);
+    filled(&window.output, theme::ACCENT_SOFT)
+        .iter()
+        .any(|face| face.contains_rect(words))
+}
+
+#[test]
+fn the_topmost_switch_of_the_toolbar_raises_the_window_lowers_it_again_and_shows_which() {
+    let mut app = mini();
+    let mut window = drawn(&mut app, USUAL);
+    assert!(!drawn_on(&window, "最前面"), "it starts on");
+
+    release_on(&mut window, &mut app, "最前面");
+    assert_eq!(window_level(&window), [egui::WindowLevel::AlwaysOnTop]);
+    assert!(app.window_mode.always_on_top());
+    window.settle(&mut app);
+    assert!(
+        drawn_on(&window, "最前面"),
+        "it does not show that it is on"
+    );
+
+    release_on(&mut window, &mut app, "最前面");
+    assert_eq!(window_level(&window), [egui::WindowLevel::Normal]);
+    assert!(!app.window_mode.always_on_top());
+    window.settle(&mut app);
+    assert!(!drawn_on(&window, "最前面"), "it still shows that it is on");
+}
+
+#[test]
+fn copy_all_in_the_toolbar_copies_the_talk_with_the_credit_also_from_behind_the_card() {
+    for card in [false, true] {
+        let mut app = mini();
+        app.rows = talk(2);
+        if card {
+            app.capture(&egui::Context::default());
+        }
+        let mut window = drawn(&mut app, USUAL);
+        hover_later(&mut window, &mut app, "全文コピー");
+        assert!(
+            has_text_containing(&window.output, COPY_ALL_HINT),
+            "the hover text is not the chat header's"
+        );
+        window.click(&mut app, "全文コピー");
+        assert_eq!(
+            app.live_chat.copied(),
+            Some(credit::published("1番目の訳文です。\n\n2番目の訳文です。").as_str()),
+            "behind the card: {card}"
+        );
+        assert_eq!(
+            window.has(NO_SCREEN),
+            card,
+            "the copy changed what is shown"
+        );
+    }
+}
+
+#[test]
+fn clear_in_the_toolbar_and_in_the_menu_starts_a_new_talk_as_the_chat_header_s_does() {
+    for (size, readout, place) in [(USUAL, false, "toolbar"), (SMALLEST, true, "menu")] {
+        let history = tempfile::tempdir().unwrap();
+        let earlier = Journal::new(history.path()).unwrap();
+        let message = row(1, "音声", "こんにちは。");
+        earlier.append(&message.record).unwrap();
+        let earlier_talk = earlier.path.clone();
+        let mut app = mini();
+        app.settings.readout_enabled = readout;
+        app.journal = Some(earlier);
+        app.rows = vec![message];
+        let mut window = drawn(&mut app, size);
+        if place == "menu" {
+            open_menu(&mut window, &mut app);
+        }
+        hover_later(&mut window, &mut app, "クリア");
+        assert!(
+            has_text_containing(&window.output, CLEAR_HINT),
+            "the hover text in the {place} is not the chat header's"
+        );
+
+        window.click(&mut app, "クリア");
+        assert!(app.rows.is_empty(), "the {place} left the chat as it was");
+        let journal = app.journal.as_ref().expect("a new talk is begun");
+        assert_ne!(journal.path, earlier_talk, "the {place} kept the talk");
+        assert_eq!(journal.path.parent(), Some(history.path()));
+        assert!(
+            fs::read_to_string(&earlier_talk)
+                .unwrap()
+                .contains("Original 1."),
+            "the earlier talk lost its messages"
+        );
+        assert!(app.window_mode.is_mini());
+    }
+}
+
+#[test]
+fn clear_waits_while_the_card_covers_the_chat_and_can_be_pressed_again_back_on_the_chat() {
+    for (size, readout, place) in [(USUAL, false, "toolbar"), (SMALLEST, true, "menu")] {
+        let open = |window: &mut Window, app: &mut App| {
+            if place == "menu" {
+                open_menu(window, app);
+            }
+        };
+        let faded = {
+            let mut app = mini();
+            app.settings.readout_enabled = readout;
+            let mut window = drawn(&mut app, size);
+            open(&mut window, &mut app);
+            window.ink("クリア")
+        };
+        let mut app = mini();
+        app.settings.readout_enabled = readout;
+        app.rows = talk(2);
+        app.capture(&egui::Context::default());
+        let mut window = drawn(&mut app, size);
+        open(&mut window, &mut app);
+        assert_eq!(
+            window.ink("クリア"),
+            faded,
+            "クリア in the {place} can be pressed while the card covers the chat"
+        );
+        window.click(&mut app, "クリア");
+        assert_eq!(
+            app.rows.len(),
+            2,
+            "the {place} cleared a talk that is out of sight"
+        );
+
+        open(&mut window, &mut app);
+        window.click(&mut app, "← チャットに戻る");
+        assert!(shows_talk(&window, 2), "the chat is back");
+        open(&mut window, &mut app);
+        assert_ne!(
+            window.ink("クリア"),
+            faded,
+            "クリア in the {place} is still faded back on the chat"
+        );
+    }
+}
+
+#[test]
+fn the_chat_header_s_clear_is_not_held_back_by_a_card_the_mini_view_was_left_on() {
+    let enabled = {
+        let mut app = chat();
+        app.rows = talk(2);
+        drawn(&mut app, MAIN).ink("クリア")
+    };
+    let mut app = mini();
+    app.rows = talk(2);
+    app.capture(&egui::Context::default());
+    let mut window = drawn(&mut app, USUAL);
+    assert!(window.has(NO_SCREEN));
+    window.draw(&mut app, vec![escape()]);
+    assert!(!app.window_mode.is_mini());
+
+    let mut window = drawn(&mut app, MAIN);
+    window.click(&mut app, "← チャットに戻る");
+    window.settle(&mut app);
+    assert!(app.tab == Tab::Live);
+    assert_eq!(
+        window.ink("クリア"),
+        enabled,
+        "the chat header's クリア is faded after the mini view was left on the card"
+    );
+}
+
+#[test]
+fn the_topmost_switch_says_what_it_does_in_the_toolbar_and_in_the_menu() {
+    for (size, readout, place) in [(USUAL, false, "toolbar"), (SMALLEST, true, "menu")] {
+        let mut app = mini();
+        app.settings.readout_enabled = readout;
+        let mut window = drawn(&mut app, size);
+        if place == "menu" {
+            open_menu(&mut window, &mut app);
+        }
+        hover_later(&mut window, &mut app, "最前面");
+        assert!(
+            has_text_containing(&window.output, TOPMOST_HINT),
+            "最前面 in the {place} does not say what it does"
+        );
+    }
+}
+
+#[test]
+fn clear_and_copy_all_of_the_mini_view_can_be_pressed_exactly_when_the_chat_header_s_can() {
+    type Change = fn(&mut App);
+    let talks: [(&str, Change); 6] = [
+        ("an empty talk", |_| {}),
+        ("text and range translations", |app| {
+            app.rows = vec![
+                row(1, "文章", "文章の訳文です。"),
+                row(2, "画面OCR", "範囲の訳文です。"),
+            ]
+        }),
+        ("a PC-audio message", |app| {
+            app.rows = vec![row(1, "音声", "こんにちは。")]
+        }),
+        ("a message not translated yet", |app| {
+            app.rows = vec![row(1, "音声", "")]
+        }),
+        ("speech being recognised", |app| {
+            app.asr_partial = " recognizing... ".into()
+        }),
+        ("blank speech", |app| app.asr_partial = "   ".into()),
+    ];
+    for (talk, change) in talks {
+        let mut main = chat();
+        change(&mut main);
+        let header = drawn(&mut main, MAIN);
+        for room in ROOM {
+            let (size, readout) = (room.size, room.readout);
+            for label in ["クリア", "全文コピー"] {
+                let mut app = mini();
+                app.settings.readout_enabled = readout;
+                change(&mut app);
+                let mut window = drawn(&mut app, size);
+                if !room.toolbar.contains(&label) {
+                    open_menu(&mut window, &mut app);
+                }
+                assert_eq!(
+                    window.ink(label),
+                    header.ink(label),
+                    "{label} with {talk} at {size:?}, read-aloud {readout}"
+                );
+            }
+        }
     }
 }
 

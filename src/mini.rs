@@ -15,6 +15,33 @@ const MARGIN: f32 = 6.0;
 const LISTEN_BUTTON: Vec2 = Vec2::new(88.0, theme::CONTROL_H);
 /// Height of the row under the chat: one line of small text.
 const STATUS_ROW: f32 = 20.0;
+const TOPMOST: &str = "最前面";
+const TOPMOST_HINT: &str = "ほかの窓より手前に置きます。通常表示に戻ると外れます。";
+
+/// A control that is in the toolbar while the toolbar has room for it, and a
+/// row of the 「⋯」 menu while it has not.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Movable {
+    Clear,
+    Topmost,
+    CopyAll,
+}
+
+impl Movable {
+    /// From the left in the toolbar and from the top in the menu.
+    const ALL: [Self; 3] = [Self::Clear, Self::CopyAll, Self::Topmost];
+    /// In the order they keep their place in the toolbar: 全文コピー is the
+    /// first to go into the menu and クリア the last.
+    const KEEP: [Self; 3] = [Self::Clear, Self::Topmost, Self::CopyAll];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Clear => ui::CLEAR.label,
+            Self::Topmost => TOPMOST,
+            Self::CopyAll => ui::COPY_ALL.label,
+        }
+    }
+}
 
 /// What takes the room between the toolbar and the status row.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -69,6 +96,16 @@ enum Card<'a> {
     Translating(&'a str),
     Translated(&'a str),
     Empty,
+}
+
+/// The 「⋯」 button at the right end of the toolbar.
+fn menu_button(ui: &mut egui::Ui) -> egui::Response {
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Id::new(MENU));
+    let button = ui
+        .add(ui::standard("⋯").selected(open))
+        .on_hover_text("その他");
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "その他"));
+    button
 }
 
 /// One row of controls from the right edge, exactly one control tall. With
@@ -180,50 +217,108 @@ impl App {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         control_row(ui, "mini-toolbar", |ui| {
-            self.menu(ui);
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                if ui
-                    .add(ui::standard("通常表示"))
-                    .on_hover_text("通常表示に戻る（Esc）")
-                    .clicked()
-                {
-                    self.restore_normal_view(ui.ctx());
-                }
-                if self.listen_button(ui, LISTEN_BUTTON).clicked() {
-                    self.toggle_listening(ui.ctx());
-                }
-                if self.settings.readout_enabled
-                    && ui::auto_read_switch(ui, self.settings.auto_read).clicked()
-                {
-                    self.toggle_auto_read(ui.ctx());
-                }
-            });
+            let more = menu_button(ui);
+            let held = ui
+                .with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    if ui
+                        .add(ui::standard("通常表示"))
+                        .on_hover_text("通常表示に戻る（Esc）")
+                        .clicked()
+                    {
+                        self.restore_normal_view(ui.ctx());
+                    }
+                    if self.listen_button(ui, LISTEN_BUTTON).clicked() {
+                        self.toggle_listening(ui.ctx());
+                    }
+                    if self.settings.readout_enabled
+                        && ui::auto_read_switch(ui, self.settings.auto_read).clicked()
+                    {
+                        self.toggle_auto_read(ui.ctx());
+                    }
+                    // Measured on each frame, because the scale changes how
+                    // wide the words are.
+                    let mut room = ui.available_width();
+                    let mut held = 0;
+                    for control in Movable::KEEP {
+                        let width = ui::standard_width(ui, control.label());
+                        if width > room {
+                            break;
+                        }
+                        room -= width + ui.spacing().item_spacing.x;
+                        held += 1;
+                    }
+                    let kept = &Movable::KEEP[..held];
+                    for control in Movable::ALL {
+                        if kept.contains(&control) && self.movable_button(ui, control) {
+                            self.use_movable(ui.ctx(), control);
+                        }
+                    }
+                    held
+                })
+                .inner;
+            self.menu(&more, &Movable::KEEP[..held]);
         });
     }
 
-    /// The 「⋯」 menu holds what the chat's own menu and header offer that a
-    /// small window over other work has a use for.
-    fn menu(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        let id = egui::Id::new(MENU);
-        let open = egui::Popup::is_id_open(&ctx, id);
-        let button = ui
-            .add(ui::standard("⋯").selected(open))
-            .on_hover_text("その他");
-        button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "その他"));
-        let (mut input, mut range) = (None, false);
-        egui::Popup::menu(&button).id(id).show(|ui| {
-            ui::space_menu_rows(ui);
-            input = self.input_menu(ui);
-            self.display_menu(ui);
-            let mut top = self.window_mode.always_on_top();
-            if ui::toggle(ui, &mut top, "最前面").changed() {
+    /// `control` as a button of the toolbar. True when it was pressed.
+    fn movable_button(&self, ui: &mut egui::Ui, control: Movable) -> bool {
+        match control {
+            Movable::Clear => ui::CLEAR.button(ui, self.can_clear_shown_talk()).clicked(),
+            Movable::Topmost => ui::choice_button(ui, TOPMOST, self.window_mode.always_on_top())
+                .on_hover_text(TOPMOST_HINT)
+                .clicked(),
+            Movable::CopyAll => ui::COPY_ALL.button(ui, self.can_copy_talk()).clicked(),
+        }
+    }
+
+    /// `control` as a row of the 「⋯」 menu. True when it was chosen.
+    fn movable_row(&self, ui: &mut egui::Ui, control: Movable) -> bool {
+        match control {
+            Movable::Clear => ui::CLEAR.row(ui, self.can_clear_shown_talk()),
+            Movable::Topmost => {
+                let mut top = self.window_mode.always_on_top();
+                ui::toggle(ui, &mut top, TOPMOST)
+                    .on_hover_text(TOPMOST_HINT)
+                    .changed()
+            }
+            Movable::CopyAll => ui::COPY_ALL.row(ui, self.can_copy_talk()),
+        }
+    }
+
+    /// クリア clears the talk on screen, so it waits while the card covers it.
+    fn can_clear_shown_talk(&self) -> bool {
+        !self.mini.shows_card() && self.can_clear_talk()
+    }
+
+    /// What `control` does, in the toolbar and in the menu alike.
+    fn use_movable(&mut self, ctx: &egui::Context, control: Movable) {
+        match control {
+            Movable::Clear => self.clear_talk(),
+            Movable::Topmost => {
+                let top = !self.window_mode.always_on_top();
                 for command in self.window_mode.set_always_on_top(top) {
                     ctx.send_viewport_cmd(command);
                 }
             }
-            if ui::COPY_ALL.row(ui, self.can_copy_talk()) {
-                self.copy_talk();
+            Movable::CopyAll => self.copy_talk(),
+        }
+    }
+
+    /// The 「⋯」 menu holds what the chat's own menu and header offer that a
+    /// small window over other work has a use for, with the controls the
+    /// toolbar has no room for.
+    fn menu(&mut self, button: &egui::Response, kept: &[Movable]) {
+        let ctx = button.ctx.clone();
+        let id = egui::Id::new(MENU);
+        let (mut input, mut range) = (None, false);
+        egui::Popup::menu(button).id(id).show(|ui| {
+            ui::space_menu_rows(ui);
+            input = self.input_menu(ui);
+            self.display_menu(ui);
+            for control in Movable::ALL {
+                if !kept.contains(&control) && self.movable_row(ui, control) {
+                    self.use_movable(&ctx, control);
+                }
             }
             ui.separator();
             ui::other_features_menu(ui, |ui| {

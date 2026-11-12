@@ -1298,11 +1298,11 @@ fn escape_closes_the_menu_before_it_lets_go_of_selected_text() {
         vec![press(to, egui::PointerButton::Primary, false)],
     );
     open_menu(&mut window, &mut app);
-    assert!(window.has("最前面") && !selected(&window.output).is_empty());
+    assert!(window.has("入力の切り替え") && !selected(&window.output).is_empty());
 
     window.draw(&mut app, vec![escape()]);
     window.settle(&mut app);
-    assert!(!window.has("最前面"), "Esc did not close the menu");
+    assert!(!window.has("入力の切り替え"), "Esc did not close the menu");
     assert_eq!(
         selected(&window.output),
         ["1番目の訳文です。"],
@@ -2253,13 +2253,16 @@ fn none_of_the_old_words_of_the_mini_view_is_drawn() {
             check(&window, scene, size);
             for behind in ["入力の切り替え", "表示", OTHER_FEATURES] {
                 open_menu(&mut window, &mut app);
-                assert!(window.has("最前面"), "{scene}: the menu is not open");
+                assert!(
+                    window.has("入力の切り替え"),
+                    "{scene}: the menu is not open"
+                );
                 check(&window, scene, size);
                 window.click(&mut app, behind);
                 check(&window, scene, size);
                 window.draw(&mut app, vec![escape()]);
                 window.settle(&mut app);
-                assert!(!window.has("最前面"), "{scene}: the menu is open");
+                assert!(!window.has("入力の切り替え"), "{scene}: the menu is open");
             }
         }
     }
@@ -2319,13 +2322,15 @@ fn the_toolbar_keeps_clear_then_topmost_then_copy_all_while_they_fit_and_the_men
 
 #[test]
 fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window() {
-    for size in SIZES {
+    for room in ROOM {
+        let size = room.size;
         for screens in [1, 2] {
             let mut app = mini();
+            app.settings.readout_enabled = room.readout;
             app.rows = talk(2);
             app.screens = two_screens().into_iter().take(screens).collect();
             let mut window = drawn(&mut app, size);
-            assert!(!window.has("最前面"), "the menu opens unasked");
+            assert!(!window.has("入力の切り替え"), "the menu opens unasked");
             assert!(
                 window.at("⋯").right() > size.0 - 30.0,
                 "⋯ is not at the right"
@@ -2359,17 +2364,11 @@ fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window()
             );
             let words: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
             assert_eq!(
-                words,
-                [
-                    "入力の切り替え",
-                    "表示",
-                    "最前面",
-                    "全文コピー",
-                    OTHER_FEATURES
-                ],
-                "{screens} screens at {size:?}"
+                words, room.menu,
+                "{screens} screens at {size:?}, read-aloud {}",
+                room.readout
             );
-            steps(&rows, Some("全文コピー"));
+            steps(&rows, Some(room.menu[room.menu.len() - 2]));
 
             window.click(&mut app, OTHER_FEATURES);
             let (frame, rows) = menu(&window, "範囲翻訳");
@@ -2414,11 +2413,11 @@ fn the_menu_button_is_called_other_and_escape_closes_the_menu_before_the_mini_vi
         "a screen reader is not told the name of the button"
     );
     window.settle(&mut app);
-    assert!(window.has("最前面"));
+    assert!(window.has("入力の切り替え"));
 
     window.draw(&mut app, vec![escape()]);
     window.settle(&mut app);
-    assert!(!window.has("最前面"), "Esc did not close the menu");
+    assert!(!window.has("入力の切り替え"), "Esc did not close the menu");
     assert!(app.window_mode.is_mini(), "Esc left the mini view as well");
     window.draw(&mut app, vec![escape()]);
     assert!(
@@ -2570,27 +2569,20 @@ fn the_display_options_of_the_menu_are_the_chat_s_own_settings() {
 
 #[test]
 fn the_topmost_switch_of_the_menu_raises_the_window_and_lowers_it_again() {
-    let level = |window: &Window| -> Vec<egui::WindowLevel> {
-        window.output.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .iter()
-            .filter_map(|command| match command {
-                egui::ViewportCommand::WindowLevel(level) => Some(*level),
-                _ => None,
-            })
-            .collect()
-    };
+    // At its smallest with the read-aloud switch, the toolbar has no room for
+    // 最前面.
     let mut app = mini();
-    let mut window = drawn(&mut app, USUAL);
+    app.settings.readout_enabled = true;
+    let mut window = drawn(&mut app, SMALLEST);
     open_menu(&mut window, &mut app);
     release_on(&mut window, &mut app, "最前面");
-    assert_eq!(level(&window), [egui::WindowLevel::AlwaysOnTop]);
+    assert_eq!(window_level(&window), [egui::WindowLevel::AlwaysOnTop]);
     assert!(app.window_mode.always_on_top());
 
     window.settle(&mut app);
     open_menu(&mut window, &mut app);
     release_on(&mut window, &mut app, "最前面");
-    assert_eq!(level(&window), [egui::WindowLevel::Normal]);
+    assert_eq!(window_level(&window), [egui::WindowLevel::Normal]);
     assert!(!app.window_mode.always_on_top());
 }
 
@@ -2601,7 +2593,8 @@ fn copy_all_in_the_menu_copies_the_talk_with_the_credit_also_from_behind_the_car
         if card {
             app.capture(&egui::Context::default());
         }
-        let mut window = drawn(&mut app, USUAL);
+        // At its smallest, the toolbar has no room for 全文コピー.
+        let mut window = drawn(&mut app, SMALLEST);
         open_menu(&mut window, &mut app);
         let empty = window.ink("全文コピー");
         window.click(&mut app, "全文コピー");

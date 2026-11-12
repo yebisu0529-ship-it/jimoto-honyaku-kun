@@ -522,9 +522,23 @@ pub(super) fn primary(label: &str) -> egui::Button<'_> {
     .fill(ACCENT)
     .min_size(Vec2::new(140.0, theme::CONTROL_H_LARGE))
 }
+fn standard_words(label: &str) -> RichText {
+    RichText::new(label).size(theme::SIZE_LABEL).color(TEXT)
+}
 pub(super) fn standard(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).size(theme::SIZE_LABEL).color(TEXT))
-        .min_size(Vec2::new(0.0, theme::CONTROL_H))
+    egui::Button::new(standard_words(label)).min_size(Vec2::new(0.0, theme::CONTROL_H))
+}
+/// How wide `standard(label)` is drawn in `ui`, known before it is drawn: its
+/// words in the font and at the scale they are drawn in, and the padding on
+/// each side.
+pub(super) fn standard_width(ui: &egui::Ui, label: &str) -> f32 {
+    let words = egui::WidgetText::from(standard_words(label)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    words.size().x + egui::Margin::from(ui.spacing().button_padding).sum().x
 }
 pub(super) fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     ui.scope(|ui| {
@@ -715,6 +729,11 @@ const FILE_TRANSLATION: Control = Control {
     shortcut: "",
     hover: "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。",
 };
+pub(super) const CLEAR: Control = Control {
+    label: "クリア",
+    shortcut: "",
+    hover: "表示中の会話を消して、新しく始めます。消した会話は「履歴」に残ります。",
+};
 pub(super) const COPY_ALL: Control = Control {
     label: "全文コピー",
     shortcut: "",
@@ -734,7 +753,7 @@ pub(super) const TRANSLATION_HINT: &str = "訳文はここに表示されます"
 
 /// A button that is filled while it is the chosen one, and tells a screen
 /// reader so.
-fn choice_button(ui: &mut egui::Ui, label: &str, chosen: bool) -> egui::Response {
+pub(super) fn choice_button(ui: &mut egui::Ui, label: &str, chosen: bool) -> egui::Response {
     let response = ui.add(standard(label).selected(chosen));
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, chosen, label));
@@ -1132,7 +1151,13 @@ impl App {
         }
     }
 
-    fn clear_talk(&mut self) {
+    /// クリア has something to clear: a message in the chat, or speech being
+    /// recognised.
+    pub(super) fn can_clear_talk(&self) -> bool {
+        self.rows.iter().any(in_chat) || !self.asr_partial.trim().is_empty()
+    }
+
+    pub(super) fn clear_talk(&mut self) {
         let dir = self
             .journal
             .as_ref()
@@ -1826,19 +1851,11 @@ impl App {
 
     pub(super) fn live_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
-            let can_clear = self.rows.iter().any(in_chat) || !self.asr_partial.trim().is_empty();
+            let can_clear = self.can_clear_talk();
             let can_copy = self.can_copy_talk();
             let (mut clear, mut copy_all) = (false, false);
             self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |ui| {
-                if ui
-                    .add_enabled(can_clear, standard("クリア"))
-                    .on_hover_text(
-                        "表示中の会話を消して、新しく始めます。消した会話は「履歴」に残ります。",
-                    )
-                    .clicked()
-                {
-                    clear = true;
-                }
+                clear = CLEAR.button(ui, can_clear).clicked();
                 copy_all = COPY_ALL.button(ui, can_copy).clicked();
             });
             if clear {

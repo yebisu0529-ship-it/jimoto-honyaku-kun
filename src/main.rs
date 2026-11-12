@@ -720,13 +720,13 @@ impl App {
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.output.clear();
+        let shown = std::mem::take(&mut self.output);
         if let Some(kind) = kind {
             self.keep_in_history(id, text.clone(), kind);
         }
         self.manual_busy = Some(id);
         self.simple
-            .sent(simple::Input::of(&text, &self.settings.translation));
+            .sent(simple::Input::of(&text, &self.settings.translation), shown);
         self.mini.result_begins();
         let options = self.settings.translation.clone();
         // Tests run on PCs where the app may be in use. A test that reached
@@ -1362,6 +1362,7 @@ impl App {
         if let Some(text) = self.take_ready_ocr() {
             self.input = text;
             self.translate(self.input.clone(), Some("画面OCR"));
+            self.simple.reading_sent();
         }
         self.kick_screen_ocr();
         while let Ok(caption) = self.bridge_rx.try_recv() {

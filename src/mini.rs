@@ -59,7 +59,8 @@ pub(super) struct MiniState {
     showing: Showing,
     /// Why the last reading or text translation failed, in the words the
     /// status row was given. It is the newest thing that happened: a request
-    /// that begins and a translation that is done both clear it.
+    /// that begins, a translation that is done and emptying the シンプル翻訳
+    /// input all clear it.
     failure: Option<String>,
     /// The chat has not been drawn since the mini view was entered. Its first
     /// drawing goes to the newest message.
@@ -77,6 +78,12 @@ impl MiniState {
     pub(super) fn result_begins(&mut self) {
         self.failure = None;
         self.card_from_top = true;
+    }
+
+    /// The シンプル翻訳 input was emptied, and its translation with it. A
+    /// failure the card showed is over too.
+    pub(super) fn input_emptied(&mut self) {
+        self.failure = None;
     }
 
     pub(super) fn shows_card(&self) -> bool {

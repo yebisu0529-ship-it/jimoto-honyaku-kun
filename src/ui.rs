@@ -16,8 +16,10 @@ const LISTEN_BAR_HEIGHT: f32 = theme::CONTROL_H_LARGE + 2.0 * theme::SPACE_2;
 const LISTEN_BUTTON: Vec2 = Vec2::new(140.0, theme::CONTROL_H_LARGE);
 /// The key that does what the button under the chat does.
 const LISTEN_SHORTCUT: &str = "Ctrl + Alt + L";
-/// The pages the Ctrl+number shortcuts open. The chat is the home screen; the
-/// others are reached from the その他 menu.
+/// The pages the Ctrl+number shortcuts open. The chat is the home screen, and
+/// every other page has the way back to it. シンプル翻訳 is a button in the
+/// chat's header and a row of the その他 menu; 履歴 and 設定 are rows of that
+/// menu.
 const PAGE_KEYS: [(Tab, &str, egui::Key); 4] = [
     (Tab::Text, SIMPLE.label, egui::Key::Num1),
     (Tab::Live, "チャット", egui::Key::Num2),
@@ -1739,7 +1741,7 @@ impl App {
                 .min_scrolled_height(height)
                 .show(ui, |ui| {
                     // An immutable text buffer remains selectable, but never changes the translation.
-                    let mut output = self.output.as_str();
+                    let mut output = self.card_text();
                     ui.add_sized(
                         [ui.available_width(), height],
                         egui::TextEdit::multiline(&mut output)

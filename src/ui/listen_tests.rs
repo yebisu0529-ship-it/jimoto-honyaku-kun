@@ -388,6 +388,30 @@ fn captions_are_told_again_after_youtube_captions_were_turned_on_and_off_again()
 }
 
 #[test]
+fn turning_youtube_captions_on_takes_the_hint_that_asked_for_it_off_the_status_line() {
+    let ctx = egui::Context::default();
+    let mut app = chat_without_speech();
+    let extension = extension(&mut app);
+    extension
+        .send(caption("The library opens at nine.", false))
+        .unwrap();
+    app.process(&ctx);
+    assert_eq!(app.status, CAPTIONS_ARRIVING);
+
+    flip_the_switch(&mut app);
+    assert!(app.settings.translate_youtube_captions);
+    assert_eq!(
+        app.status, "",
+        "the line still asks to turn on what was just turned on"
+    );
+
+    flip_the_switch(&mut app);
+    app.status = "設定を保存しました。".into();
+    flip_the_switch(&mut app);
+    assert_eq!(app.status, "設定を保存しました。", "other news stays");
+}
+
+#[test]
 fn with_youtube_captions_on_the_captions_from_the_extension_reach_the_chat() {
     let mut app = with_youtube_captions(chat_without_speech());
     let extension = extension(&mut app);

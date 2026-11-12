@@ -313,8 +313,11 @@ impl App {
         let (mut input, mut range) = (None, false);
         egui::Popup::menu(button).id(id).show(|ui| {
             ui::space_menu_rows(ui);
-            input = self.input_menu(ui);
+            // A submenu opens down from its row. 表示 has the tallest, so it
+            // is the first row, where it fits beside the menu also in the
+            // smallest window.
             self.display_menu(ui);
+            input = self.input_menu(ui);
             for control in Movable::ALL {
                 if !kept.contains(&control) && self.movable_row(ui, control) {
                     self.use_movable(&ctx, control);

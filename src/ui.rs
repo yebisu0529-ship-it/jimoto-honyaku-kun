@@ -19,7 +19,7 @@ const LISTEN_SHORTCUT: &str = "Ctrl + Alt + L";
 /// The pages the Ctrl+number shortcuts open. The chat is the home screen; the
 /// others are reached from the その他 menu.
 const PAGE_KEYS: [(Tab, &str, egui::Key); 4] = [
-    (Tab::Text, "文章", egui::Key::Num1),
+    (Tab::Text, SIMPLE.label, egui::Key::Num1),
     (Tab::Live, "チャット", egui::Key::Num2),
     (Tab::Files, "履歴", egui::Key::Num3),
     (Tab::Settings, "設定", egui::Key::Num4),
@@ -646,6 +646,7 @@ enum MenuChoice {
     ScreenText,
     /// A choice in 入力の切り替え.
     Input(LiveSourceMode),
+    Image,
     File,
     History,
     Models,
@@ -709,6 +710,13 @@ impl Control {
     }
 }
 
+/// シンプル翻訳: a button in the chat's header and the first row of the menu.
+/// Its hover text is also the subtitle of its screen.
+const SIMPLE: Control = Control {
+    label: "シンプル翻訳",
+    shortcut: "",
+    hover: "左に入れた文を、右に訳します。",
+};
 const MINI: Control = Control {
     label: "ミニ表示",
     shortcut: "Ctrl + Shift + M",
@@ -941,6 +949,14 @@ impl App {
             };
             row(
                 ui,
+                MenuChoice::Text,
+                SIMPLE.label,
+                &page_shortcut(Tab::Text),
+                SIMPLE.hover,
+                true,
+            );
+            row(
+                ui,
                 MenuChoice::Mini,
                 MINI.label,
                 MINI.shortcut,
@@ -991,14 +1007,6 @@ impl App {
             other_features_menu(ui, |ui| {
                 row(
                     ui,
-                    MenuChoice::Text,
-                    "文章を翻訳",
-                    &page_shortcut(Tab::Text),
-                    "",
-                    true,
-                );
-                row(
-                    ui,
                     MenuChoice::Range,
                     RANGE.label,
                     RANGE.shortcut,
@@ -1014,6 +1022,7 @@ impl App {
                     LiveSourceMode::Screen.hint(),
                     can_screen,
                 );
+                row(ui, MenuChoice::Image, "画像から翻訳", "", "", ready);
                 row(
                     ui,
                     MenuChoice::File,
@@ -1128,7 +1137,8 @@ impl App {
             MenuChoice::Mini => self.enter_mini_view(ctx),
             MenuChoice::Text => self.tab = Tab::Text,
             MenuChoice::Range => {
-                // The reading lands on the 文章 screen; the chat does not show it.
+                // The reading lands on the シンプル翻訳 screen; the chat does
+                // not show it.
                 self.tab = Tab::Text;
                 self.capture(ctx);
             }
@@ -1138,6 +1148,10 @@ impl App {
                 self.apply_input(ctx, LiveSourceMode::Screen);
             }
             MenuChoice::Input(mode) => self.choose_input(ctx, mode),
+            MenuChoice::Image => {
+                self.tab = Tab::Text;
+                self.open_image();
+            }
             MenuChoice::File => {
                 self.tab = Tab::Text;
                 self.translate_file();
@@ -1741,30 +1755,11 @@ impl App {
 
     pub(super) fn text_ui(&mut self, ui: &mut egui::Ui) {
         page_column(ui, |ui| {
-            let ready = self.backend_ready;
-            let can_file = ready && !self.file_busy;
-            let (mut open_image, mut translate_file, mut cancel_file) = (false, false, false);
-            let translate_ready =
-                self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
+            let mut cancel_file = false;
+            // Also while a translation is in flight: a press waits for it.
+            let translate_ready = self.backend_ready && !self.input.trim().is_empty();
             let mut translate = false;
-            self.page_header(
-                ui,
-                "文章翻訳",
-                "貼り付けた文章、画像の文字、ファイルを翻訳します。",
-                |ui| {
-                    // Laid out from the right edge, so 画像から翻訳 is read first.
-                    translate_file = FILE_TRANSLATION.button(ui, can_file).clicked();
-                    if ui.add_enabled(ready, standard("画像から翻訳")).clicked() {
-                        open_image = true;
-                    }
-                },
-            );
-            if open_image {
-                self.open_image();
-            }
-            if translate_file {
-                self.translate_file();
-            }
+            self.page_header(ui, SIMPLE.label, SIMPLE.hover, |_| {});
             ui.add_space(theme::SPACE_2);
             // Languages, then the action they configure, on one line.
             live_region(ui, "text-languages", theme::CONTROL_H_LARGE, |ui| {
@@ -1801,8 +1796,6 @@ impl App {
                 }
             }
             ui.add_space(theme::SPACE_2);
-            let ready =
-                self.backend_ready && self.manual_busy.is_none() && !self.input.trim().is_empty();
             let total = ui.available_width();
             if total < SIDE_BY_SIDE_MIN_WIDTH {
                 let half = ((ui.available_height() - theme::SPACE_2) / 2.0).max(0.0);
@@ -1843,7 +1836,8 @@ impl App {
                     );
                 });
             }
-            if ready && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter)) {
+            if translate_ready && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter))
+            {
                 self.manual_translate();
             }
         });
@@ -1853,13 +1847,17 @@ impl App {
         page_column(ui, |ui| {
             let can_clear = self.can_clear_talk();
             let can_copy = self.can_copy_talk();
-            let (mut clear, mut copy_all) = (false, false);
+            let (mut clear, mut copy_all, mut simple) = (false, false, false);
             self.page_header(ui, "Talk風Live翻訳", "PC内で翻訳", |ui| {
                 clear = CLEAR.button(ui, can_clear).clicked();
                 copy_all = COPY_ALL.button(ui, can_copy).clicked();
+                simple = SIMPLE.button(ui, true).clicked();
             });
             if clear {
                 self.clear_talk();
+            }
+            if simple {
+                self.tab = Tab::Text;
             }
             ui.add_space(theme::SPACE_2);
             self.live_status_line(ui);
@@ -2268,12 +2266,8 @@ impl App {
             .show(ui, |ui| {
                 // The keys of what is in front. Those of the other features
                 // are on their rows behind その他の機能.
-                let pages: Vec<_> = PAGE_KEYS
-                    .iter()
-                    .filter(|(tab, _, _)| *tab != Tab::Text)
-                    .collect();
-                let names: Vec<_> = pages.iter().map(|(_, name, _)| *name).collect();
-                let (first, last) = (pages[0], pages[pages.len() - 1]);
+                let names: Vec<_> = PAGE_KEYS.iter().map(|(_, name, _)| *name).collect();
+                let (first, last) = (PAGE_KEYS[0], PAGE_KEYS[PAGE_KEYS.len() - 1]);
                 for line in [
                     format!("聞く・止める: {LISTEN_SHORTCUT}"),
                     format!("{}: {}", MINI.label, MINI.shortcut),
@@ -2466,6 +2460,7 @@ impl App {
             });
             return;
         }
+        self.simple_tick(ctx);
         if ctx.input_mut(|input| {
             input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::M)
         }) {
@@ -2639,6 +2634,8 @@ mod listen_tests;
 mod mini_tests;
 #[cfg(test)]
 mod settings_tests;
+#[cfg(test)]
+mod simple_tests;
 #[cfg(test)]
 mod live_layout_tests {
     use super::*;

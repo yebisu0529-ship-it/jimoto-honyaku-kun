@@ -38,6 +38,7 @@ mod screen_ocr;
 mod services;
 mod setup;
 mod setup_chain;
+mod simple;
 mod streaming;
 mod subtitle_window;
 mod theme;
@@ -353,6 +354,7 @@ struct App {
     capture_protected: bool,
     capture_busy: bool,
     manual_busy: Option<u64>,
+    simple: simple::SimpleState,
     pending_ocr: Option<String>,
     live_busy: Option<u64>,
     asr_busy: bool,
@@ -466,6 +468,7 @@ impl App {
             capture_protected: false,
             capture_busy: false,
             manual_busy: None,
+            simple: simple::SimpleState::default(),
             pending_ocr: None,
             live_busy: None,
             asr_busy: false,
@@ -624,6 +627,7 @@ impl App {
             capture_protected: false,
             capture_busy: false,
             manual_busy: None,
+            simple: simple::SimpleState::default(),
             pending_ocr: None,
             live_busy: None,
             asr_busy: false,
@@ -703,34 +707,32 @@ impl App {
         app.initialize_paragraph_tools();
         app
     }
-    fn translate(&mut self, text: String, kind: &str) {
+    /// Sends `text` on the manual lane, to be shown on the 訳文 card. A
+    /// translation with a `kind` is also a row of the talk and is written to
+    /// 履歴; one without it is the screen's own and is not.
+    fn translate(&mut self, text: String, kind: Option<&str>) {
         if text.trim().is_empty() {
             return;
         }
-        let generation = self.source_generation(kind);
         let id = self.next_id;
         self.next_id += 1;
-        self.rows.push(Row {
-            record: Record {
-                id,
-                start_ms: 0,
-                end_ms: 0,
-                source: text.clone(),
-                translation: String::new(),
-                standard_translation: None,
-                kind: kind.into(),
-                video_id: String::new(),
-                created_at: chrono::Local::now().to_rfc3339(),
-                paragraph: None,
-            },
-            pending: true,
-            error: None,
-            generation,
-        });
-        self.manual_busy = Some(id);
         self.output.clear();
+        if let Some(kind) = kind {
+            self.keep_in_history(id, text.clone(), kind);
+        }
+        self.manual_busy = Some(id);
+        self.simple
+            .sent(simple::Input::of(&text, &self.settings.translation));
         self.mini.result_begins();
         let options = self.settings.translation.clone();
+        // Tests run on PCs where the app may be in use. A test that reached
+        // its server would translate on the model of that app.
+        #[cfg(test)]
+        assert_ne!(
+            options.endpoint,
+            TranslationOptions::default().endpoint,
+            "a test sent a translation to the app's own server"
+        );
         let tx = self.tx.clone();
         thread::spawn(move || {
             let start = Instant::now();
@@ -748,15 +750,27 @@ impl App {
             });
         });
     }
-    fn manual_translate(&mut self) {
-        if !self.backend_ready {
-            self.status = "翻訳モデルを準備してからお試しください。".into();
-            return;
-        }
-        if self.manual_busy.is_some() {
-            return;
-        }
-        self.translate(self.input.clone(), "文章");
+    /// The translation with `id` becomes a row of the talk, written to 履歴
+    /// once it is done.
+    fn keep_in_history(&mut self, id: u64, source: String, kind: &str) {
+        let generation = self.source_generation(kind);
+        self.rows.push(Row {
+            record: Record {
+                id,
+                start_ms: 0,
+                end_ms: 0,
+                source,
+                translation: self.output.clone(),
+                standard_translation: None,
+                kind: kind.into(),
+                video_id: String::new(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                paragraph: None,
+            },
+            pending: true,
+            error: None,
+            generation,
+        });
     }
     fn manual_output_ready(&self) -> bool {
         self.manual_busy.is_none() && !self.output.is_empty()
@@ -1152,7 +1166,7 @@ impl App {
                     self.document_done(row_id, request, options, result, elapsed);
                 }
                 Event::Partial { id, text } => {
-                    if self.manual_busy == Some(id) {
+                    if self.on_card(id) {
                         self.output = text.clone();
                     }
                     if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
@@ -1164,42 +1178,52 @@ impl App {
                     result,
                     elapsed,
                 } => {
+                    let shown = self.on_card(id);
                     if self.manual_busy == Some(id) {
                         self.manual_busy = None;
                     }
                     let mut read_text = None;
-                    // How a text translation ended: true when it has a result.
-                    let mut manual_done = None;
+                    // A row is written to 履歴 even when the input was emptied
+                    // before its result came, because a press asked for it.
+                    let mut saved = false;
                     if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
+                        saved = true;
                         row.pending = false;
-                        match result {
+                        match &result {
                             Ok(text) => {
-                                if self.settings.auto_read {
+                                if shown && self.settings.auto_read {
                                     read_text = Some(text.clone());
                                 }
                                 row.record.translation = text.clone();
-                                self.output = text;
-                                manual_done = Some(true);
                                 if let Some(journal) = &self.journal
                                     && let Err(e) = journal.append(&row.record)
                                 {
                                     self.journal_error = e.to_string();
                                 }
-                                self.status = format!("翻訳完了 · {elapsed:.1}秒");
                             }
                             Err(error) => {
                                 row.record.translation.clear();
-                                self.output.clear();
                                 row.error = Some(error.clone());
-                                self.status = error;
-                                manual_done = Some(false);
                             }
                         }
                     }
-                    match manual_done {
-                        Some(true) => self.result_ready(),
-                        Some(false) => self.result_failed(),
-                        None => {}
+                    if shown || saved {
+                        match result {
+                            Ok(text) => {
+                                self.status = format!("翻訳完了 · {elapsed:.1}秒");
+                                if shown {
+                                    self.output = text;
+                                    self.result_ready();
+                                }
+                            }
+                            Err(error) => {
+                                self.status = error;
+                                if shown {
+                                    self.output.clear();
+                                    self.result_failed();
+                                }
+                            }
+                        }
                     }
                     if let Some(text) = read_text {
                         self.auto_read_translation(text, false);
@@ -1333,7 +1357,7 @@ impl App {
         }
         if let Some(text) = self.take_ready_ocr() {
             self.input = text;
-            self.translate(self.input.clone(), "画面OCR");
+            self.translate(self.input.clone(), Some("画面OCR"));
         }
         self.kick_screen_ocr();
         while let Ok(caption) = self.bridge_rx.try_recv() {

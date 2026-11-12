@@ -184,10 +184,10 @@ pub(super) fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
 }
 
 const OTHER: [&str; 6] = [
-    "文章を翻訳",
     "範囲翻訳",
     "画面選択",
     "画面の文字を翻訳",
+    "画像から翻訳",
     FILE,
     "字幕ウィンドウ",
 ];
@@ -196,7 +196,7 @@ const FILE: &str = "ファイルを翻訳";
 const FILE_HINT: &str = "テキスト・Markdown・SRT・WebVTTを翻訳します。字幕の時刻は維持されます。";
 
 const SCREENS: [(Tab, &str); 5] = [
-    (Tab::Text, "文章を翻訳"),
+    (Tab::Text, "シンプル翻訳"),
     (Tab::Files, "履歴"),
     (Tab::Settings, "設定"),
     (Tab::Setup, "モデル"),
@@ -205,7 +205,7 @@ const SCREENS: [(Tab, &str); 5] = [
 
 /// Every screen that has the page header: the chat and the five behind the menu.
 const HEADERED: [(Tab, &str); 6] = [
-    (Tab::Text, "文章"),
+    (Tab::Text, "シンプル翻訳"),
     (Tab::Live, "チャット"),
     (Tab::Files, "履歴"),
     (Tab::Settings, "設定"),
@@ -410,13 +410,16 @@ fn the_other_features_are_behind_one_row_in_order_with_their_shortcuts() {
         tops.windows(2).all(|pair| pair[0] < pair[1]),
         "the other features are out of order: {tops:?}"
     );
-    assert_shortcuts(
-        &window,
-        &[("文章を翻訳", "Ctrl + 1"), ("範囲翻訳", "Ctrl + Alt + T")],
-    );
+    assert_shortcuts(&window, &[("範囲翻訳", "Ctrl + Alt + T")]);
     assert_no_shortcut(
         &window,
-        &["画面選択", "画面の文字を翻訳", FILE, "字幕ウィンドウ"],
+        &[
+            "画面選択",
+            "画面の文字を翻訳",
+            "画像から翻訳",
+            FILE,
+            "字幕ウィンドウ",
+        ],
     );
     for item in OTHER {
         let row = window.at(item);
@@ -457,10 +460,12 @@ fn each_screen_in_the_menu_opens_and_the_back_button_returns_to_the_chat() {
     for (screen, item) in SCREENS {
         let mut app = chat();
         let mut window = Window::new(860.0, 620.0);
-        if matches!(screen, Tab::Text | Tab::YouTube) {
-            window.open_other_features(&mut app);
-        } else {
-            window.open_menu(&mut app);
+        match screen {
+            Tab::YouTube => window.open_other_features(&mut app),
+            // The menu's row has the name of a button in the chat's header,
+            // so the click here is on the button.
+            Tab::Text => window.settle(&mut app),
+            _ => window.open_menu(&mut app),
         }
         window.click(&mut app, item);
         assert!(app.tab == screen, "{item} did not open its screen");
@@ -497,7 +502,8 @@ fn the_other_items_do_what_their_buttons_did() {
     window.click(&mut app, "ミニ表示");
     assert!(app.window_mode.is_mini());
 
-    // The reading of a range is shown on the 文章 screen, so it opens there.
+    // The reading of a range is shown on the シンプル翻訳 screen, so it opens
+    // there.
     // The test machine has no screen to read, and says so.
     let mut app = chat();
     app.status = "before".into();
@@ -535,15 +541,21 @@ fn items_that_need_the_model_are_faded_until_it_is_ready_and_the_others_never_ar
             "入力の切り替え",
             "表示",
             OTHER_FEATURES,
-            "文章を翻訳",
             "範囲翻訳",
             "画面の文字を翻訳",
+            "画像から翻訳",
             "ファイルを翻訳",
             "字幕ウィンドウ",
         ]
         .map(|item| (item, window.ink(item)))
     };
-    let needs_the_model = ["ミニ表示", "範囲翻訳", "画面の文字を翻訳", "ファイルを翻訳"];
+    let needs_the_model = [
+        "ミニ表示",
+        "範囲翻訳",
+        "画面の文字を翻訳",
+        "画像から翻訳",
+        "ファイルを翻訳",
+    ];
     for ((item, ready), (_, waiting)) in inks(true).into_iter().zip(inks(false)) {
         assert_eq!(
             ready != waiting,
@@ -675,7 +687,7 @@ fn the_buttons_of_the_header_are_32_points_tall_on_every_screen() {
 #[test]
 fn each_screen_behind_the_menu_has_its_title_on_the_row_of_the_back_button_and_the_menu() {
     for (tab, title) in [
-        (Tab::Text, "文章翻訳"),
+        (Tab::Text, "シンプル翻訳"),
         (Tab::Files, "履歴"),
         (Tab::Settings, "設定"),
         (Tab::Setup, "このPCに合うモデルを準備"),
@@ -706,7 +718,7 @@ fn the_credit_stays_at_the_bottom_right_of_every_screen() {
     for (width, height) in [(860.0, 620.0), (2560.0, 1369.0)] {
         for (tab, page) in [
             (Tab::Live, "チャット"),
-            (Tab::Text, "文章"),
+            (Tab::Text, "シンプル翻訳"),
             (Tab::Files, "履歴"),
             (Tab::Settings, "設定"),
             (Tab::Setup, "モデル"),
@@ -874,12 +886,6 @@ fn the_history_screen_finds_and_exports_the_talk_and_files_are_translated_on_the
 
     app.tab = Tab::Text;
     window.settle(&mut app);
-    assert!(window.has("貼り付けた文章、画像の文字、ファイルを翻訳します。"));
-    let (image, file) = (window.at("画像から翻訳"), window.at(FILE));
-    assert!(
-        image.right() < file.left() && (image.center().y - file.center().y).abs() < 2.0,
-        "{FILE} is not beside 画像から翻訳: {image:?} {file:?}"
-    );
     assert!(window.has("自動判定") && window.has("翻訳する"));
     assert!(window.has("ファイルを翻訳しています"));
     window.click(&mut app, "中止");
@@ -888,21 +894,16 @@ fn the_history_screen_finds_and_exports_the_talk_and_files_are_translated_on_the
         "中止 does not stop the file"
     );
 
-    app.file_busy = false;
-    window.hover(&mut app, FILE);
-    window.settle(&mut app);
-    assert!(window.has(FILE_HINT), "the hover text of {FILE}");
-
-    // As the button on the 履歴 screen was, it is faded without the model and
-    // while a file is translated. A click asks the system for a file, which a
-    // test cannot answer.
+    // As the button on the 履歴 screen was, the row behind その他の機能 is
+    // faded without the model and while a file is translated. A click asks
+    // the system for a file, which a test cannot answer.
     let ink = |ready: bool, busy: bool| {
         let mut app = chat();
         app.tab = Tab::Text;
         app.backend_ready = ready;
         app.file_busy = busy;
         let mut window = Window::new(860.0, 620.0);
-        window.settle(&mut app);
+        window.open_other_features(&mut app);
         window.ink(FILE)
     };
     let faded = ink(false, false);
@@ -1493,7 +1494,7 @@ fn the_settings_list_the_shortcuts_of_what_is_in_front() {
         &[
             "聞く・止める: Ctrl + Alt + L",
             "ミニ表示: Ctrl + Shift + M",
-            "チャット・履歴・設定: Ctrl + 2〜4",
+            "シンプル翻訳・チャット・履歴・設定: Ctrl + 1〜4",
         ],
     );
     assert!(

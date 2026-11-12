@@ -1,7 +1,7 @@
 //! The mini view: the chat in a small window, with the main window's words
 //! and its one listen button. A reading or a text translation asked for here
-//! puts its result on a card in the chat's place, because the 文章 screen is
-//! out of sight.
+//! puts its result on a card in the chat's place, because the シンプル翻訳
+//! screen is out of sight.
 use super::theme::{self, ACCENT, ERROR, SURFACE, TEXT, TEXT_MUTED};
 use super::*;
 use plamo_translate::credit;
@@ -147,15 +147,15 @@ impl App {
     }
 
     /// The card is the mini view's. The main window shows the same result on
-    /// its 文章 screen.
+    /// its シンプル翻訳 screen.
     fn open_card(&mut self) {
         if self.window_mode.is_mini() {
             self.mini.showing = Showing::Card;
         }
     }
 
-    /// What the mini view opens on. The 文章 screen brings its result when it
-    /// has one to show, and every other screen opens the chat.
+    /// What the mini view opens on. The シンプル翻訳 screen brings its result
+    /// when it has one to show, and every other screen opens the chat.
     pub(super) fn open_mini(&mut self) {
         let result = self.tab == Tab::Text && self.card() != Card::Empty;
         self.mini.showing = if result { Showing::Card } else { Showing::Chat };
@@ -339,7 +339,7 @@ impl App {
         }
     }
 
-    /// The compact counterpart of the 文章 screen's 訳文 card.
+    /// The compact counterpart of the シンプル翻訳 screen's 訳文 card.
     fn card_ui(&mut self, ui: &mut egui::Ui) {
         let from_top = std::mem::take(&mut self.mini.card_from_top);
         let (text, color, done) = match self.card() {

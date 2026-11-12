@@ -421,6 +421,7 @@ mod tests {
                 ),
                 ("pill/background", chat.pill, chat.background, 3.0),
                 ("handle/track", chat.pill, chat.track, 3.0),
+                ("hovered handle/track", chat.pill_hover, chat.track, 3.0),
             ] {
                 let ratio = contrast_ratio(fg, bg);
                 assert!(

@@ -1216,13 +1216,13 @@ fn a_visit_that_showed_only_the_card_leaves_the_main_chat_where_the_reader_was()
     scroll(&mut window, &mut app, body, 4000.0);
     assert!(in_view(&window, &app, 1) && !in_view(&window, &app, 12));
 
-    // The 文章 screen has a result, so the mini view opens on the card.
+    // The シンプル翻訳 screen has a result, so the mini view opens on the card.
     app.tab = Tab::Text;
-    app.output = "文章の画面の訳文です。".into();
+    app.output = "シンプル翻訳の訳文です。".into();
     window.draw(&mut app, vec![mini_key()]);
     window.resize(USUAL.0, USUAL.1);
     window.settle(&mut app);
-    assert!(window.has("文章の画面の訳文です。") && bubbles(&window).is_empty());
+    assert!(window.has("シンプル翻訳の訳文です。") && bubbles(&window).is_empty());
     window.draw(&mut app, vec![escape()]);
     window.resize(MAIN.0, MAIN.1);
     assert!(!app.window_mode.is_mini() && app.tab == Tab::Text);
@@ -1360,13 +1360,13 @@ fn the_text_screen_brings_its_result_into_the_mini_view_and_every_other_screen_o
         assert!(app.window_mode.is_mini());
         (app, window)
     };
-    let translated: fn(&mut App) = |app| app.output = "文章の画面の訳文です。".into();
+    let translated: fn(&mut App) = |app| app.output = "シンプル翻訳の訳文です。".into();
 
     let (_, window) = enter(Tab::Text, translated);
-    assert!(window.has("文章の画面の訳文です。") && window.has("← チャットに戻る"));
+    assert!(window.has("シンプル翻訳の訳文です。") && window.has("← チャットに戻る"));
     assert!(bubbles(&window).is_empty());
 
-    // The 文章 screen with nothing to show opens the chat.
+    // The シンプル翻訳 screen with nothing to show opens the chat.
     let (_, window) = enter(Tab::Text, |_| {});
     assert!(shows_talk(&window, 2));
     assert!(!window.has("← チャットに戻る") && !window.has(EMPTY_CARD));
@@ -1380,7 +1380,7 @@ fn the_text_screen_brings_its_result_into_the_mini_view_and_every_other_screen_o
     for tab in [Tab::Live, Tab::Files, Tab::Settings, Tab::YouTube] {
         let (mut app, mut window) = enter(tab, translated);
         assert!(shows_talk(&window, 2), "the chat is not shown");
-        assert!(!window.has("文章の画面の訳文です。"));
+        assert!(!window.has("シンプル翻訳の訳文です。"));
         // Leaving with the chat shown returns to the screen it was entered from.
         window.draw(&mut app, vec![escape()]);
         assert!(!app.window_mode.is_mini() && app.tab == tab);
@@ -1398,14 +1398,17 @@ fn escape_and_the_mini_key_return_to_the_normal_view_and_the_card_opens_the_text
         assert!(!app.window_mode.is_mini());
         assert!(app.tab == Tab::Live);
 
-        // From the card, the 文章 screen has the result.
+        // From the card, the シンプル翻訳 screen has the result.
         let mut app = mini();
         app.capture(&egui::Context::default());
         let mut window = drawn(&mut app, USUAL);
         assert!(window.has(NO_SCREEN));
         window.draw(&mut app, vec![leave()]);
         assert!(!app.window_mode.is_mini());
-        assert!(app.tab == Tab::Text, "the result is on the 文章 screen");
+        assert!(
+            app.tab == Tab::Text,
+            "the result is on the シンプル翻訳 screen"
+        );
     }
 
     let mut app = mini();

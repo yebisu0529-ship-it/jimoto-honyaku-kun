@@ -120,6 +120,9 @@ impl App {
                 "拡張機能とつながりました（{}）。YouTubeで字幕を出すと、ここに「字幕を受信中」と出ます。",
                 ago(since)
             ),
+            Link::Captions if !self.settings.translate_youtube_captions => {
+                "YouTube字幕が届いています。訳すときは、上の「YouTube字幕も訳す」をオンにしてください。".into()
+            }
             Link::Captions => match (self.current_input(), self.shown_input()) {
                 (Some(_), LiveSourceMode::Auto | LiveSourceMode::Captions) => {
                     "YouTube字幕を受け取り、チャットで訳しています。".into()
@@ -128,7 +131,7 @@ impl App {
                     "YouTube字幕が届いています。チャットの「● 聞く」を押すと訳し始めます。".into()
                 }
                 (_, other) => format!(
-                    "YouTube字幕が届いています。いまの入力は「{}」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「自動（字幕を優先）」か「YouTube字幕だけ」を選びます。",
+                    "YouTube字幕が届いています。いまの入力は「{}」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「YouTube字幕だけ」か「自動（字幕を優先）」を選びます。",
                     other.label()
                 ),
             },
@@ -154,6 +157,7 @@ impl App {
                     let measure = theme::prose_width(theme::SIZE_LABEL);
                     ui.set_max_width(ui.available_width().min(measure));
                     ui.spacing_mut().item_spacing.y = theme::SPACE_3;
+                    settings_card(ui, |ui| self.youtube_captions_switch(ui));
                     settings_card(ui, |ui| {
                         let (word, color, fill) = link.badge();
                         badge(ui, word, color, fill);
@@ -206,7 +210,7 @@ impl App {
                 3,
                 done,
                 "YouTubeで字幕を出す",
-                "YouTubeで動画を開き、CCをオンにして英語などの字幕を選びます。拡張機能を入れる前から開いていたYouTubeのページは、再読み込みします。字幕が届くと、上に「字幕を受信中」と出ます。訳すときは、チャットの「● 聞く」を押します（「入力の切り替え」が「自動（字幕を優先）」か「YouTube字幕だけ」のとき）。",
+                "YouTubeで動画を開き、CCをオンにして英語などの字幕を選びます。拡張機能を入れる前から開いていたYouTubeのページは、再読み込みします。字幕が届くと、上に「字幕を受信中」と出ます。訳すときは、いちばん上の「YouTube字幕も訳す」をオンにし、「入力の切り替え」で「YouTube字幕だけ」か「自動（字幕を優先）」を選んで、チャットの「● 聞く」を押します。",
                 |_| {},
             );
         });
@@ -231,6 +235,7 @@ mod tests {
     use super::*;
     use crate::chat::testing::{box_of, find_text, press, texts};
     use crate::ui::home_tests::{Window, chat};
+    use crate::ui::listen_tests::with_youtube_captions;
 
     const BADGES: [&str; 4] = ["未接続", "接続キーが違います", "接続済み", "字幕を受信中"];
 
@@ -411,10 +416,11 @@ mod tests {
                 "YouTube字幕が届いています。チャットの「● 聞く」を押すと訳し始めます。",
             ),
         ] {
-            let mut app = screen(&heard);
+            let mut app = with_youtube_captions(screen(&heard));
+            app.listen_input = LiveSourceMode::Auto;
             assert!(drawn(&mut app).has(line), "{line}");
         }
-        let mut app = screen(&[Contact::Caption]);
+        let mut app = with_youtube_captions(screen(&[Contact::Caption]));
         app.caption_enabled = true;
         app.caption_paused = false;
         app.last_caption = Some(Instant::now());
@@ -422,7 +428,7 @@ mod tests {
 
         // Between two lines the app counts the captions as paused; it still
         // listens to them.
-        let mut app = screen(&[Contact::Caption, Contact::Checked]);
+        let mut app = with_youtube_captions(screen(&[Contact::Caption, Contact::Checked]));
         app.caption_enabled = true;
         app.audio_enabled = true;
         app.caption_paused = true;
@@ -430,11 +436,11 @@ mod tests {
 
         // The button under the chat is 「■ 止める」 then, so the line does not
         // send the user there.
-        let mut app = screen(&[Contact::Caption]);
+        let mut app = with_youtube_captions(screen(&[Contact::Caption]));
         app.audio_enabled = true;
         let window = drawn(&mut app);
         assert!(window.has(
-            "YouTube字幕が届いています。いまの入力は「PC音声だけ」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「自動（字幕を優先）」か「YouTube字幕だけ」を選びます。"
+            "YouTube字幕が届いています。いまの入力は「PC音声だけ」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「YouTube字幕だけ」か「自動（字幕を優先）」を選びます。"
         ));
         assert!(
             !texts(&window.output)
@@ -449,12 +455,12 @@ mod tests {
             (LiveSourceMode::Audio, "PC音声だけ"),
             (LiveSourceMode::Screen, "画面の文字"),
         ] {
-            let mut app = screen(&[Contact::Caption]);
+            let mut app = with_youtube_captions(screen(&[Contact::Caption]));
             app.listen_input = mode;
             let window = drawn(&mut app);
             assert!(
                 window.has(&format!(
-                    "YouTube字幕が届いています。いまの入力は「{label}」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「自動（字幕を優先）」か「YouTube字幕だけ」を選びます。"
+                    "YouTube字幕が届いています。いまの入力は「{label}」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「YouTube字幕だけ」か「自動（字幕を優先）」を選びます。"
                 )),
                 "{label}"
             );
@@ -465,6 +471,77 @@ mod tests {
                 "{label}"
             );
         }
+    }
+
+    const SWITCH: &str = "YouTube字幕も訳す";
+
+    #[test]
+    fn the_screen_starts_with_the_switch_and_arriving_captions_point_at_it_while_it_is_off() {
+        let mut app = screen(&[Contact::Caption]);
+        let mut window = drawn(&mut app);
+        assert!(window.has(SWITCH), "the switch is not on the screen");
+        assert!(
+            window.at(SWITCH).bottom() < window.at("字幕を受信中").top(),
+            "the switch is not above the status"
+        );
+        assert!(window.has(
+            "YouTube字幕が届いています。訳すときは、上の「YouTube字幕も訳す」をオンにしてください。"
+        ));
+
+        window.click(&mut app, SWITCH);
+        assert!(window.has(
+            "YouTube字幕が届いています。いまの入力は「PC音声だけ」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「YouTube字幕だけ」か「自動（字幕を優先）」を選びます。"
+        ));
+    }
+
+    #[test]
+    fn the_switch_is_one_setting_saved_with_the_others_in_the_settings_and_on_this_screen() {
+        let saved = |app: &App| {
+            serde_json::to_value(&app.settings).unwrap()["translate_youtube_captions"].clone()
+        };
+        let mut app = chat();
+        assert_eq!(
+            saved(&app),
+            serde_json::json!(false),
+            "it is not a saved setting that starts off"
+        );
+
+        app.tab = Tab::Settings;
+        let mut window = Window::new(1280.0, 2400.0);
+        window.settle(&mut app);
+        assert!(
+            !window.has(SWITCH),
+            "it is shown before {OTHER_FEATURES} is opened"
+        );
+        window.click(&mut app, OTHER_FEATURES);
+        assert!(window.has(SWITCH), "it is not behind {OTHER_FEATURES}");
+        let (heading, switch) = (window.at("YouTube字幕"), window.at(SWITCH));
+        assert!(
+            window.at(OTHER_FEATURES).bottom() < heading.top() && heading.bottom() <= switch.top(),
+            "it is not in a card of its own behind {OTHER_FEATURES}"
+        );
+        window.click(&mut app, SWITCH);
+        assert_eq!(saved(&app), serde_json::json!(true));
+
+        app.tab = Tab::YouTube;
+        let mut window = drawn(&mut app);
+        window.click(&mut app, SWITCH);
+        assert_eq!(
+            saved(&app),
+            serde_json::json!(false),
+            "this screen has the same setting"
+        );
+
+        // A settings file from before the switch keeps what it has, and the
+        // switch is off.
+        let before: Settings =
+            serde_json::from_value(serde_json::json!({"bridge_token": "the extension's key"}))
+                .unwrap();
+        assert_eq!(before.bridge_token, "the extension's key");
+        assert_eq!(
+            serde_json::to_value(&before).unwrap()["translate_youtube_captions"],
+            serde_json::json!(false)
+        );
     }
 
     #[test]
@@ -517,7 +594,7 @@ mod tests {
     fn the_menu_row_opens_the_screen_and_the_back_button_returns_to_the_chat() {
         let mut app = chat();
         let mut window = Window::new(860.0, 620.0);
-        window.open_menu(&mut app);
+        window.open_other_features(&mut app);
         window.hover(&mut app, "YouTube字幕の接続");
         // egui holds a tooltip back until the click that opened the menu is a
         // moment old and the pointer has rested.

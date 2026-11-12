@@ -309,7 +309,6 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
     let items = [
         "ミニ表示",
         "履歴",
-        "YouTube字幕の接続",
         "モデル",
         "設定",
         "状態の詳細",
@@ -333,13 +332,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
     );
     assert_no_shortcut(
         &window,
-        &[
-            "YouTube字幕の接続",
-            "モデル",
-            "状態の詳細",
-            "書き出し",
-            OTHER_FEATURES,
-        ],
+        &["モデル", "状態の詳細", "書き出し", OTHER_FEATURES],
     );
     assert!(
         !window.has("新しく始める"),
@@ -378,6 +371,31 @@ fn the_menu_has_none_of_the_other_features_until_their_row_is_opened() {
         for other in OTHER {
             assert!(window.has(other), "{other} is not behind {OTHER_FEATURES}");
         }
+    }
+}
+
+#[test]
+fn the_youtube_connection_is_the_last_of_the_other_features() {
+    for tab in [Tab::Live, Tab::Files] {
+        let mut app = chat();
+        app.tab = tab;
+        let mut window = Window::new(860.0, 620.0);
+        window.open_menu(&mut app);
+        assert!(
+            !window.has("YouTube字幕の接続"),
+            "it is at the top of the menu"
+        );
+        window.click(&mut app, OTHER_FEATURES);
+        assert!(
+            window.at("字幕ウィンドウ").top() < window.at("YouTube字幕の接続").top(),
+            "it is not last"
+        );
+        assert!(
+            window.at("YouTube字幕の接続").bottom() < 620.0 - theme::CONTROL_H,
+            "it runs into the status row at the smallest window"
+        );
+        window.click(&mut app, "YouTube字幕の接続");
+        assert!(app.tab == Tab::YouTube, "it does not open its screen");
     }
 }
 
@@ -439,7 +457,7 @@ fn each_screen_in_the_menu_opens_and_the_back_button_returns_to_the_chat() {
     for (screen, item) in SCREENS {
         let mut app = chat();
         let mut window = Window::new(860.0, 620.0);
-        if screen == Tab::Text {
+        if matches!(screen, Tab::Text | Tab::YouTube) {
             window.open_other_features(&mut app);
         } else {
             window.open_menu(&mut app);

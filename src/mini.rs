@@ -332,6 +332,14 @@ impl App {
                 ui.label(RichText::new(credit::LABEL).size(9.0).color(TEXT_MUTED));
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let unsaved = self.unsaved();
+                    // Most of what the main window's bottom row tells is about
+                    // screens the mini view does not show. This is about the
+                    // video being watched.
+                    let captions = if self.status == CAPTIONS_ARRIVING {
+                        CAPTIONS_ARRIVING
+                    } else {
+                        ""
+                    };
                     let readout = if self.settings.readout_enabled {
                         self.readout.error.as_str()
                     } else {
@@ -342,6 +350,7 @@ impl App {
                         &[
                             (unsaved.as_str(), ERROR),
                             self.listen_state(),
+                            (captions, theme::TEXT_SECONDARY),
                             (readout, ERROR),
                         ],
                     );

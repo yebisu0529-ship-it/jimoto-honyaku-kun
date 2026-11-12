@@ -1092,7 +1092,7 @@ fn focus_ring(ui: &egui::Ui, response: &egui::Response, radius: CornerRadius) {
 
 /// What an empty chat is for. A window that knows what to do next says that
 /// as well.
-pub const EMPTY_HINT: &str = "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。";
+pub const EMPTY_HINT: &str = "PCで再生中の英語の音声を、ここにやさしい日本語で表示します。";
 
 fn empty_hint(ui: &egui::Ui, inner: Rect, text: &str) {
     let mut job = egui::text::LayoutJob::simple(
@@ -2944,7 +2944,7 @@ mod tests {
     fn an_empty_chat_says_what_it_is_for() {
         let mut chat = Chat::new(720.0, 460.0);
         let output = chat.settle(&[]);
-        let hint = "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。";
+        let hint = "PCで再生中の英語の音声を、ここにやさしい日本語で表示します。";
         let (text, color) = find_text(&output, hint);
         let panel = chat.state.panel().unwrap();
         assert!((text.center().x - panel.center().x).abs() < 1.0);

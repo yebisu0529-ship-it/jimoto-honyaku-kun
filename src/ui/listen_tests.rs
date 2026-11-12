@@ -1,6 +1,6 @@
 //! 「聞く」 turns on the input that was chosen, 「止める」 turns off every input,
 //! and Ctrl+Alt+L is the same button.
-use super::home_tests::{Window, hardware, key};
+use super::home_tests::{Window, chat, hardware, key};
 use super::*;
 use crate::chat::testing::{filled, find_text, texts};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -26,9 +26,9 @@ fn ctrl_alt(code: Code) -> u32 {
 }
 
 pub(super) const INPUTS: [(&str, LiveSourceMode, (bool, bool)); 3] = [
-    ("自動（字幕を優先）", LiveSourceMode::Auto, (true, true)),
-    ("YouTube字幕だけ", LiveSourceMode::Captions, (true, false)),
     ("PC音声だけ", LiveSourceMode::Audio, (false, true)),
+    ("YouTube字幕だけ", LiveSourceMode::Captions, (true, false)),
+    ("自動（字幕を優先）", LiveSourceMode::Auto, (true, true)),
 ];
 pub(super) const SCREEN: &str = "画面の文字";
 
@@ -49,11 +49,79 @@ pub(super) fn armed(app: &App) -> (bool, bool) {
     (app.caption_enabled, app.audio_start_requested)
 }
 
+/// `app` with 「YouTube字幕も訳す」 on, as a settings file that has it on
+/// gives it.
+pub(super) fn with_youtube_captions(mut app: App) -> App {
+    let mut saved = serde_json::to_value(&app.settings).unwrap();
+    saved["translate_youtube_captions"] = true.into();
+    app.settings = serde_json::from_value(saved).unwrap();
+    app
+}
+
+const SWITCH: &str = "YouTube字幕も訳す";
+
+/// Clicks 「YouTube字幕も訳す」 at the top of the YouTube screen.
+fn flip_the_switch(app: &mut App) {
+    app.tab = Tab::YouTube;
+    let mut window = Window::new(1280.0, 1369.0);
+    window.settle(app);
+    window.click(app, SWITCH);
+}
+
+/// What the line beside the button and the 音声認識 card say while Nemotron
+/// cannot hear the language to translate from.
+const ENGLISH_ONLY: &str = "Nemotronは英語だけを聞き取ります。中国語などほかの言語は、設定の「音声認識」でQwen3-ASR（GPU・数GB）かWhisper（CPU・約4GB）を選んでください。";
+
+/// What the status line says when the extension sends captions while
+/// 「YouTube字幕も訳す」 is off.
+pub(super) const CAPTIONS_ARRIVING: &str = "YouTube字幕が届いています。設定の「その他の機能」で「YouTube字幕も訳す」をオンにすると訳せます。";
+
+/// The end of the bridge that the extension sends its captions into.
+pub(super) fn extension(app: &mut App) -> mpsc::SyncSender<bridge::Caption> {
+    let (extension, from_extension) = mpsc::sync_channel(8);
+    app.bridge_rx = from_extension;
+    extension
+}
+
+/// A caption from the extension: the words on screen one second into a video.
+pub(super) fn caption(text: &str, paused: bool) -> bridge::Caption {
+    bridge::Caption {
+        text: text.into(),
+        video_id: "video-a".into(),
+        position: 1.0,
+        paused,
+        epoch: 2,
+    }
+}
+
+#[test]
+fn listening_starts_with_pc_audio_alone() {
+    let mut app = chat_without_speech();
+    listen(&mut app);
+    assert_eq!(
+        armed(&app),
+        (false, true),
+        "聞く turns on the PC audio and no captions"
+    );
+    assert!(
+        app.audio_confirmation,
+        "speech recognition is not prepared, so the usual question is asked"
+    );
+
+    let mut app = with_youtube_captions(chat_without_speech());
+    listen(&mut app);
+    assert_eq!(
+        armed(&app),
+        (false, true),
+        "the PC audio comes first while the captions are offered too"
+    );
+}
+
 #[test]
 fn ctrl_alt_l_listens_in_the_automatic_mode_and_the_next_press_stops_every_input() {
     let ctx = egui::Context::default();
-    let mut app = chat_without_speech();
-    assert!(app.listen_input == LiveSourceMode::Auto);
+    let mut app = with_youtube_captions(chat_without_speech());
+    app.listen_input = LiveSourceMode::Auto;
 
     app.press_hotkey(&ctx, ctrl_alt(Code::KeyL));
     assert!(
@@ -157,15 +225,9 @@ fn the_inputs_are_one_menu_item_on_the_chat_and_on_no_other_screen() {
     let mut app = chat_without_speech();
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
-    assert!(
-        !window.has("自動（字幕を優先）"),
-        "they are behind the item"
-    );
+    assert!(!window.has("PC音声だけ"), "they are behind the item");
     window.click(&mut app, "入力の切り替え");
-    assert_eq!(
-        listed(&window),
-        ["自動（字幕を優先）", "YouTube字幕だけ", "PC音声だけ"]
-    );
+    assert_eq!(listed(&window), ["PC音声だけ"]);
 
     for tab in [Tab::Text, Tab::Files, Tab::Settings, Tab::Setup] {
         let mut app = chat_without_speech();
@@ -174,6 +236,202 @@ fn the_inputs_are_one_menu_item_on_the_chat_and_on_no_other_screen() {
         window.open_menu(&mut app);
         assert!(!window.has("入力の切り替え"));
     }
+}
+
+#[test]
+fn the_inputs_are_pc_audio_alone_until_youtube_captions_are_turned_on() {
+    let open_list = |app: &mut App| {
+        let mut window = Window::new(860.0, 620.0);
+        window.open_menu(app);
+        window.click(app, "入力の切り替え");
+        window
+    };
+    let mut app = chat_without_speech();
+    let window = open_list(&mut app);
+    assert_eq!(
+        listed(&window),
+        ["PC音声だけ"],
+        "the captions are an option"
+    );
+    assert_eq!(marked(&window), ["PC音声だけ"]);
+
+    let mut app = with_youtube_captions(chat_without_speech());
+    let window = open_list(&mut app);
+    assert_eq!(
+        listed(&window),
+        ["PC音声だけ", "YouTube字幕だけ", "自動（字幕を優先）"]
+    );
+    assert_eq!(
+        marked(&window),
+        ["PC音声だけ"],
+        "the first input is still the PC audio"
+    );
+}
+
+#[test]
+fn turning_youtube_captions_off_stops_them_and_leaves_pc_audio_for_the_next_listen() {
+    for (input, left) in [
+        ("自動（字幕を優先）", (false, true)),
+        ("YouTube字幕だけ", (false, false)),
+    ] {
+        let mut app = with_youtube_captions(chat_without_speech());
+        let mut window = Window::new(860.0, 620.0);
+        choose(&mut window, &mut app, input);
+        listen(&mut app);
+        assert!(app.caption_enabled, "{input}: the captions are on");
+
+        app.tab = Tab::YouTube;
+        let mut window = Window::new(1280.0, 1369.0);
+        window.settle(&mut app);
+        assert!(window.has(SWITCH), "{input}: the switch is not drawn");
+        window.click(&mut app, SWITCH);
+        assert_eq!(
+            armed(&app),
+            left,
+            "{input}: the captions stop and the PC audio is left as it was"
+        );
+        assert!(
+            app.listen_input == LiveSourceMode::Audio,
+            "{input}: the next 聞く turns on the PC audio"
+        );
+    }
+}
+
+#[test]
+fn turning_youtube_captions_off_leaves_the_screen_input_running() {
+    let mut app = with_youtube_captions(chat_without_speech());
+    let mut window = Window::new(860.0, 620.0);
+    window.open_other_features(&mut app);
+    window.click(&mut app, "画面の文字を翻訳");
+    // This PC has no screen to choose a range on, so the range is given here.
+    app.start_screen_feed(1, (0, 0, 120, 40));
+    flip_the_switch(&mut app);
+    assert!(!app.settings.translate_youtube_captions);
+
+    app.tab = Tab::Live;
+    let window = drawn(&mut app, (860.0, 620.0));
+    assert!(
+        window.has("画面の文字を読み取っています") && window.has("■ 止める"),
+        "the screen is no longer read"
+    );
+    let epoch = app.screen_feed.as_ref().expect("the screen is read").epoch;
+    app.accept_screen_frame(
+        epoch,
+        Ok(crate::screen_feed::ScreenFrame::Text {
+            text: "Hello from the screen.".into(),
+            fingerprint: vec![0; 4],
+        }),
+    );
+    assert_eq!(
+        app.last_live_text, "Hello from the screen.",
+        "what is read from the screen is not translated"
+    );
+}
+
+#[test]
+fn captions_that_arrive_while_they_are_not_translated_are_told_once_on_the_status_line() {
+    let ctx = egui::Context::default();
+    let mut app = chat_without_speech();
+    let extension = extension(&mut app);
+    listen(&mut app);
+
+    extension.send(caption("", true)).unwrap();
+    app.process(&ctx);
+    assert!(
+        app.status.is_empty(),
+        "a cleared caption is no caption: {}",
+        app.status
+    );
+
+    extension
+        .send(caption("The library opens at nine.", false))
+        .unwrap();
+    app.process(&ctx);
+    assert_eq!(app.status, CAPTIONS_ARRIVING);
+    assert!(
+        app.pending_caption.is_none() && app.rows.is_empty(),
+        "the caption is not translated"
+    );
+
+    app.status = "設定を保存しました。".into();
+    extension
+        .send(caption("It closes at five.", false))
+        .unwrap();
+    app.process(&ctx);
+    assert_eq!(app.status, "設定を保存しました。", "it is told once");
+    assert!(app.pending_caption.is_none() && app.rows.is_empty());
+}
+
+#[test]
+fn captions_are_told_again_after_youtube_captions_were_turned_on_and_off_again() {
+    let ctx = egui::Context::default();
+    let mut app = chat_without_speech();
+    let extension = extension(&mut app);
+    extension
+        .send(caption("The library opens at nine.", false))
+        .unwrap();
+    app.process(&ctx);
+    assert_eq!(app.status, CAPTIONS_ARRIVING);
+
+    flip_the_switch(&mut app);
+    flip_the_switch(&mut app);
+    assert!(!app.settings.translate_youtube_captions);
+    app.status = "設定を保存しました。".into();
+    extension
+        .send(caption("It closes at five.", false))
+        .unwrap();
+    app.process(&ctx);
+    assert_eq!(
+        app.status, CAPTIONS_ARRIVING,
+        "the option was turned off again, so the next caption is told"
+    );
+}
+
+#[test]
+fn turning_youtube_captions_on_takes_the_hint_that_asked_for_it_off_the_status_line() {
+    let ctx = egui::Context::default();
+    let mut app = chat_without_speech();
+    let extension = extension(&mut app);
+    extension
+        .send(caption("The library opens at nine.", false))
+        .unwrap();
+    app.process(&ctx);
+    assert_eq!(app.status, CAPTIONS_ARRIVING);
+
+    flip_the_switch(&mut app);
+    assert!(app.settings.translate_youtube_captions);
+    assert_eq!(
+        app.status, "",
+        "the line still asks to turn on what was just turned on"
+    );
+
+    flip_the_switch(&mut app);
+    app.status = "設定を保存しました。".into();
+    flip_the_switch(&mut app);
+    assert_eq!(app.status, "設定を保存しました。", "other news stays");
+}
+
+#[test]
+fn with_youtube_captions_on_the_captions_from_the_extension_reach_the_chat() {
+    let mut app = with_youtube_captions(chat_without_speech());
+    let extension = extension(&mut app);
+    let mut window = Window::new(860.0, 620.0);
+    choose(&mut window, &mut app, "YouTube字幕だけ");
+    listen(&mut app);
+    extension
+        .send(caption("The library opens at nine.", false))
+        .unwrap();
+    app.process(&egui::Context::default());
+    window.settle(&mut app);
+    assert!(
+        window.has("YouTube字幕を受け取っています"),
+        "the line beside the button does not say it"
+    );
+    assert_eq!(
+        app.last_live_text, "The library opens at nine.",
+        "the caption is not taken in to be translated"
+    );
+    assert!(app.status.is_empty(), "{}", app.status);
 }
 
 /// The inputs behind 入力の切り替え that are drawn as the chosen one.
@@ -193,18 +451,18 @@ pub(super) fn marked(window: &Window) -> Vec<&'static str> {
 
 #[test]
 fn the_list_has_the_screen_only_while_it_is_the_input_shown() {
-    let three = ["自動（字幕を優先）", "YouTube字幕だけ", "PC音声だけ"];
+    let three = ["PC音声だけ", "YouTube字幕だけ", "自動（字幕を優先）"];
     let four = [
-        "自動（字幕を優先）",
-        "YouTube字幕だけ",
         "PC音声だけ",
+        "YouTube字幕だけ",
+        "自動（字幕を優先）",
         SCREEN,
     ];
     let open_list = |window: &mut Window, app: &mut App| {
         window.open_menu(app);
         window.click(app, "入力の切り替え");
     };
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
     let mut window = Window::new(860.0, 620.0);
     open_list(&mut window, &mut app);
     assert_eq!(
@@ -229,7 +487,7 @@ fn the_list_has_the_screen_only_while_it_is_the_input_shown() {
     assert_eq!(listed(&window), three);
     assert_eq!(marked(&window), ["PC音声だけ"]);
 
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
     app.start_screen_feed(1, (0, 0, 120, 40));
     let mut window = Window::new(860.0, 620.0);
     open_list(&mut window, &mut app);
@@ -241,18 +499,18 @@ fn the_list_has_the_screen_only_while_it_is_the_input_shown() {
 
 #[test]
 fn the_menu_marks_the_input_that_is_on_or_else_the_one_the_next_listen_turns_on() {
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
     window.click(&mut app, "入力の切り替え");
-    assert_eq!(marked(&window), ["自動（字幕を優先）"], "the default");
+    assert_eq!(marked(&window), ["PC音声だけ"], "the default");
 
-    window.click(&mut app, "PC音声だけ");
+    window.click(&mut app, "自動（字幕を優先）");
     window.open_menu(&mut app);
     window.click(&mut app, "入力の切り替え");
     assert_eq!(
         marked(&window),
-        ["PC音声だけ"],
+        ["自動（字幕を優先）"],
         "what the next 聞く turns on"
     );
 
@@ -265,7 +523,7 @@ fn the_menu_marks_the_input_that_is_on_or_else_the_one_the_next_listen_turns_on(
 #[test]
 fn a_choice_made_while_stopped_waits_for_the_next_listen() {
     for (label, mode, on) in INPUTS {
-        let mut app = chat_without_speech();
+        let mut app = with_youtube_captions(chat_without_speech());
         let settings = serde_json::to_value(&app.settings).unwrap();
         let mut window = Window::new(860.0, 620.0);
         choose(&mut window, &mut app, label);
@@ -289,7 +547,8 @@ fn a_choice_made_while_stopped_waits_for_the_next_listen() {
 #[test]
 fn a_choice_made_while_listening_switches_at_once() {
     for (label, mode, on) in INPUTS {
-        let mut app = chat_without_speech();
+        let mut app = with_youtube_captions(chat_without_speech());
+        app.listen_input = LiveSourceMode::Auto;
         listen(&mut app);
         assert_eq!(armed(&app), (true, true));
         let generation = app.caption_generation;
@@ -306,7 +565,7 @@ fn a_choice_made_while_listening_switches_at_once() {
     }
 
     // PC audio that is really on stops when captions are chosen.
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
     app.audio_enabled = true;
     let mut window = Window::new(860.0, 620.0);
     choose(&mut window, &mut app, "YouTube字幕だけ");
@@ -339,7 +598,7 @@ fn the_menu_entry_for_the_screen_still_starts_reading_at_once_and_is_the_same_ch
     window.click(&mut app, "画面の文字を翻訳");
     assert!(app.listen_input == LiveSourceMode::Screen);
     assert_eq!(app.status, "取得できる画面がありません。");
-    assert_eq!(armed(&app), (true, true));
+    assert_eq!(armed(&app), (false, true));
 }
 
 pub(super) fn drawn(app: &mut App, (width, height): (f32, f32)) -> Window {
@@ -350,7 +609,8 @@ pub(super) fn drawn(app: &mut App, (width, height): (f32, f32)) -> Window {
 
 #[test]
 fn the_button_listens_in_the_automatic_mode_and_stops_every_input() {
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
+    app.listen_input = LiveSourceMode::Auto;
     let mut window = drawn(&mut app, (860.0, 620.0));
     assert!(window.has("● 聞く") && window.has("止まっています"));
     assert!(!window.has("■ 止める"));
@@ -564,7 +824,8 @@ fn an_error_is_the_line_beside_the_button_in_red() {
 
 #[test]
 fn speech_that_is_not_prepared_follows_the_same_path_as_before() {
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
+    app.listen_input = LiveSourceMode::Auto;
     let mut window = drawn(&mut app, (860.0, 620.0));
     window.click(&mut app, "● 聞く");
     assert!(app.audio_confirmation && app.audio_start_requested);
@@ -589,7 +850,8 @@ fn the_mini_window_and_the_subtitle_window_see_the_same_state() {
         epoch: 2,
     };
 
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
+    app.listen_input = LiveSourceMode::Auto;
     app.document_update_subtitle_window();
     assert_eq!(app.subtitle_window.playback(), Playback::Stopped);
     let mut window = drawn(&mut app, (860.0, 620.0));
@@ -750,6 +1012,234 @@ fn the_empty_chat_says_what_to_do_next_in_each_state() {
         hint(&mut app, (860.0, 620.0)),
         "選んだ範囲の文字が変わると、ここに訳が出ます。"
     );
+}
+
+#[test]
+fn the_empty_chat_says_that_listen_translates_the_english_playing_on_the_pc() {
+    let mut app = chat_without_speech();
+    assert_eq!(
+        hint(&mut app, (860.0, 620.0)),
+        "PCで再生中の英語の音声を、ここにやさしい日本語で表示します。\n下の「● 聞く」を押すと始まります。"
+    );
+    assert!(
+        !chat::EMPTY_HINT.contains("YouTube"),
+        "the subtitle window names YouTube: {}",
+        chat::EMPTY_HINT
+    );
+
+    let mut app = with_youtube_captions(chat_without_speech());
+    assert_eq!(
+        hint(&mut app, (860.0, 620.0)),
+        "PCで再生中の英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n下の「● 聞く」を押すと始まります。"
+    );
+}
+
+/// The words of the question before speech recognition is prepared, as it
+/// is drawn.
+fn audio_question(app: &mut App) -> Vec<String> {
+    let ctx = egui::Context::default();
+    configure_theme(&ctx);
+    let mut said = Vec::new();
+    for frame in 0..4 {
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(860.0, 620.0),
+                )),
+                time: Some(f64::from(frame) / 60.0),
+                ..Default::default()
+            },
+            |ctx| app.audio_setup_ui(ctx),
+        );
+        said = texts(&output)
+            .into_iter()
+            .map(|(text, _, _)| text)
+            .collect();
+    }
+    said
+}
+
+#[test]
+fn the_question_before_preparing_speech_names_youtube_only_while_its_captions_are_translated() {
+    const WHAT: &str = "再生中の音声を、このPCで文字起こしする機能です。";
+    let mut app = chat_without_speech();
+    listen(&mut app);
+    assert!(app.audio_confirmation);
+    let said = audio_question(&mut app);
+    assert!(said.iter().any(|text| text == WHAT), "{said:?}");
+    assert!(
+        !said.iter().any(|text| text.contains("YouTube")),
+        "{said:?}"
+    );
+
+    let mut app = with_youtube_captions(chat_without_speech());
+    listen(&mut app);
+    let said = audio_question(&mut app);
+    assert!(
+        said.iter()
+            .any(|text| text == &format!("{WHAT}YouTube字幕だけを使う場合は不要です。")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn nemotron_with_a_language_it_cannot_hear_starts_nothing_and_the_line_says_what_to_choose() {
+    let mut app = chat();
+    assert_eq!(app.settings.asr_backend, "nemotron", "the default");
+    app.settings.translation.source_lang = "zh-hans".into();
+    let mut window = drawn(&mut app, (860.0, 620.0));
+    assert!(
+        window.has(ENGLISH_ONLY),
+        "the line beside 聞く does not say it"
+    );
+    assert_eq!(find_text(&window.output, ENGLISH_ONLY).1, theme::WARNING);
+
+    window.click(&mut app, "● 聞く");
+    assert_eq!(armed(&app), (false, false), "nothing pretends to listen");
+    assert!(
+        !app.audio_confirmation,
+        "the English model is not offered for download"
+    );
+    assert!(app.nemotron.is_none(), "nor loaded");
+    assert!(window.has("● 聞く") && window.has(ENGLISH_ONLY));
+
+    // 英語, 自動判定, or a recognizer that hears the language takes it away.
+    for (language, recognizer) in [
+        ("en", "nemotron"),
+        ("auto", "nemotron"),
+        ("zh-hans", "whisper"),
+    ] {
+        app.settings.translation.source_lang = language.into();
+        app.settings.asr_backend = recognizer.into();
+        window.settle(&mut app);
+        assert!(!window.has(ENGLISH_ONLY), "{language} with {recognizer}");
+        assert!(window.has("止まっています"), "{language} with {recognizer}");
+    }
+}
+
+#[test]
+fn pc_audio_that_nemotron_hears_stops_when_the_language_changes_and_the_line_says_why() {
+    let mut app = chat();
+    app.audio_enabled = true;
+    app.asr_ready = true;
+    app.settings.translation.source_lang = "zh-hans".into();
+    app.process(&egui::Context::default());
+    assert!(!app.audio_enabled, "the PC audio goes on");
+    let mut window = drawn(&mut app, (860.0, 620.0));
+    assert!(window.has(ENGLISH_ONLY), "the line does not say why");
+
+    app.settings.translation.source_lang = "en".into();
+    window.settle(&mut app);
+    assert!(
+        !window.has(ENGLISH_ONLY) && window.has("止まっています"),
+        "the words stay once English is chosen again"
+    );
+}
+
+#[test]
+fn the_speech_card_says_so_too_and_names_the_multilingual_choices_with_their_size() {
+    let mut app = chat();
+    app.tab = Tab::Settings;
+    app.settings.translation.source_lang = "zh-hans".into();
+    let mut window = Window::new(1280.0, 2400.0);
+    window.settle(&mut app);
+    assert!(
+        window.has(ENGLISH_ONLY),
+        "the 音声認識 card does not say it"
+    );
+    let (heading, words, prepare) = (
+        window.at("音声認識"),
+        window.at(ENGLISH_ONLY),
+        window.at("音声認識を準備"),
+    );
+    assert!(
+        heading.bottom() <= words.top() && words.bottom() <= prepare.top(),
+        "it is not in the card"
+    );
+
+    window.click(&mut app, "Nemotron Speech · 英語 / 連続認識");
+    for choice in [
+        "Qwen3-ASR · 多言語 / GPU · 数GB",
+        "Whisper · 多言語 / CPU · 約4GB",
+    ] {
+        assert!(window.has(choice), "{choice} is not a choice");
+    }
+
+    app.settings.asr_backend = "whisper".into();
+    window.settle(&mut app);
+    assert!(!window.has(ENGLISH_ONLY), "Whisper hears the language");
+}
+
+#[test]
+fn the_speech_card_does_not_prepare_nemotron_for_a_language_it_cannot_hear() {
+    const PREPARE: &str = "音声認識を準備";
+    let settings = |mut app: App, language: &str| {
+        app.tab = Tab::Settings;
+        app.settings.translation.source_lang = language.into();
+        app
+    };
+    let mut app = settings(chat(), "zh-hans");
+    let mut window = drawn(&mut app, (1280.0, 2400.0));
+    window.click(&mut app, PREPARE);
+    assert!(
+        !app.audio_confirmation,
+        "the English model is offered for download"
+    );
+    assert!(app.nemotron.is_none(), "the English model is loaded");
+
+    let ink = |language| drawn(&mut settings(chat(), language), (1280.0, 2400.0)).ink(PREPARE);
+    assert_ne!(ink("zh-hans"), ink("en"), "the button is not faded");
+    assert_eq!(ink("en"), ink("auto"));
+
+    // A recognizer that hears the language is prepared as before.
+    let mut app = settings(chat_without_speech(), "zh-hans");
+    let mut window = drawn(&mut app, (1280.0, 2400.0));
+    window.click(&mut app, PREPARE);
+    assert!(app.audio_confirmation, "Whisper is not offered");
+}
+
+#[test]
+fn the_line_says_nemotron_hears_english_only_while_the_input_uses_the_pc_audio() {
+    for (input, english_only) in [
+        ("PC音声だけ", true),
+        ("YouTube字幕だけ", false),
+        ("自動（字幕を優先）", true),
+    ] {
+        let mut app = with_youtube_captions(chat());
+        app.settings.translation.source_lang = "zh-hans".into();
+        let mut window = Window::new(860.0, 620.0);
+        choose(&mut window, &mut app, input);
+        assert_eq!(window.has(ENGLISH_ONLY), english_only, "{input}");
+        assert_eq!(window.has("止まっています"), !english_only, "{input}");
+    }
+
+    let mut app = chat();
+    app.settings.translation.source_lang = "zh-hans".into();
+    let mut window = Window::new(860.0, 620.0);
+    window.open_other_features(&mut app);
+    window.click(&mut app, "画面の文字を翻訳");
+    assert!(!window.has(ENGLISH_ONLY), "{SCREEN} is chosen");
+    app.start_screen_feed(1, (0, 0, 120, 40));
+    window.settle(&mut app);
+    assert!(!window.has(ENGLISH_ONLY), "{SCREEN} is read");
+    assert!(window.has("画面の文字を読み取っています"));
+}
+
+#[test]
+fn the_automatic_input_with_a_language_nemotron_cannot_hear_starts_the_captions_alone() {
+    let mut app = with_youtube_captions(chat());
+    app.settings.translation.source_lang = "zh-hans".into();
+    let mut window = Window::new(860.0, 620.0);
+    choose(&mut window, &mut app, "自動（字幕を優先）");
+    window.click(&mut app, "● 聞く");
+    assert_eq!(armed(&app), (true, false), "the captions and no PC audio");
+    assert!(
+        !app.audio_confirmation,
+        "the English model is offered for download"
+    );
+    assert!(app.nemotron.is_none(), "the English model is loaded");
+    assert!(window.has("■ 止める"), "the captions cannot be stopped");
 }
 
 #[test]

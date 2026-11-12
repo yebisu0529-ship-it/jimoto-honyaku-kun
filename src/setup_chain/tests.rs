@@ -123,6 +123,27 @@ fn the_button_prepares_the_helper_speech_recognition_and_voice_only_as_chosen() 
     assert_eq!(steps(&app), [Step::Translation]);
 }
 #[test]
+fn the_button_leaves_the_english_recognizer_out_for_a_language_nemotron_cannot_hear() {
+    let nothing = tempfile::tempdir().unwrap();
+    let roots = Roots::under(nothing.path());
+    let mut app = app_with_fixture_gpu(24 * GIB, 5 * GIB);
+    let steps = |app: &App| app.plan_under(&roots).unwrap().steps();
+    app.settings.translation.source_lang = "zh-hans".into();
+    assert_eq!(
+        steps(&app),
+        [Step::Translation, Step::Punctuation],
+        "Nemotron hears English only"
+    );
+    for language in ["en", "auto"] {
+        app.settings.translation.source_lang = language.into();
+        assert_eq!(
+            steps(&app),
+            [Step::Translation, Step::Punctuation, Step::Speech],
+            "{language}"
+        );
+    }
+}
+#[test]
 fn finishing_the_last_step_opens_the_live_screen_without_starting_to_listen() {
     let store = tempfile::tempdir().unwrap();
     let mut app = stored_in(app_with_fixture_gpu(24 * GIB, 5 * GIB), &store);

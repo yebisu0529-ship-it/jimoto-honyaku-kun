@@ -57,6 +57,9 @@ struct Settings {
     llama_server: String,
     model: String,
     bridge_token: String,
+    /// YouTube captions are an option. While this is off, 入力の切り替え offers
+    /// the PC audio alone and captions from the extension are not translated.
+    translate_youtube_captions: bool,
     audio_seconds: f32,
     nemotron_context: u32,
     live_show_original: bool,
@@ -104,6 +107,7 @@ impl Default for Settings {
                 .to_string_lossy()
                 .into(),
             bridge_token: uuid::Uuid::new_v4().to_string(),
+            translate_youtube_captions: false,
             audio_seconds: 3.0,
             nemotron_context: 6,
             live_show_original: false,
@@ -317,6 +321,9 @@ enum Earlier {
     Failed(String),
 }
 const MAX_AUDIO_AGE_MS: u64 = 8000;
+/// What the status line says when the extension sends captions while
+/// 「YouTube字幕も訳す」 is off. The mini view says it on its one row too.
+const CAPTIONS_ARRIVING: &str = "YouTube字幕が届いています。設定の「その他の機能」で「YouTube字幕も訳す」をオンにすると訳せます。";
 struct App {
     settings: Settings,
     settings_load_failed: bool,
@@ -370,6 +377,10 @@ struct App {
     caption_paused: bool,
     last_caption: Option<Instant>,
     pending_caption: Option<bridge::Caption>,
+    /// The status line has said that captions arrive while they are not
+    /// translated. It says so once, and once more after the option is turned
+    /// off again.
+    captions_arriving_told: bool,
     last_live_text: String,
     current_live_id: Option<u64>,
     live_chat: chat::State,
@@ -391,7 +402,7 @@ struct App {
     backend_loading: bool,
     asr_ready: bool,
     audio_start_requested: bool,
-    /// What 「聞く」 turns on. It is not saved: every start of the app begins with 自動.
+    /// What 「聞く」 turns on. It is not saved: every start of the app begins with PC音声.
     listen_input: ui::LiveSourceMode,
     service_error: String,
     health_check_running: bool,
@@ -479,6 +490,7 @@ impl App {
             caption_paused: true,
             last_caption: None,
             pending_caption: None,
+            captions_arriving_told: false,
             last_live_text: String::new(),
             current_live_id: None,
             live_chat: chat::State::default(),
@@ -636,6 +648,7 @@ impl App {
             caption_paused: true,
             last_caption: None,
             pending_caption: None,
+            captions_arriving_told: false,
             last_live_text: String::new(),
             current_live_id: None,
             live_chat: chat::State::default(),
@@ -1326,6 +1339,19 @@ impl App {
         while let Ok(caption) = self.bridge_rx.try_recv() {
             // The 画面 input owns the caption source while it runs.
             if self.screen_feed.is_some() {
+                continue;
+            }
+            if !self.settings.translate_youtube_captions {
+                // An extension set up before the captions became an option
+                // keeps sending them. The first one with words says where the
+                // option is, rather than leaving the captions unanswered.
+                if !self.captions_arriving_told
+                    && !caption.paused
+                    && !caption.text.trim().is_empty()
+                {
+                    self.captions_arriving_told = true;
+                    self.status = CAPTIONS_ARRIVING.into();
+                }
                 continue;
             }
             self.accept_caption(caption);
@@ -2415,6 +2441,33 @@ fn render_youtube_views(folder: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The settings with Chinese as the language to translate from, while Nemotron
+/// is the recognizer, and with その他の機能 open, in a window tall enough that
+/// nothing scrolls.
+fn render_settings_views(folder: &Path) -> Result<()> {
+    let ctx = egui::Context::default();
+    ui::configure_theme(&ctx);
+    ctx.style_mut(|style| style.animation_time = 0.0);
+    let mut app = App::inert();
+    app.tab = Tab::Settings;
+    app.backend_ready = true;
+    app.startup_decided = true;
+    app.status = "プレビュー · 接続や保存は行いません".into();
+    app.settings.bridge_token = "preview-token".into();
+    app.settings.model = "models/plamo-3-translate-2b-Q4_K_M.gguf".into();
+    app.settings.llama_server = "runtime/llama-server.exe".into();
+    app.settings.python = ".venv/Scripts/python.exe".into();
+    app.settings.translation.source_lang = "zh-hans".into();
+    app.reveal = Some(ui::OtherSetting::Readout);
+    preview::render(
+        &ctx,
+        &folder.join("51-settings-chinese-other-features-1280x1600.png"),
+        1280,
+        1600,
+        |ctx| app.render_ui(ctx),
+    )
+}
+
 /// What a preview of the main window shows over its screen, or changes on it.
 enum Overlay {
     Nothing,
@@ -2587,6 +2640,7 @@ fn render_mini_views(folder: &Path) -> Result<()> {
         if listening {
             app.caption_enabled = true;
             app.audio_enabled = true;
+            app.settings.translate_youtube_captions = true;
         }
         preview::render_hovering(
             &ctx,
@@ -2680,6 +2734,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
     render_long_paragraph_views(folder)?;
     render_setup_views(folder)?;
     render_youtube_views(folder)?;
+    render_settings_views(folder)?;
     render_earlier_talk_views(folder)?;
     let nothing_saved = tempfile::tempdir()?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
@@ -2790,6 +2845,13 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 Overlay::Submenu(ui::OTHER_FEATURES),
                 Listening::Both,
             ),
+            (
+                "50-input-menu-youtube",
+                Tab::Live,
+                true,
+                Overlay::Submenu("入力の切り替え"),
+                Listening::Both,
+            ),
         ] {
             let ctx = egui::Context::default();
             ui::configure_theme(&ctx);
@@ -2846,6 +2908,8 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                     app.audio_enabled = true;
                 }
             }
+            // Captions are an input only with the option that offers them.
+            app.settings.translate_youtube_captions = app.caption_enabled;
             if tab == Tab::Files {
                 for (index, source, translation) in [
                     (
@@ -3037,6 +3101,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
         app.startup_decided = true;
         app.caption_enabled = true;
         app.audio_enabled = true;
+        app.settings.translate_youtube_captions = true;
         app.status = "プレビュー · 接続や保存は行いません".into();
         app.settings.font_size = font_size;
         app.rows = demo_talk(rows);

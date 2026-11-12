@@ -1094,6 +1094,7 @@ impl App {
             toggle(ui, &mut self.settings.auto_scroll, "末尾へ自動スクロール").on_hover_text(
                 "上へスクロールしている間は位置を保ちます。OFFからONに戻すと末尾へ移動します。",
             );
+            toggle(ui, &mut self.settings.dark_chat, "ダークモード");
             ui.add_space(theme::SPACE_1);
             ui.label(theme::caption("訳文の文字サイズ"));
             theme::slider(
@@ -1898,11 +1899,22 @@ impl App {
             readout: self.settings.readout_enabled.then(|| self.readout_busy()),
             empty: self.empty_chat_hint(),
             cut_from_a_whole_line: self.window_mode.is_mini(),
+            palette: self.chat_palette(),
         };
         match self.with_talk(|chat, messages| chat.show(ui, "live-chat", messages, options)) {
             Some(chat::Action::Read(text)) => self.read_translation(text),
             Some(chat::Action::StopReadout) => self.stop_readout(),
             None => {}
+        }
+    }
+
+    /// The colours every window that shows the talk draws it in, from
+    /// 「ダークモード」 in the 表示 menu.
+    pub(super) fn chat_palette(&self) -> &'static theme::ChatPalette {
+        if self.settings.dark_chat {
+            &theme::CHAT_DARK
+        } else {
+            &theme::CHAT_LIGHT
         }
     }
 

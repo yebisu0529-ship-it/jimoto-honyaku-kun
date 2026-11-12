@@ -789,7 +789,7 @@ fn subtitle_window(ctx: &egui::Context, app: &mut App) -> egui::FullOutput {
                 ..Default::default()
             },
             |ctx| {
-                app.subtitle_window.show(ctx);
+                app.subtitle_window.show(ctx, app.chat_palette());
             },
         );
     }

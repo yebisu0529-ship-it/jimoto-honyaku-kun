@@ -97,11 +97,11 @@ impl Source {
         }
     }
 
-    fn color(self) -> Color32 {
+    fn color(self, palette: &theme::ChatPalette) -> Color32 {
         match self {
-            Self::YouTube => theme::CHAT_AVATAR_YOUTUBE,
-            Self::PcAudio => theme::CHAT_AVATAR_AUDIO,
-            Self::Screen => theme::CHAT_AVATAR_SCREEN,
+            Self::YouTube => palette.avatar_youtube,
+            Self::PcAudio => palette.avatar_audio,
+            Self::Screen => palette.avatar_screen,
         }
     }
 }
@@ -181,6 +181,7 @@ pub struct Options {
     /// bubble reads as an empty message, dots alone as speech still being
     /// recognised. Without it, only the newest message is drawn there.
     pub cut_from_a_whole_line: bool,
+    pub palette: &'static theme::ChatPalette,
 }
 
 pub enum Action {
@@ -397,10 +398,11 @@ impl State {
         {
             self.panel = Some(panel);
         }
+        let palette = options.palette;
         ui.painter().rect_filled(
             panel,
             CornerRadius::same(theme::RADIUS_CARD),
-            theme::CHAT_BACKGROUND,
+            palette.background,
         );
         let inner = panel.shrink(PANEL_INSET);
         if messages.is_empty() {
@@ -408,7 +410,7 @@ impl State {
             self.seen = 0;
             self.flipped.clear();
             self.selection = None;
-            empty_hint(ui, inner, options.empty);
+            empty_hint(ui, inner, options.empty, palette.meta);
             return None;
         }
         let mut body = ui.new_child(
@@ -418,12 +420,13 @@ impl State {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
-        // The app's scroll bar is dark on dark. Here it sits on a light canvas.
+        // The app's scroll bar is made for the app's surfaces. Here it sits on
+        // the chat's background.
         let visuals = &mut body.style_mut().visuals;
-        visuals.extreme_bg_color = theme::CHAT_TRACK;
-        visuals.widgets.inactive.bg_fill = theme::CHAT_PILL;
-        visuals.widgets.hovered.bg_fill = theme::CHAT_PILL_HOVER;
-        visuals.widgets.active.bg_fill = theme::CHAT_META;
+        visuals.extreme_bg_color = palette.track;
+        visuals.widgets.inactive.bg_fill = palette.pill;
+        visuals.widgets.hovered.bg_fill = palette.pill_hover;
+        visuals.widgets.active.bg_fill = palette.meta;
         // While text is being selected, the words under the pointer stay put.
         let selecting = self.selection.is_some_and(|selection| selection.dragging);
         let following = options.follow && self.at_end && !selecting;
@@ -465,7 +468,7 @@ impl State {
             .filter(|message| message.id != TYPING && message.id > self.seen)
             .count();
         if unseen > 0 && !self.at_end {
-            self.new_messages_pill(ui, id, output.inner_rect, unseen);
+            self.new_messages_pill(ui, id, output.inner_rect, unseen, palette);
         }
         let (copy_keys, escape) = ui.input(|input| {
             (
@@ -565,12 +568,19 @@ impl State {
         self.follow_was_on = options.follow;
     }
 
-    fn new_messages_pill(&mut self, ui: &egui::Ui, id: &str, view: Rect, count: usize) {
+    fn new_messages_pill(
+        &mut self,
+        ui: &egui::Ui,
+        id: &str,
+        view: Rect,
+        count: usize,
+        palette: &theme::ChatPalette,
+    ) {
         let galley = plain(
             ui,
             &format!("↓ 新しいメッセージ {count}件"),
             theme::SIZE_LABEL,
-            theme::CHAT_PILL_TEXT,
+            palette.pill_text,
         );
         let size = galley.size() + egui::vec2(2.0 * NEW_PILL_X, 2.0 * NEW_PILL_Y);
         let pill = Rect::from_center_size(
@@ -582,17 +592,17 @@ impl State {
         );
         let response = ui.interact(pill, ui.id().with((id, "new-messages")), Sense::click());
         let fill = if response.hovered() {
-            theme::CHAT_PILL_HOVER
+            palette.pill_hover
         } else {
-            theme::CHAT_PILL
+            palette.pill
         };
         ui.painter().rect_filled(pill, pill_radius(size), fill);
         ui.painter().galley(
             pill.center() - galley.size() / 2.0,
             galley,
-            theme::CHAT_PILL_TEXT,
+            palette.pill_text,
         );
-        focus_ring(ui, &response, pill_radius(size));
+        focus_ring(ui, &response, pill_radius(size), palette.text);
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "新しいメッセージへ移動")
         });
@@ -647,18 +657,18 @@ impl State {
                         ui,
                         &day_text(date),
                         theme::SIZE_CAPTION,
-                        theme::CHAT_PILL_TEXT,
+                        options.palette.pill_text,
                     );
                     let size = galley.size() + egui::vec2(2.0 * PILL_X, 2.0 * PILL_Y);
                     let (_, rect) = ui.allocate_space(egui::vec2(metrics.width, size.y));
                     if ui.is_rect_visible(rect) && whole(rect) {
                         let pill = Rect::from_center_size(rect.center(), size);
                         ui.painter()
-                            .rect_filled(pill, pill_radius(size), theme::CHAT_PILL);
+                            .rect_filled(pill, pill_radius(size), options.palette.pill);
                         ui.painter().galley(
                             pill.center() - galley.size() / 2.0,
                             galley,
-                            theme::CHAT_PILL_TEXT,
+                            options.palette.pill_text,
                         );
                     }
                     after_day = true;
@@ -671,7 +681,13 @@ impl State {
                         _ => STACK_GAP,
                     });
                     after_day = false;
-                    let laid = lay_out(ui, &bubble, self.expanded(&bubble), &metrics);
+                    let laid = lay_out(
+                        ui,
+                        &bubble,
+                        self.expanded(&bubble),
+                        &metrics,
+                        options.palette,
+                    );
                     let header = if bubble.first_in_group { NAME_H } else { 0.0 };
                     let (_, rect) = ui.allocate_space(egui::vec2(
                         metrics.width,
@@ -771,6 +787,7 @@ impl State {
         place: Place,
     ) -> Option<Action> {
         let message = bubble.message;
+        let palette = options.palette;
         let piece = (message.id, bubble.part, bubble.piece);
         let top = item.top() + if bubble.first_in_group { NAME_H } else { 0.0 };
         let rect = Rect::from_min_size(egui::pos2(item.left() + BUBBLE_X, top), laid.size);
@@ -778,7 +795,7 @@ impl State {
         let leads = bubble.first_in_group && from_top;
         if leads {
             let center = egui::pos2(item.left() + SIDE + AVATAR / 2.0, item.top() + AVATAR / 2.0);
-            painter.circle_filled(center, AVATAR / 2.0, message.source.color());
+            painter.circle_filled(center, AVATAR / 2.0, message.source.color(palette));
             let glyph = plain(
                 ui,
                 message.source.glyph(),
@@ -786,20 +803,15 @@ impl State {
                 theme::CHAT_AVATAR_GLYPH,
             );
             painter.galley(center - glyph.size() / 2.0, glyph, theme::CHAT_AVATAR_GLYPH);
-            let name = plain(
-                ui,
-                message.source.name(),
-                theme::SIZE_CAPTION,
-                theme::CHAT_META,
-            );
-            painter.galley(egui::pos2(rect.left(), item.top()), name, theme::CHAT_META);
+            let name = plain(ui, message.source.name(), theme::SIZE_CAPTION, palette.meta);
+            painter.galley(egui::pos2(rect.left(), item.top()), name, palette.meta);
             painter.add(egui::Shape::convex_polygon(
                 vec![
                     egui::pos2(rect.left() + TAIL_RADIUS as f32, rect.top()),
                     egui::pos2(rect.left() - TAIL, rect.top()),
                     egui::pos2(rect.left() + TAIL_RADIUS as f32, rect.top() + TAIL + 2.0),
                 ],
-                theme::CHAT_BUBBLE,
+                palette.bubble,
                 egui::Stroke::NONE,
             ));
         }
@@ -807,7 +819,7 @@ impl State {
             nw: if leads { TAIL_RADIUS } else { BUBBLE_RADIUS },
             ..CornerRadius::same(BUBBLE_RADIUS)
         };
-        painter.rect_filled(rect, radius, theme::CHAT_BUBBLE);
+        painter.rect_filled(rect, radius, palette.bubble);
         let content = rect.min + egui::vec2(MARGIN_X, MARGIN_Y);
         if let Some(body) = &laid.body {
             let galley = match body_field(bubble) {
@@ -821,13 +833,14 @@ impl State {
                         start,
                     },
                     place,
+                    palette,
                 ),
                 None => body.clone(),
             };
-            paint_lines(painter, from_top, content, galley, theme::CHAT_TEXT);
+            paint_lines(painter, from_top, content, galley, palette.text);
         }
         if let Some(dots) = laid.dots {
-            paint_dots(ui, content + dots.to_vec2());
+            paint_dots(ui, content + dots.to_vec2(), palette.text_forming);
         }
         if let Some(original) = &laid.original {
             let inner = rect.width() - 2.0 * MARGIN_X;
@@ -837,7 +850,7 @@ impl State {
                     egui::vec2(inner, 1.0),
                 ),
                 0,
-                theme::CHAT_RULE,
+                palette.rule,
             );
             let at = content + egui::vec2(0.0, original.text_y);
             let galley = self.selectable(
@@ -850,15 +863,16 @@ impl State {
                     start: 0,
                 },
                 place,
+                palette,
             );
-            paint_lines(painter, from_top, at, galley, theme::CHAT_TEXT_MUTED);
+            paint_lines(painter, from_top, at, galley, palette.text_muted);
             if let Some((video, y)) = &original.video {
                 paint_lines(
                     painter,
                     from_top,
                     content + egui::vec2(0.0, *y),
                     video.clone(),
-                    theme::CHAT_TEXT_MUTED,
+                    palette.text_muted,
                 );
             }
         }
@@ -869,11 +883,11 @@ impl State {
             } else {
                 egui::pos2(rect.right() - size.x, rect.bottom() + 1.0)
             };
-            painter.galley(at, time.galley.clone(), theme::CHAT_META);
+            painter.galley(at, time.galley.clone(), palette.meta);
         }
         if let Some(note) = &laid.note {
             let at = egui::pos2(rect.left(), item.bottom() - note.size().y - 1.0);
-            painter.galley(at, note.clone(), theme::CHAT_META);
+            painter.galley(at, note.clone(), palette.meta);
             if let Some(failure) = message.failure.filter(|failure| !failure.is_empty()) {
                 let area = Rect::from_min_size(at, note.size());
                 ui.interact(area, ui.id().with(("failure", message.id)), Sense::hover())
@@ -890,7 +904,7 @@ impl State {
             Sense::click_and_drag()
         };
         let response = ui.interact(rect, ui.id().with(("bubble", key, bubble.piece)), sense);
-        focus_ring(ui, &response, radius);
+        focus_ring(ui, &response, radius, palette.text);
         let label = bubble_display_text(bubble);
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
         if response.drag_started_by(PointerButton::Primary)
@@ -920,7 +934,13 @@ impl State {
     }
 
     /// Notes a text a drag can select, and returns it with the selection on it.
-    fn selectable(&mut self, ui: &egui::Ui, hit: Hit, place: Place) -> Arc<Galley> {
+    fn selectable(
+        &mut self,
+        ui: &egui::Ui,
+        hit: Hit,
+        place: Place,
+        palette: &theme::ChatPalette,
+    ) -> Arc<Galley> {
         let mut galley = hit.galley.clone();
         if let Some((from, to)) = covered(
             place.ends,
@@ -929,8 +949,8 @@ impl State {
             galley.end().index,
         ) {
             let mut visuals = ui.visuals().clone();
-            visuals.selection.bg_fill = theme::CHAT_SELECTION;
-            visuals.selection.stroke.color = theme::CHAT_TEXT;
+            visuals.selection.bg_fill = palette.selection;
+            visuals.selection.stroke.color = palette.text;
             paint_text_selection(
                 &mut galley,
                 &visuals,
@@ -1079,12 +1099,12 @@ fn pill_radius(size: Vec2) -> CornerRadius {
     CornerRadius::same((size.y / 2.0).round() as u8)
 }
 
-fn focus_ring(ui: &egui::Ui, response: &egui::Response, radius: CornerRadius) {
+fn focus_ring(ui: &egui::Ui, response: &egui::Response, radius: CornerRadius, color: Color32) {
     if response.has_focus() {
         ui.painter().rect_stroke(
             response.rect.expand(2.0),
             radius,
-            egui::Stroke::new(2.0_f32, theme::CHAT_TEXT),
+            egui::Stroke::new(2.0_f32, color),
             egui::StrokeKind::Outside,
         );
     }
@@ -1094,11 +1114,11 @@ fn focus_ring(ui: &egui::Ui, response: &egui::Response, radius: CornerRadius) {
 /// as well.
 pub const EMPTY_HINT: &str = "PCで再生中の英語の音声を、ここにやさしい日本語で表示します。";
 
-fn empty_hint(ui: &egui::Ui, inner: Rect, text: &str) {
+fn empty_hint(ui: &egui::Ui, inner: Rect, text: &str, color: Color32) {
     let mut job = egui::text::LayoutJob::simple(
         text.to_owned(),
         FontId::proportional(theme::SIZE_BODY),
-        theme::CHAT_META,
+        color,
         (inner.width() - 48.0).max(MIN_ROOM),
     );
     job.halign = egui::Align::Center;
@@ -1106,11 +1126,11 @@ fn empty_hint(ui: &egui::Ui, inner: Rect, text: &str) {
     ui.painter().galley(
         egui::pos2(inner.center().x, inner.center().y - galley.size().y / 2.0),
         galley,
-        theme::CHAT_META,
+        color,
     );
 }
 
-fn paint_dots(ui: &egui::Ui, origin: Pos2) {
+fn paint_dots(ui: &egui::Ui, origin: Pos2, color: Color32) {
     let time = ui.input(|input| input.time);
     for dot in 0..3 {
         let wave =
@@ -1120,11 +1140,8 @@ fn paint_dots(ui: &egui::Ui, origin: Pos2) {
                 DOT_RADIUS + dot as f32 * (2.0 * DOT_RADIUS + DOT_GAP),
                 DOTS_HEIGHT / 2.0 - wave * 3.0,
             );
-        ui.painter().circle_filled(
-            center,
-            DOT_RADIUS,
-            theme::CHAT_TEXT_FORMING.gamma_multiply(0.45 + 0.55 * wave),
-        );
+        ui.painter()
+            .circle_filled(center, DOT_RADIUS, color.gamma_multiply(0.45 + 0.55 * wave));
     }
     ui.ctx().request_repaint_after(Duration::from_millis(33));
 }
@@ -1270,7 +1287,13 @@ fn char_slice(text: &str, from: usize, to: usize) -> &str {
     &text[byte(from)..byte(to)]
 }
 
-fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics) -> Laid {
+fn lay_out(
+    ui: &egui::Ui,
+    bubble: &Bubble<'_>,
+    expanded: bool,
+    metrics: &Metrics,
+    palette: &theme::ChatPalette,
+) -> Laid {
     let message = bubble.message;
     let forming = message.status == Status::Forming;
     let shows_original = shows_original_as_body(bubble);
@@ -1281,11 +1304,11 @@ fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics
         metrics.text
     };
     let color = if forming {
-        theme::CHAT_TEXT_FORMING
+        palette.text_forming
     } else if bubble.text.is_empty() {
-        theme::CHAT_TEXT_MUTED
+        palette.text_muted
     } else {
-        theme::CHAT_TEXT
+        palette.text
     };
     let line = if shows_original {
         None
@@ -1320,7 +1343,7 @@ fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics
         let text = wrapped(
             ui,
             &bubble.original,
-            (theme::SIZE_LABEL, theme::CHAT_TEXT_MUTED),
+            (theme::SIZE_LABEL, palette.text_muted),
             metrics.wrap,
             None,
         );
@@ -1331,7 +1354,7 @@ fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics
                 ui,
                 &format!("動画 {}", super::clock(ms)),
                 theme::SIZE_CAPTION,
-                theme::CHAT_TEXT_MUTED,
+                palette.text_muted,
             );
             let y = height + STACK_GAP;
             width = width.max(galley.size().x);
@@ -1351,7 +1374,7 @@ fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics
         .then_some(message.moment.sent)
         .flatten()
         .map(|sent| {
-            let galley = plain(ui, &clock_text(sent), theme::SIZE_CAPTION, theme::CHAT_META);
+            let galley = plain(ui, &clock_text(sent), theme::SIZE_CAPTION, palette.meta);
             let beside = BUBBLE_X + size.x + TIME_GAP + metrics.time_width <= metrics.width - END;
             Time { galley, beside }
         });
@@ -1359,7 +1382,7 @@ fn lay_out(ui: &egui::Ui, bubble: &Bubble<'_>, expanded: bool, metrics: &Metrics
         .last_in_message
         .then(|| note_text(message.status, !bubble.text.is_empty()))
         .flatten()
-        .map(|note| plain(ui, note, theme::SIZE_CAPTION, theme::CHAT_META));
+        .map(|note| plain(ui, note, theme::SIZE_CAPTION, palette.meta));
     let below = time
         .as_ref()
         .filter(|time| !time.beside)
@@ -1925,6 +1948,7 @@ pub(super) mod testing {
                     readout: None,
                     empty: EMPTY_HINT,
                     cut_from_a_whole_line: false,
+                    palette: &theme::CHAT_LIGHT,
                 },
                 time: 0.0,
             }

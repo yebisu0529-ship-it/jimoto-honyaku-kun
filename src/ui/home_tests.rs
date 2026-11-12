@@ -49,6 +49,12 @@ impl Window {
         self.size = egui::vec2(width, height);
     }
 
+    /// The same window on a screen of `pixels_per_point` pixels to a point,
+    /// as 1.25 at the 125% scale of Windows.
+    pub(super) fn scale(&mut self, pixels_per_point: f32) {
+        self.context.set_pixels_per_point(pixels_per_point);
+    }
+
     pub(super) fn has(&self, label: &str) -> bool {
         texts(&self.output).iter().any(|(text, _, _)| text == label)
     }

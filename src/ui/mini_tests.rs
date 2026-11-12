@@ -1571,6 +1571,407 @@ fn a_forming_paragraph_taller_than_the_chat_is_drawn_from_a_whole_line() {
     }
 }
 
+/// The room a bubble keeps above its first line.
+const BUBBLE_MARGIN: f32 = 9.0;
+
+/// Each line of text drawn whole inside the chat, with the text it is part of.
+fn whole_lines(output: &egui::FullOutput, body: egui::Rect) -> Vec<(&str, egui::Rect)> {
+    shapes(output)
+        .into_iter()
+        .filter_map(|(clip, shape)| match shape {
+            egui::Shape::Text(text) => Some((clip.intersect(body).expand(0.5), text)),
+            _ => None,
+        })
+        .flat_map(|(seen, text)| {
+            text.galley.rows.iter().filter_map(move |row| {
+                let line = row.rect().translate(text.pos.to_vec2());
+                seen.contains_rect(line)
+                    .then_some((text.galley.text(), line))
+            })
+        })
+        .collect()
+}
+
+/// `earlier`, a bubble that starts above the top of the chat, is drawn from
+/// its first whole line, so no more of the top is empty than a line and the
+/// margin above it, and the newest message `newest` is in view.
+fn assert_drawn_from_a_whole_line(
+    window: &Window,
+    app: &App,
+    (earlier, newest): (&str, &str),
+    size: (f32, f32),
+) {
+    let body = app.live_chat.body().expect("the chat is drawn");
+    let lines = whole_lines(&window.output, body);
+    let first = lines
+        .iter()
+        .map(|(_, line)| *line)
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .expect("a line is in view");
+    let room = first.top() - body.top();
+    assert!(
+        room < first.height() + BUBBLE_MARGIN,
+        "the top {room} points of the chat are empty at {size:?}"
+    );
+    assert!(
+        box_of(&window.output, earlier, theme::CHAT_BUBBLE).top() < body.top(),
+        "the earlier bubble starts inside the chat at {size:?}, so nothing is tested"
+    );
+    assert!(
+        lines.iter().any(|(text, _)| *text == earlier),
+        "no line of the earlier bubble is in view at {size:?}"
+    );
+    assert!(
+        !line_cut_at_the_top(&window.output, body),
+        "a line is cut at the top of the chat at {size:?}"
+    );
+    let (words, _) = find_text(&window.output, newest);
+    assert!(
+        body.contains_rect(words),
+        "the newest message is not in view at {size:?}"
+    );
+}
+
+#[test]
+fn the_bubble_above_a_growing_message_is_drawn_from_a_whole_line_instead_of_leaving_the_top_empty()
+{
+    // One sentence longer than a bubble takes, so it is a bubble of its own.
+    const LAST: &str = "直訳では分かりにくい場合は、スタッフが平易な言葉で意味を説明し、来館者がその場で質問できるように、展示室の入り口と出口に案内係を一人ずつ置きます。";
+    const GROWING: &str = "来館者はいつでも展示リストに戻れます。画面のタップ数を数えます。";
+    for size in SIZES {
+        let mut app = mini();
+        app.rows = vec![
+            row(1, "音声", &format!("試行期間は6週間です。{LAST}")),
+            forming(row(2, "音声", GROWING)),
+        ];
+        app.current_live_id = Some(2);
+        let window = drawn(&mut app, size);
+        assert_drawn_from_a_whole_line(&window, &app, (LAST, GROWING), size);
+    }
+}
+
+#[test]
+fn a_paragraph_that_ended_but_is_still_one_forming_bubble_is_drawn_from_a_whole_line() {
+    const ENDED: &str = "来館者はいつでも展示リストに戻れます。画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。フィードバックカードでは、印象に残った内容、分かりにくい箇所、今後の改善について3つの質問をします。回答は毎週金曜日にスタッフが確認します。";
+    const NEXT: &str = "次は展示室の地図です。";
+    for size in SIZES {
+        let mut app = mini();
+        // The paragraph waits for its final translation, which cuts it into
+        // bubbles. Until then it is one bubble, still forming.
+        let mut ended = forming(row(1, "音声", ENDED));
+        ended.record.paragraph.as_mut().unwrap().state = ParagraphState::Closing;
+        app.rows = vec![ended, forming(row(2, "音声", NEXT))];
+        app.current_live_id = Some(2);
+        let window = drawn(&mut app, size);
+        assert_drawn_from_a_whole_line(&window, &app, (ENDED, NEXT), size);
+        let body = app.live_chat.body().expect("the chat is drawn");
+        assert!(
+            box_of(&window.output, ENDED, theme::CHAT_BUBBLE).height() > body.height(),
+            "the paragraph that ended fits in the chat at {size:?}"
+        );
+        assert_eq!(
+            find_text(&window.output, ENDED).1,
+            theme::CHAT_TEXT_FORMING,
+            "the paragraph that ended is not drawn as forming at {size:?}"
+        );
+    }
+}
+
+/// A bubble that starts above the top of the chat, as drawn where the chat
+/// does not follow the newest message and so draws every bubble whole.
+struct Cut {
+    /// The texts painted in the bubble.
+    texts: Vec<String>,
+    /// The texts of its lines that are whole in view.
+    lines: Vec<String>,
+    /// Its dots are in view, on a line of their own under its text.
+    dots_alone: bool,
+    /// The chat that follows the newest message draws it.
+    drawn: bool,
+}
+
+/// What reached above the top of the chat while the window grew.
+#[derive(Default)]
+struct Top {
+    bubbles: Vec<Cut>,
+    /// Dates that started above the top.
+    dates: usize,
+}
+
+/// The window grows a point at a time, so the top of the chat runs through
+/// each place of a bubble of one line: the margin above the line, the line,
+/// and the margin below it.
+fn heights() -> impl Iterator<Item = f32> {
+    (SMALLEST.1 as u16..=USUAL.1 as u16).map(f32::from)
+}
+
+/// Draws the chat at `width` and each of `heights`, at `pixels_per_point`,
+/// while it follows the newest message, and again at the same place while it
+/// does not, which draws every bubble in view whole. A bubble that starts
+/// above the top is drawn only with a whole line of its text in view, as an
+/// empty strip of bubble reads as an empty message; no line or date is drawn
+/// cut; and following leaves out no line of a message that is whole in view.
+fn sweep(
+    app: &mut App,
+    width: f32,
+    pixels_per_point: f32,
+    heights: impl IntoIterator<Item = f32>,
+) -> Top {
+    let mut window = Window::new(width, SMALLEST.1);
+    window.scale(pixels_per_point);
+    // The scroll bar comes in over a few frames and narrows the chat.
+    for _ in 0..4 {
+        window.settle(app);
+    }
+    let mut top = Top::default();
+    for height in heights {
+        let size = (width, height);
+        window.resize(width, height);
+        app.settings.auto_scroll = true;
+        window.settle(app);
+        let body = app.live_chat.body().expect("the chat is drawn");
+        let offset = app.live_chat.offset();
+        let following = window.output.clone();
+        let lines = whole_lines(&following, body);
+        let drawn = filled(&following, theme::CHAT_BUBBLE);
+        for bubble in &drawn {
+            if bubble.top() < body.top() - 0.5 {
+                assert!(
+                    lines.iter().any(|(_, line)| bubble.contains_rect(*line)),
+                    "a bubble is drawn at the top without a whole line of its text at {size:?}"
+                );
+            }
+        }
+        assert!(
+            !line_cut_at_the_top(&following, body),
+            "a line is drawn cut at the top at {size:?}"
+        );
+        assert!(
+            filled(&following, theme::CHAT_PILL)
+                .iter()
+                .all(|pill| pill.top() >= body.top() - 0.5),
+            "a date is drawn cut at the top at {size:?}"
+        );
+
+        app.settings.auto_scroll = false;
+        window.draw(app, vec![]);
+        assert!(
+            app.live_chat.offset() == offset && app.live_chat.body() == Some(body),
+            "the chat moved when it stopped following at {size:?}, so nothing is compared"
+        );
+        let still = &window.output;
+        let bubbles = filled(still, theme::CHAT_BUBBLE);
+        let in_view: Vec<_> = whole_lines(still, body)
+            .into_iter()
+            .filter(|(_, line)| bubbles.iter().any(|bubble| bubble.contains_rect(*line)))
+            .collect();
+        for (text, line) in &in_view {
+            assert!(
+                lines.contains(&(*text, *line)),
+                "a line of {text} is whole in view but is not drawn while the chat follows at {size:?}"
+            );
+        }
+        let painted: Vec<_> = shapes(still)
+            .into_iter()
+            .filter_map(|(_, shape)| match shape {
+                egui::Shape::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        for bubble in bubbles {
+            if bubble.top() >= body.top() - 0.5 || bubble.bottom() <= body.top() + 0.5 {
+                continue;
+            }
+            let inside: Vec<_> = painted
+                .iter()
+                .filter(|text| bubble.contains(text.pos))
+                .collect();
+            let text_bottom = inside
+                .iter()
+                .flat_map(|text| {
+                    let y = text.pos.y;
+                    text.galley
+                        .rows
+                        .iter()
+                        .map(move |row| y + row.rect().bottom())
+                })
+                .fold(f32::MIN, f32::max);
+            top.bubbles.push(Cut {
+                texts: inside
+                    .iter()
+                    .map(|text| text.galley.text().to_owned())
+                    .collect(),
+                lines: in_view
+                    .iter()
+                    .filter(|(_, line)| bubble.contains_rect(*line))
+                    .map(|(text, _)| (*text).to_owned())
+                    .collect(),
+                dots_alone: dots(still).iter().any(|(dot, _)| {
+                    bubble.contains(*dot) && body.contains(*dot) && dot.y > text_bottom
+                }),
+                drawn: drawn.contains(&bubble),
+            });
+        }
+        top.dates += filled(still, theme::CHAT_PILL)
+            .iter()
+            .filter(|pill| pill.top() < body.top() - 0.5 && pill.bottom() > body.top() + 0.5)
+            .count();
+    }
+    top
+}
+
+#[test]
+fn no_bubble_is_drawn_at_the_top_without_a_whole_line_of_its_text_in_view() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.rows = talk(8);
+        let top = sweep(&mut app, width, 1.0, heights());
+        assert!(
+            top.bubbles.iter().any(|bubble| bubble.drawn),
+            "no bubble is drawn cut at the top at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+#[test]
+fn the_newest_message_cut_into_bubbles_leaves_no_empty_strip_at_the_top() {
+    // A finished paragraph is cut at the ends of its sentences into bubbles,
+    // and all of them are the newest message.
+    const PARAGRAPH: &str = "来館者はいつでも展示リストに戻れます。画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。回答は毎週金曜日にスタッフが確認し、分かりにくいと書かれた説明文は、翌週の月曜日までに平易な言葉で書き直します。";
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.rows = vec![
+            row(1, "音声", "試行期間は6週間です。"),
+            row(2, "音声", PARAGRAPH),
+        ];
+        let top = sweep(&mut app, width, 1.0, heights());
+        assert!(
+            top.bubbles.iter().any(|bubble| {
+                bubble.lines.is_empty()
+                    && bubble
+                        .texts
+                        .iter()
+                        .any(|text| PARAGRAPH.contains(text.as_str()))
+            }),
+            "no bubble of the newest message is cut at the top without a whole line in view at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+/// Words still being said that fill each line they take at `width`, so the
+/// dots after them start a line of their own. With the scroll bar in, a line
+/// of a bubble holds 11 letters at the smallest width and 16 at the usual one.
+fn filling(width: f32) -> String {
+    let letters = if width == SMALLEST.0 { 11 } else { 16 };
+    "展示室の入り口と出口に案内係を置きます"
+        .chars()
+        .cycle()
+        .take(2 * letters)
+        .collect()
+}
+
+#[test]
+fn a_message_still_forming_is_not_drawn_at_the_top_with_only_its_dots_in_view() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        let words = filling(width);
+        // The third has no words yet, only dots.
+        let mut listening = forming(row(3, "音声", ""));
+        listening.record.source.clear();
+        app.rows = vec![
+            forming(row(1, "音声", &words)),
+            forming(row(2, "音声", &words)),
+            listening,
+            forming(row(4, "音声", &words)),
+            row(5, "音声", "5番目の訳文です。"),
+        ];
+        let top = sweep(&mut app, width, 1.0, heights());
+        assert!(
+            top.bubbles.iter().any(|bubble| {
+                bubble.dots_alone && bubble.lines.is_empty() && !bubble.texts.is_empty()
+            }),
+            "no message still forming is cut at the top with only its dots in view at the width {width}, so nothing is tested"
+        );
+        assert!(
+            top.bubbles
+                .iter()
+                .any(|bubble| bubble.dots_alone && bubble.texts.is_empty()),
+            "no message of dots alone is cut at the top with its dots in view at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+#[test]
+fn a_bubble_is_drawn_at_the_top_while_its_original_or_video_time_is_whole_in_view() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.settings.live_show_original = true;
+        app.rows = (1..=6)
+            .map(|id| {
+                let mut row = row(id, "YouTube", &format!("{id}番目の字幕の訳文です。"));
+                row.record.source =
+                    format!("Caption {id} of the talk, which goes on for a while in English.");
+                row.record.start_ms = id * 7_000;
+                row
+            })
+            .collect();
+        let top = sweep(&mut app, width, 1.0, heights());
+        let video = |line: &String| line.starts_with("動画 ");
+        let original = |line: &String| line.starts_with("Caption ");
+        assert!(
+            top.bubbles
+                .iter()
+                .any(|bubble| !bubble.lines.is_empty() && bubble.lines.iter().all(video)),
+            "no bubble is cut at the top with only its video time whole in view at the width {width}, so nothing is tested"
+        );
+        assert!(
+            top.bubbles.iter().any(|bubble| {
+                bubble.lines.iter().any(original)
+                    && bubble
+                        .lines
+                        .iter()
+                        .all(|line| original(line) || video(line))
+            }),
+            "no bubble is cut at the top with only its original in view at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+#[test]
+fn a_date_cut_at_the_top_is_not_drawn() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.rows = (1..=8)
+            .map(|id| {
+                let mut row = row(id, "音声", &format!("{id}日の訳文です。"));
+                row.record.created_at = format!("2026-11-{id:02}T10:00:00+09:00");
+                row
+            })
+            .collect();
+        let top = sweep(&mut app, width, 1.0, heights());
+        assert!(
+            top.dates > 0,
+            "no date is cut at the top at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+#[test]
+fn at_125_percent_no_bubble_is_drawn_at_the_top_without_a_whole_line_of_its_text_in_view() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.rows = talk(8);
+        // A window is a whole number of pixels, and at 125% a pixel is 0.8
+        // points.
+        let heights = (325..=450_u16).map(|pixels| f32::from(pixels) / 1.25);
+        let top = sweep(&mut app, width, 1.25, heights);
+        assert!(
+            top.bubbles.iter().any(|bubble| bubble.drawn),
+            "no bubble is drawn cut at the top at the width {width}, so nothing is tested"
+        );
+    }
+}
+
 #[test]
 fn none_of_the_old_words_of_the_mini_view_is_drawn() {
     type Change = fn(&mut App);

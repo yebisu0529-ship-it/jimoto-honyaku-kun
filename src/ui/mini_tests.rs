@@ -2777,6 +2777,32 @@ fn clear_waits_while_the_card_covers_the_chat_and_can_be_pressed_again_back_on_t
 }
 
 #[test]
+fn the_chat_header_s_clear_is_not_held_back_by_a_card_the_mini_view_was_left_on() {
+    let enabled = {
+        let mut app = chat();
+        app.rows = talk(2);
+        drawn(&mut app, MAIN).ink("クリア")
+    };
+    let mut app = mini();
+    app.rows = talk(2);
+    app.capture(&egui::Context::default());
+    let mut window = drawn(&mut app, USUAL);
+    assert!(window.has(NO_SCREEN));
+    window.draw(&mut app, vec![escape()]);
+    assert!(!app.window_mode.is_mini());
+
+    let mut window = drawn(&mut app, MAIN);
+    window.click(&mut app, "← チャットに戻る");
+    window.settle(&mut app);
+    assert!(app.tab == Tab::Live);
+    assert_eq!(
+        window.ink("クリア"),
+        enabled,
+        "the chat header's クリア is faded after the mini view was left on the card"
+    );
+}
+
+#[test]
 fn the_topmost_switch_says_what_it_does_in_the_toolbar_and_in_the_menu() {
     for (size, readout, place) in [(USUAL, false, "toolbar"), (SMALLEST, true, "menu")] {
         let mut app = mini();

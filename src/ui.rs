@@ -2153,7 +2153,13 @@ impl App {
                 }
             });
         ui.add_space(theme::SPACE_1);
-        if ui.add(standard("音声認識を準備")).clicked() {
+        if ui
+            .add_enabled(
+                !self.nemotron_cannot_hear_the_language(),
+                standard("音声認識を準備"),
+            )
+            .clicked()
+        {
             self.prepare_audio();
         }
     }
@@ -2161,7 +2167,7 @@ impl App {
     /// 「YouTube字幕も訳す」, in the settings and on the YouTube screen, with
     /// what it changes. Turned off, the captions stop and an input that has
     /// them gives way to the PC audio for the next 「聞く」. The PC audio itself
-    /// is left as it is.
+    /// is left as it is. Captions that arrive after that are told once more.
     pub(super) fn youtube_captions_switch(&mut self, ui: &mut egui::Ui) {
         if toggle(
             ui,
@@ -2178,6 +2184,7 @@ impl App {
             if self.screen_feed.is_none() {
                 self.set_caption_enabled(false);
             }
+            self.captions_arriving_told = false;
         }
         ui.label(theme::caption(
             "オンにすると、「入力の切り替え」に「YouTube字幕だけ」と「自動（字幕を優先）」が出ます。",

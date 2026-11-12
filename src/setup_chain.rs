@@ -228,13 +228,16 @@ impl App {
     }
 
     /// Whether the settings ask for this step: the translation model always, the
-    /// rest as chosen. The settings can change while the chain runs, so the chain
-    /// asks again when a step starts and when it stops.
+    /// rest as chosen. Nemotron hears English only, so its step is left out for a
+    /// language it cannot hear. The settings can change while the chain runs, so
+    /// the chain asks again when a step starts and when it stops.
     pub(super) fn wants(&self, step: Step) -> bool {
         match step {
             Step::Translation => true,
             Step::Punctuation => self.settings.english_punctuation,
-            Step::Speech => self.settings.asr_backend == "nemotron",
+            Step::Speech => {
+                self.settings.asr_backend == "nemotron" && !self.nemotron_cannot_hear_the_language()
+            }
             Step::Voice => self.settings.readout_enabled,
         }
     }

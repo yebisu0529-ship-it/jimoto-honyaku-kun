@@ -321,6 +321,9 @@ enum Earlier {
     Failed(String),
 }
 const MAX_AUDIO_AGE_MS: u64 = 8000;
+/// What the status line says when the extension sends captions while
+/// 「YouTube字幕も訳す」 is off. The mini view says it on its one row too.
+const CAPTIONS_ARRIVING: &str = "YouTube字幕が届いています。設定の「その他の機能」で「YouTube字幕も訳す」をオンにすると訳せます。";
 struct App {
     settings: Settings,
     settings_load_failed: bool,
@@ -375,7 +378,8 @@ struct App {
     last_caption: Option<Instant>,
     pending_caption: Option<bridge::Caption>,
     /// The status line has said that captions arrive while they are not
-    /// translated. It says so once.
+    /// translated. It says so once, and once more after the option is turned
+    /// off again.
     captions_arriving_told: bool,
     last_live_text: String,
     current_live_id: Option<u64>,
@@ -1346,7 +1350,7 @@ impl App {
                     && !caption.text.trim().is_empty()
                 {
                     self.captions_arriving_told = true;
-                    self.status = "YouTube字幕が届いています。設定の「その他の機能」で「YouTube字幕も訳す」をオンにすると訳せます。".into();
+                    self.status = CAPTIONS_ARRIVING.into();
                 }
                 continue;
             }

@@ -2,7 +2,9 @@
 //! and its one listen button. A reading or a text translation asked for there
 //! shows its result on a card in the chat's place.
 use super::home_tests::{Window, key, row};
-use super::listen_tests::{INPUTS, SCREEN, armed, chat_without_speech, drawn, hint, marked};
+use super::listen_tests::{
+    INPUTS, SCREEN, armed, chat_without_speech, drawn, hint, marked, with_youtube_captions,
+};
 use super::*;
 use crate::chat::testing::{
     box_of, dots, filled, find_text, has_text_containing, line_cut_at_the_top, press, selected,
@@ -629,6 +631,25 @@ fn the_empty_chat_of_the_mini_view_points_at_the_button_above_it() {
         assert_eq!(
             hint(&mut app, size),
             "YouTubeで動画を開き、字幕（CC）をオンにして再生してください。\n字幕の訳が、ここに出ます。"
+        );
+    }
+}
+
+#[test]
+fn the_empty_mini_chat_says_that_listen_translates_the_english_playing_on_the_pc() {
+    for size in SIZES {
+        let mut app = mini();
+        assert_eq!(
+            hint(&mut app, size),
+            "PCで再生中の英語の音声を、ここにやさしい日本語で表示します。\n上の「● 聞く」を押すと始まります。",
+            "{size:?}"
+        );
+
+        let mut app = with_youtube_captions(mini());
+        assert_eq!(
+            hint(&mut app, size),
+            "PCで再生中の英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n上の「● 聞く」を押すと始まります。",
+            "{size:?}"
         );
     }
 }
@@ -2225,6 +2246,44 @@ fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
         app.caption_enabled = true;
         window.settle(&mut app);
         assert_eq!(marked(&window), ["YouTube字幕だけ"], "what is on now");
+    }
+}
+
+#[test]
+fn the_mini_inputs_are_pc_audio_alone_until_youtube_captions_are_turned_on() {
+    for size in SIZES {
+        let mut app = mini();
+        let mut window = drawn(&mut app, size);
+        open_menu(&mut window, &mut app);
+        window.click(&mut app, "入力の切り替え");
+        let listed: Vec<&str> = ["PC音声だけ", "YouTube字幕だけ", "自動（字幕を優先）"]
+            .into_iter()
+            .filter(|label| window.has(label))
+            .collect();
+        assert_eq!(
+            listed,
+            ["PC音声だけ"],
+            "the captions are an option at {size:?}"
+        );
+        assert_eq!(marked(&window), ["PC音声だけ"]);
+
+        let mut app = with_youtube_captions(mini());
+        let mut window = drawn(&mut app, size);
+        open_menu(&mut window, &mut app);
+        window.click(&mut app, "入力の切り替え");
+        let tops: Vec<f32> = ["PC音声だけ", "YouTube字幕だけ", "自動（字幕を優先）"]
+            .iter()
+            .map(|label| window.at(label).top())
+            .collect();
+        assert!(
+            tops.windows(2).all(|pair| pair[0] < pair[1]),
+            "the inputs are out of order at {size:?}: {tops:?}"
+        );
+        assert_eq!(
+            marked(&window),
+            ["PC音声だけ"],
+            "the first input is still the PC audio"
+        );
     }
 }
 

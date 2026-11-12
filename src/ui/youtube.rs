@@ -467,6 +467,77 @@ mod tests {
         }
     }
 
+    const SWITCH: &str = "YouTube字幕も訳す";
+
+    #[test]
+    fn the_screen_starts_with_the_switch_and_arriving_captions_point_at_it_while_it_is_off() {
+        let mut app = screen(&[Contact::Caption]);
+        let mut window = drawn(&mut app);
+        assert!(window.has(SWITCH), "the switch is not on the screen");
+        assert!(
+            window.at(SWITCH).bottom() < window.at("字幕を受信中").top(),
+            "the switch is not above the status"
+        );
+        assert!(window.has(
+            "YouTube字幕が届いています。訳すときは、上の「YouTube字幕も訳す」をオンにしてください。"
+        ));
+
+        window.click(&mut app, SWITCH);
+        assert!(window.has(
+            "YouTube字幕が届いています。いまの入力は「PC音声だけ」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「YouTube字幕だけ」か「自動（字幕を優先）」を選びます。"
+        ));
+    }
+
+    #[test]
+    fn the_switch_is_one_setting_saved_with_the_others_in_the_settings_and_on_this_screen() {
+        let saved = |app: &App| {
+            serde_json::to_value(&app.settings).unwrap()["translate_youtube_captions"].clone()
+        };
+        let mut app = chat();
+        assert_eq!(
+            saved(&app),
+            serde_json::json!(false),
+            "it is not a saved setting that starts off"
+        );
+
+        app.tab = Tab::Settings;
+        let mut window = Window::new(1280.0, 2400.0);
+        window.settle(&mut app);
+        assert!(
+            !window.has(SWITCH),
+            "it is shown before {OTHER_FEATURES} is opened"
+        );
+        window.click(&mut app, OTHER_FEATURES);
+        assert!(window.has(SWITCH), "it is not behind {OTHER_FEATURES}");
+        let (heading, switch) = (window.at("YouTube字幕"), window.at(SWITCH));
+        assert!(
+            window.at(OTHER_FEATURES).bottom() < heading.top() && heading.bottom() <= switch.top(),
+            "it is not in a card of its own behind {OTHER_FEATURES}"
+        );
+        window.click(&mut app, SWITCH);
+        assert_eq!(saved(&app), serde_json::json!(true));
+
+        app.tab = Tab::YouTube;
+        let mut window = drawn(&mut app);
+        window.click(&mut app, SWITCH);
+        assert_eq!(
+            saved(&app),
+            serde_json::json!(false),
+            "this screen has the same setting"
+        );
+
+        // A settings file from before the switch keeps what it has, and the
+        // switch is off.
+        let before: Settings =
+            serde_json::from_value(serde_json::json!({"bridge_token": "the extension's key"}))
+                .unwrap();
+        assert_eq!(before.bridge_token, "the extension's key");
+        assert_eq!(
+            serde_json::to_value(&before).unwrap()["translate_youtube_captions"],
+            serde_json::json!(false)
+        );
+    }
+
     #[test]
     fn the_steps_say_to_reload_a_youtube_page_that_was_open_before() {
         let window = drawn(&mut screen(&[]));

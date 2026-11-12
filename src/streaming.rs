@@ -323,6 +323,8 @@ mod tests {
         assert_eq!(app.nemotron_origin_ms, 800);
     }
 
+    // If the guard this test pins breaks, start_streaming_audio opens the real WASAPI loopback of the
+    // PC's playback inside the test run. It stops when the App drops and keeps nothing.
     #[test]
     fn nemotron_that_gets_ready_after_the_language_changed_leaves_the_pc_audio_off() {
         let mut app = App::inert();

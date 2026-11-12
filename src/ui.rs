@@ -2175,16 +2175,22 @@ impl App {
             "YouTube字幕も訳す",
         )
         .changed()
-            && !self.settings.translate_youtube_captions
         {
-            if self.listen_input.uses_youtube() {
-                self.listen_input = LiveSourceMode::Audio;
+            if self.settings.translate_youtube_captions {
+                // The hint asked for this switch; left there it would ask again.
+                if self.status == CAPTIONS_ARRIVING {
+                    self.status.clear();
+                }
+            } else {
+                if self.listen_input.uses_youtube() {
+                    self.listen_input = LiveSourceMode::Audio;
+                }
+                // The 画面 input reads the screen through the caption path.
+                if self.screen_feed.is_none() {
+                    self.set_caption_enabled(false);
+                }
+                self.captions_arriving_told = false;
             }
-            // The 画面 input reads the screen through the caption path.
-            if self.screen_feed.is_none() {
-                self.set_caption_enabled(false);
-            }
-            self.captions_arriving_told = false;
         }
         ui.label(theme::caption(
             "オンにすると、「入力の切り替え」に「YouTube字幕だけ」と「自動（字幕を優先）」が出ます。",

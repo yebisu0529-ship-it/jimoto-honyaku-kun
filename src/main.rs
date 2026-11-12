@@ -66,6 +66,9 @@ struct Settings {
     live_show_original: bool,
     auto_scroll: bool,
     font_size: f32,
+    /// 「ダークモード」: every window that shows the talk draws its chat dark.
+    /// The rest of the app is dark either way.
+    dark_chat: bool,
     template: String,
     backend: String,
     gpu_layers: u32,
@@ -114,6 +117,7 @@ impl Default for Settings {
             live_show_original: false,
             auto_scroll: true,
             font_size: theme::READING_DEFAULT,
+            dark_chat: false,
             template: root
                 .join("models/chat_template.jinja")
                 .to_string_lossy()
@@ -1812,7 +1816,7 @@ impl eframe::App for App {
         self.screen_ocr_setup_ui(ctx);
         self.document_update_subtitle_window();
         self.sync_subtitle_moments();
-        self.subtitle_window.show(ctx);
+        self.subtitle_window.show(ctx, self.chat_palette());
         self.selection_ui(ctx);
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q)) {
             self.request_app_close(ctx);
@@ -2560,6 +2564,7 @@ fn render_mini_views(folder: &Path) -> Result<()> {
     let others = MiniScene::Submenu(ui::OTHER_FEATURES);
     for (name, size, scene) in [
         ("06-mini-live", usual, MiniScene::Live),
+        ("06-mini-live-dark", usual, MiniScene::Live),
         ("07-mini-draft", usual, MiniScene::Draft),
         ("08-mini-screen", usual, MiniScene::Result),
         ("09-mini-minimum", smallest, MiniScene::Draft),
@@ -2575,6 +2580,11 @@ fn render_mini_views(folder: &Path) -> Result<()> {
         ("46-mini-input-menu-minimum", smallest, inputs),
         ("48-mini-other-features", usual, others),
         ("49-mini-other-features-minimum", smallest, others),
+        (
+            "53-mini-display-menu-dark",
+            smallest,
+            MiniScene::Submenu("表示"),
+        ),
     ] {
         let ctx = egui::Context::default();
         ui::configure_theme(&ctx);
@@ -2583,6 +2593,7 @@ fn render_mini_views(folder: &Path) -> Result<()> {
         app.asr_ready = true;
         app.startup_decided = true;
         app.window_mode.enter(&egui::ViewportInfo::default());
+        app.settings.dark_chat = name.ends_with("-dark");
         // Three messages from a video, then one from the PC's audio that is
         // still forming. The small window has room for the last two.
         app.rows = demo_talk(4);
@@ -2785,6 +2796,13 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 Listening::Both,
             ),
             (
+                "03-live-dark",
+                Tab::Live,
+                true,
+                Overlay::Nothing,
+                Listening::Both,
+            ),
+            (
                 "04-settings",
                 Tab::Settings,
                 false,
@@ -2876,6 +2894,13 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 Overlay::Submenu("入力の切り替え"),
                 Listening::Both,
             ),
+            (
+                "52-display-menu-dark",
+                Tab::Live,
+                true,
+                Overlay::Submenu("表示"),
+                Listening::Both,
+            ),
         ] {
             let ctx = egui::Context::default();
             ui::configure_theme(&ctx);
@@ -2889,6 +2914,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             app.settings.model = "models/plamo-3-translate-2b-Q4_K_M.gguf".into();
             app.settings.llama_server = "runtime/llama-server.exe".into();
             app.settings.python = ".venv/Scripts/python.exe".into();
+            app.settings.dark_chat = name.ends_with("-dark");
             if tab == Tab::Setup {
                 app.setup.hardware = Some(plamo_translate::hardware::Hardware {
                     os_arch: "windows-x86_64".into(),
@@ -3149,6 +3175,11 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             demo_subtitle(false, 3, FORMING_LONG),
         ),
         (
+            "16-subtitle-updating-dark",
+            [720, 360],
+            demo_subtitle(false, 3, FORMING_LONG),
+        ),
+        (
             "17-subtitle-source",
             [720, 360],
             demo_subtitle(false, 2, FORMING_LONG),
@@ -3187,6 +3218,11 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             "26-subtitle-large-text" => state.font_size = theme::SUBTITLE_READING_MAX,
             _ => {}
         }
+        let palette = if name.ends_with("-dark") {
+            &theme::CHAT_DARK
+        } else {
+            &theme::CHAT_LIGHT
+        };
         let ctx = egui::Context::default();
         ui::configure_theme(&ctx);
         preview::render(
@@ -3196,7 +3232,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
             size[1],
             |ctx| {
                 subtitle_window::State::panel().show(ctx, |ui| {
-                    state.paint(ui);
+                    state.paint(ui, palette);
                 });
             },
         )?;
@@ -3245,7 +3281,7 @@ fn render_long_paragraph_views(folder: &Path) -> Result<()> {
                 height,
                 |ctx| {
                     subtitle_window::State::panel().show(ctx, |ui| {
-                        window.paint(ui);
+                        window.paint(ui, &theme::CHAT_LIGHT);
                     });
                 },
             )?;

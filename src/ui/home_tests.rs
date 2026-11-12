@@ -1,6 +1,9 @@
 //! The chat is the home screen and every other screen is behind one menu.
 use super::*;
-use crate::chat::testing::{find_text, press, texts, wheel};
+use crate::chat::testing::{
+    assert_drawn_dark, background, fill_behind, filled, find_text, light_colours, press, shapes,
+    texts, wheel,
+};
 use plamo_translate::hardware::Hardware;
 
 /// One window whose egui state lasts from frame to frame, so a menu that has
@@ -599,6 +602,312 @@ fn the_display_options_moved_into_the_menu_and_still_work() {
     }
     window.click(&mut app, "原文をすべて表示");
     assert!(app.settings.live_show_original);
+}
+
+/// What 「ダークモード」 is saved as in the settings file.
+pub(super) fn dark_chat_saved(app: &App) -> serde_json::Value {
+    serde_json::to_value(&app.settings).unwrap()["dark_chat"].clone()
+}
+
+/// `app` with 「ダークモード」 on, as a settings file that has it on gives it.
+pub(super) fn with_dark_chat(mut app: App) -> App {
+    let mut saved = serde_json::to_value(&app.settings).unwrap();
+    saved["dark_chat"] = true.into();
+    app.settings = serde_json::from_value(saved).unwrap();
+    app
+}
+
+/// Turns 「ダークモード」 over in the 表示 menu, the way a pointer does.
+fn flip_dark_mode(window: &mut Window, app: &mut App) {
+    window.open_menu(app);
+    window.click(app, "表示");
+    window.click(app, "ダークモード");
+}
+
+/// Drags across the one text drawn as `words`, the way a pointer selects it.
+fn select(window: &mut Window, app: &mut App, words: &str) {
+    let text = window.at(words);
+    let from = text.left_center() + egui::vec2(2.0, 0.0);
+    let to = text.right_center() - egui::vec2(2.0, 0.0);
+    window.draw(app, vec![egui::Event::PointerMoved(from)]);
+    window.draw(app, vec![press(from, egui::PointerButton::Primary, true)]);
+    for step in 1..=4 {
+        let at = from + (to - from) * (step as f32 / 4.0);
+        window.draw(app, vec![egui::Event::PointerMoved(at)]);
+    }
+    window.draw(app, vec![press(to, egui::PointerButton::Primary, false)]);
+    window.settle(app);
+}
+
+/// The words of the first message of the previews' talk, in a bubble of
+/// their own.
+const FIRST_WORDS: &str = "おかえりなさい。今日は小さなアプリを作ります。";
+
+#[test]
+fn the_display_menu_has_dark_mode_right_after_auto_scroll_and_it_starts_off() {
+    let mut app = chat();
+    let mut window = Window::new(860.0, 620.0);
+    window.open_menu(&mut app);
+    window.click(&mut app, "表示");
+    assert!(
+        window.has("ダークモード"),
+        "ダークモード is not in the 表示 menu"
+    );
+    let tops: Vec<f32> = [
+        "原文をすべて表示",
+        "末尾へ自動スクロール",
+        "ダークモード",
+        "訳文の文字サイズ",
+    ]
+    .iter()
+    .map(|option| window.at(option).top())
+    .collect();
+    assert!(
+        tops.windows(2).all(|pair| pair[0] < pair[1]),
+        "ダークモード is not right after 末尾へ自動スクロール: {tops:?}"
+    );
+    assert_eq!(
+        dark_chat_saved(&app),
+        serde_json::json!(false),
+        "it is not a saved setting that starts off"
+    );
+    window.click(&mut app, "ダークモード");
+    assert_eq!(dark_chat_saved(&app), serde_json::json!(true));
+    flip_dark_mode(&mut window, &mut app);
+    assert_eq!(dark_chat_saved(&app), serde_json::json!(false));
+}
+
+#[test]
+fn an_old_settings_file_reads_dark_mode_as_off_and_a_saved_one_keeps_it() {
+    let old: Settings = serde_json::from_slice(br#"{"font_size": 24.0}"#).unwrap();
+    assert_eq!(old.font_size, 24.0, "the file's own settings are lost");
+    assert_eq!(
+        serde_json::to_value(&old).unwrap()["dark_chat"],
+        serde_json::json!(false),
+        "a file from before the switch does not read as off"
+    );
+
+    let mut app = chat();
+    let mut window = Window::new(860.0, 620.0);
+    flip_dark_mode(&mut window, &mut app);
+    // What save_settings writes, read back as the next start reads it.
+    let file = serde_json::to_vec_pretty(&app.settings).unwrap();
+    let read: Settings = serde_json::from_slice(&file).unwrap();
+    assert_eq!(
+        serde_json::to_value(&read).unwrap()["dark_chat"],
+        serde_json::json!(true),
+        "the switch is not kept in the file"
+    );
+}
+
+#[test]
+fn dark_mode_draws_the_chat_dark_and_turning_it_off_brings_today_s_colours_back_at_once() {
+    // The previews' talk: names, times, a date, an opened original with its
+    // video time, and a message still forming with its dots.
+    let mut app = with_dark_chat(chat());
+    app.rows = crate::demo_talk(5);
+    app.current_live_id = Some(5);
+    app.live_chat.toggle_original(3, 0);
+    let mut window = Window::new(1280.0, 880.0);
+    window.settle(&mut app);
+    let panel = app.live_chat.panel().expect("the chat is drawn");
+    assert_drawn_dark(&window.output, panel, FIRST_WORDS);
+    select(&mut window, &mut app, FIRST_WORDS);
+    assert!(app.live_chat.has_selection(), "the drag selected nothing");
+    assert_eq!(
+        light_colours(&window.output, panel),
+        Vec::<&str>::new(),
+        "parts of the chat are still light"
+    );
+
+    flip_dark_mode(&mut window, &mut app);
+    assert_eq!(background(&window.output, panel), theme::CHAT_BACKGROUND);
+    assert_eq!(fill_behind(&window.output, FIRST_WORDS), theme::CHAT_BUBBLE);
+    assert_eq!(find_text(&window.output, FIRST_WORDS).1, theme::CHAT_TEXT);
+
+    flip_dark_mode(&mut window, &mut app);
+    assert_drawn_dark(&window.output, panel, FIRST_WORDS);
+}
+
+#[test]
+fn the_dark_chat_draws_its_pills_its_scroll_bar_and_its_empty_words_dark_too() {
+    // Read from the start of a longer talk, with the pointer on the pill.
+    let mut app = with_dark_chat(chat());
+    app.rows = crate::demo_talk(10);
+    app.current_live_id = Some(10);
+    app.live_chat.reading_from_start(7);
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    window.hover(&mut app, "↓ 新しいメッセージ 3件");
+    let panel = app.live_chat.panel().expect("the chat is drawn");
+    assert_drawn_dark(&window.output, panel, FIRST_WORDS);
+    for pill in ["11月7日（土）", "↓ 新しいメッセージ 3件"] {
+        let (fill, (_, ink)) = (
+            fill_behind(&window.output, pill),
+            find_text(&window.output, pill),
+        );
+        assert!(
+            theme::contrast_ratio(ink, fill) >= 4.5,
+            "{pill} in {ink:?} cannot be read on {fill:?}"
+        );
+    }
+    assert_eq!(
+        light_colours(&window.output, panel),
+        Vec::<&str>::new(),
+        "parts of the chat are still light"
+    );
+
+    let mut app = with_dark_chat(chat());
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    let panel = app.live_chat.panel().expect("the chat is drawn");
+    let background = background(&window.output, panel);
+    assert!(
+        theme::relative_luminance(background) < 0.01,
+        "the empty chat is on {background:?}"
+    );
+    let (_, _, ink) = texts(&window.output)
+        .into_iter()
+        .find(|(text, _, _)| text.starts_with(chat::EMPTY_HINT))
+        .expect("the empty chat says what it is for");
+    assert!(
+        theme::contrast_ratio(ink, background) >= 4.5,
+        "the words of the empty chat in {ink:?} cannot be read on {background:?}"
+    );
+    assert_eq!(light_colours(&window.output, panel), Vec::<&str>::new());
+}
+
+/// The handle of the dark chat's scroll bar in `panel`: the one rectangle
+/// painted on the track, and its fill.
+fn scroll_handle(output: &egui::FullOutput, panel: egui::Rect) -> (egui::Rect, Color32) {
+    let track = filled(output, theme::CHAT_DARK.track)
+        .into_iter()
+        .find(|track| panel.contains_rect(*track))
+        .expect("the chat has a scroll bar");
+    let handles: Vec<(egui::Rect, Color32)> = shapes(output)
+        .into_iter()
+        .filter_map(|(_, shape)| match shape {
+            egui::Shape::Rect(handle)
+                if handle.rect != track && track.contains_rect(handle.rect) =>
+            {
+                Some((handle.rect, handle.fill))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(handles.len(), 1, "one handle on the track: {handles:?}");
+    handles[0]
+}
+
+#[test]
+fn the_dark_chat_paints_the_scroll_handle_in_its_hover_and_pressed_colours_under_the_pointer() {
+    let mut app = with_dark_chat(chat());
+    app.rows = crate::demo_talk(10);
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    let panel = app.live_chat.panel().expect("the chat is drawn");
+    let (handle, fill) = scroll_handle(&window.output, panel);
+    assert_eq!(fill, theme::CHAT_DARK.pill, "the handle at rest");
+
+    let on = handle.center();
+    window.draw(&mut app, vec![egui::Event::PointerMoved(on)]);
+    window.settle(&mut app);
+    assert_eq!(
+        scroll_handle(&window.output, panel).1,
+        theme::CHAT_DARK.pill_hover,
+        "the handle under the pointer"
+    );
+
+    window.draw(
+        &mut app,
+        vec![press(on, egui::PointerButton::Primary, true)],
+    );
+    window.draw(
+        &mut app,
+        vec![egui::Event::PointerMoved(on - egui::vec2(0.0, 40.0))],
+    );
+    let (dragged, fill) = scroll_handle(&window.output, panel);
+    assert!(
+        dragged.top() < handle.top(),
+        "the handle does not follow the pointer"
+    );
+    assert_eq!(fill, theme::CHAT_DARK.meta, "the handle being dragged");
+}
+
+/// The fill of the round avatar that `glyph` is written on.
+fn avatar(output: &egui::FullOutput, glyph: &str) -> Color32 {
+    let (words, _) = find_text(output, glyph);
+    shapes(output)
+        .into_iter()
+        .find_map(|(_, shape)| match shape {
+            egui::Shape::Circle(circle) if words.contains(circle.center) => Some(circle.fill),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{glyph} is on no avatar"))
+}
+
+#[test]
+fn a_screen_message_s_avatar_has_the_dark_palette_s_colour_in_the_dark_chat() {
+    let mut app = with_dark_chat(chat());
+    app.rows = vec![row(1, "画面", "画面から読み取った文の訳文です。")];
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    assert_eq!(
+        avatar(&window.output, "画"),
+        theme::CHAT_DARK.avatar_screen,
+        "the 画面 avatar of the dark chat"
+    );
+
+    flip_dark_mode(&mut window, &mut app);
+    assert_eq!(
+        avatar(&window.output, "画"),
+        theme::CHAT_AVATAR_SCREEN,
+        "the light chat's avatar does not come back"
+    );
+}
+
+/// The subtitle window, drawn as `App::update` draws it on each frame.
+fn subtitle_window(ctx: &egui::Context, app: &mut App) -> egui::FullOutput {
+    let mut output = egui::FullOutput::default();
+    for _ in 0..4 {
+        output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 360.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                app.subtitle_window.show(ctx, app.chat_palette());
+            },
+        );
+    }
+    output
+}
+
+#[test]
+fn the_subtitle_window_follows_dark_mode_at_once() {
+    let words = "共通の用語集で地域の地名を統一します。";
+    let mut app = with_dark_chat(chat());
+    app.subtitle_window = crate::demo_subtitle(false, 3, crate::FORMING_LONG);
+    app.subtitle_window.open = true;
+    let ctx = crate::chat::testing::context();
+    let output = subtitle_window(&ctx, &mut app);
+    let panel = app.subtitle_window.chat.panel().expect("the chat is drawn");
+    assert_drawn_dark(&output, panel, words);
+    assert_eq!(
+        light_colours(&output, panel),
+        Vec::<&str>::new(),
+        "parts of the subtitle window's chat are still light"
+    );
+
+    let mut window = Window::new(860.0, 620.0);
+    flip_dark_mode(&mut window, &mut app);
+    let output = subtitle_window(&ctx, &mut app);
+    assert_eq!(background(&output, panel), theme::CHAT_BACKGROUND);
+    assert_eq!(fill_behind(&output, words), theme::CHAT_BUBBLE);
+    assert_eq!(find_text(&output, words).1, theme::CHAT_TEXT);
 }
 
 #[test]

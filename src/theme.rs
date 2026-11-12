@@ -42,7 +42,7 @@ pub const WARNING: Color32 = Color32::from_rgb(244, 196, 124);
 pub const SUCCESS: Color32 = Color32::from_rgb(132, 222, 186);
 
 // ---------------------------------------------------------------------------
-// Chat: a light messenger canvas inside the dark app.
+// Chat: a light messenger canvas inside the dark app, and a dark one.
 // ---------------------------------------------------------------------------
 
 /// Behind the messages.
@@ -71,6 +71,67 @@ pub const CHAT_AVATAR_YOUTUBE: Color32 = Color32::from_rgb(184, 32, 40);
 pub const CHAT_AVATAR_AUDIO: Color32 = Color32::from_rgb(52, 86, 184);
 pub const CHAT_AVATAR_SCREEN: Color32 = Color32::from_rgb(118, 58, 176);
 pub const CHAT_AVATAR_GLYPH: Color32 = Color32::from_rgb(255, 255, 255);
+
+/// The chat's colours by role, as the constants above name them for the light
+/// chat. The chat draws with the palette it is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChatPalette {
+    pub background: Color32,
+    pub bubble: Color32,
+    pub text: Color32,
+    pub text_forming: Color32,
+    pub text_muted: Color32,
+    pub rule: Color32,
+    pub selection: Color32,
+    pub meta: Color32,
+    pub pill: Color32,
+    pub pill_hover: Color32,
+    pub pill_text: Color32,
+    pub track: Color32,
+    pub avatar_youtube: Color32,
+    pub avatar_audio: Color32,
+    pub avatar_screen: Color32,
+}
+
+pub const CHAT_LIGHT: ChatPalette = ChatPalette {
+    background: CHAT_BACKGROUND,
+    bubble: CHAT_BUBBLE,
+    text: CHAT_TEXT,
+    text_forming: CHAT_TEXT_FORMING,
+    text_muted: CHAT_TEXT_MUTED,
+    rule: CHAT_RULE,
+    selection: CHAT_SELECTION,
+    meta: CHAT_META,
+    pill: CHAT_PILL,
+    pill_hover: CHAT_PILL_HOVER,
+    pill_text: CHAT_PILL_TEXT,
+    track: CHAT_TRACK,
+    avatar_youtube: CHAT_AVATAR_YOUTUBE,
+    avatar_audio: CHAT_AVATAR_AUDIO,
+    avatar_screen: CHAT_AVATAR_SCREEN,
+};
+
+/// A near-black background a step darker than the canvas, dark grey bubbles
+/// and light text. The screen avatar is lighter than the light chat's, which
+/// is below 3:1 on this background. A hovered pill or scroll handle turns
+/// lighter here, where the light chat's darker hover would sink into the track.
+pub const CHAT_DARK: ChatPalette = ChatPalette {
+    background: Color32::from_rgb(6, 7, 9),
+    bubble: Color32::from_rgb(44, 46, 51),
+    text: Color32::from_rgb(236, 239, 244),
+    text_forming: Color32::from_rgb(150, 154, 162),
+    text_muted: Color32::from_rgb(178, 183, 191),
+    rule: Color32::from_rgb(64, 68, 75),
+    selection: Color32::from_rgb(44, 86, 150),
+    meta: Color32::from_rgb(140, 145, 154),
+    pill: Color32::from_rgb(98, 103, 112),
+    pill_hover: Color32::from_rgb(108, 113, 122),
+    pill_text: Color32::from_rgb(255, 255, 255),
+    track: Color32::from_rgb(18, 20, 24),
+    avatar_youtube: CHAT_AVATAR_YOUTUBE,
+    avatar_audio: CHAT_AVATAR_AUDIO,
+    avatar_screen: Color32::from_rgb(132, 70, 192),
+};
 
 // ---------------------------------------------------------------------------
 // Spacing, radius and control sizes (8-point scale with 4-point half steps).
@@ -329,48 +390,52 @@ mod tests {
 
     #[test]
     fn chat_text_meets_wcag_aa_on_the_bubble_and_the_chat_background() {
-        for (name, fg, bg, minimum) in [
-            ("text/bubble", CHAT_TEXT, CHAT_BUBBLE, 4.5),
-            ("forming text/bubble", CHAT_TEXT_FORMING, CHAT_BUBBLE, 4.5),
-            ("muted/bubble", CHAT_TEXT_MUTED, CHAT_BUBBLE, 4.5),
-            ("text/selection", CHAT_TEXT, CHAT_SELECTION, 4.5),
-            ("meta/background", CHAT_META, CHAT_BACKGROUND, 4.5),
-            ("pill text/pill", CHAT_PILL_TEXT, CHAT_PILL, 4.5),
-            (
-                "pill text/hovered pill",
-                CHAT_PILL_TEXT,
-                CHAT_PILL_HOVER,
-                4.5,
-            ),
-            ("glyph/youtube", CHAT_AVATAR_GLYPH, CHAT_AVATAR_YOUTUBE, 4.5),
-            ("glyph/audio", CHAT_AVATAR_GLYPH, CHAT_AVATAR_AUDIO, 4.5),
-            ("glyph/screen", CHAT_AVATAR_GLYPH, CHAT_AVATAR_SCREEN, 4.5),
-            (
-                "youtube/background",
-                CHAT_AVATAR_YOUTUBE,
-                CHAT_BACKGROUND,
-                3.0,
-            ),
-            ("audio/background", CHAT_AVATAR_AUDIO, CHAT_BACKGROUND, 3.0),
-            (
-                "screen/background",
-                CHAT_AVATAR_SCREEN,
-                CHAT_BACKGROUND,
-                3.0,
-            ),
-            ("pill/background", CHAT_PILL, CHAT_BACKGROUND, 3.0),
-            ("handle/track", CHAT_PILL, CHAT_TRACK, 3.0),
-        ] {
-            let ratio = contrast_ratio(fg, bg);
+        for (mode, chat) in [("light", CHAT_LIGHT), ("dark", CHAT_DARK)] {
+            for (name, fg, bg, minimum) in [
+                ("text/bubble", chat.text, chat.bubble, 4.5),
+                ("forming text/bubble", chat.text_forming, chat.bubble, 4.5),
+                ("muted/bubble", chat.text_muted, chat.bubble, 4.5),
+                ("text/selection", chat.text, chat.selection, 4.5),
+                ("meta/background", chat.meta, chat.background, 4.5),
+                ("pill text/pill", chat.pill_text, chat.pill, 4.5),
+                (
+                    "pill text/hovered pill",
+                    chat.pill_text,
+                    chat.pill_hover,
+                    4.5,
+                ),
+                ("glyph/youtube", CHAT_AVATAR_GLYPH, chat.avatar_youtube, 4.5),
+                ("glyph/audio", CHAT_AVATAR_GLYPH, chat.avatar_audio, 4.5),
+                ("glyph/screen", CHAT_AVATAR_GLYPH, chat.avatar_screen, 4.5),
+                (
+                    "youtube/background",
+                    chat.avatar_youtube,
+                    chat.background,
+                    3.0,
+                ),
+                ("audio/background", chat.avatar_audio, chat.background, 3.0),
+                (
+                    "screen/background",
+                    chat.avatar_screen,
+                    chat.background,
+                    3.0,
+                ),
+                ("pill/background", chat.pill, chat.background, 3.0),
+                ("handle/track", chat.pill, chat.track, 3.0),
+                ("hovered handle/track", chat.pill_hover, chat.track, 3.0),
+            ] {
+                let ratio = contrast_ratio(fg, bg);
+                assert!(
+                    ratio >= minimum,
+                    "{mode} {name}: {ratio:.2}:1 is below {minimum}:1"
+                );
+            }
             assert!(
-                ratio >= minimum,
-                "{name}: {ratio:.2}:1 is below {minimum}:1"
+                contrast_ratio(chat.text_forming, chat.bubble)
+                    < contrast_ratio(chat.text, chat.bubble),
+                "{mode}: a forming message reads fainter than a fixed one"
             );
         }
-        assert!(
-            relative_luminance(CHAT_TEXT_FORMING) > relative_luminance(CHAT_TEXT),
-            "a forming message reads lighter than a fixed one"
-        );
         assert_eq!(CHAT_BACKGROUND, Color32::from_rgb(0xA9, 0xBC, 0xD6));
     }
 

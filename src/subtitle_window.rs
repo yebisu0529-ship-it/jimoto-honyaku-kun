@@ -235,7 +235,11 @@ impl State {
 
     /// Native secondary window. No focus/attention requests are issued.
     /// Selecting/copying text can still focus it through ordinary user input.
-    pub fn show(&mut self, ctx: &egui::Context) -> WindowResponse {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        palette: &'static theme::ChatPalette,
+    ) -> WindowResponse {
         if !self.open {
             self.applied_protection = None;
             return WindowResponse::default();
@@ -251,7 +255,7 @@ impl State {
                 self.applied_protection = Some(self.content_protected);
             }
             Self::panel().show(child, |ui| {
-                response = self.paint(ui);
+                response = self.paint(ui, palette);
             });
             if child.input(|input| input.viewport().close_requested()) {
                 response = self.close();
@@ -282,7 +286,11 @@ impl State {
     }
 
     /// Headless-previewable content; emits no native close/focus commands.
-    pub fn paint(&mut self, ui: &mut egui::Ui) -> WindowResponse {
+    pub fn paint(
+        &mut self,
+        ui: &mut egui::Ui,
+        palette: &'static theme::ChatPalette,
+    ) -> WindowResponse {
         let mut closed = false;
         // The chat is what the window is for, so the rows above it sit close.
         ui.spacing_mut().item_spacing.y = theme::SPACE_1;
@@ -346,6 +354,7 @@ impl State {
                 readout: None,
                 empty: chat::EMPTY_HINT,
                 cut_from_a_whole_line: false,
+                palette,
             },
         );
         if closed {
@@ -462,7 +471,7 @@ mod tests {
             },
             |ctx| {
                 State::panel().show(ctx, |ui| {
-                    state.paint(ui);
+                    state.paint(ui, &theme::CHAT_LIGHT);
                 });
             },
         )
@@ -529,7 +538,7 @@ mod tests {
                 ..Default::default()
             },
             |ctx| {
-                state.show(ctx);
+                state.show(ctx, &theme::CHAT_LIGHT);
             },
         );
     }

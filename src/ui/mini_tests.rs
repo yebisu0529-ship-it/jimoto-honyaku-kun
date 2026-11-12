@@ -1,15 +1,15 @@
 //! The mini view is the chat in a small window, with the main window's words
 //! and its one listen button. A reading or a text translation asked for there
 //! shows its result on a card in the chat's place.
-use super::home_tests::{Window, chat, key, row};
+use super::home_tests::{Window, chat, dark_chat_saved, key, row, with_dark_chat};
 use super::listen_tests::{
     CAPTIONS_ARRIVING, INPUTS, SCREEN, armed, caption, chat_without_speech, drawn, extension, hint,
     marked, with_youtube_captions,
 };
 use super::*;
 use crate::chat::testing::{
-    box_of, dots, filled, find_text, has_text_containing, line_cut_at_the_top, press, selected,
-    shapes, texts, wheel,
+    assert_drawn_dark, background, box_of, dots, fill_behind, filled, find_text,
+    has_text_containing, light_colours, line_cut_at_the_top, press, selected, shapes, texts, wheel,
 };
 use plamo_translate::journal::{ParagraphMeta, ParagraphState};
 
@@ -2569,6 +2569,77 @@ fn the_display_options_of_the_menu_are_the_chat_s_own_settings() {
     window.click(&mut app, "表示");
     window.click(&mut app, "末尾へ自動スクロール");
     assert!(!app.settings.auto_scroll);
+}
+
+#[test]
+fn the_display_menu_of_the_mini_view_has_dark_mode_right_after_auto_scroll_inside_the_window() {
+    for size in SIZES {
+        let mut app = mini();
+        let mut window = drawn(&mut app, size);
+        open_menu(&mut window, &mut app);
+        window.click(&mut app, "表示");
+        assert!(
+            window.has("ダークモード"),
+            "{size:?}: ダークモード is not behind 表示"
+        );
+        let options = [
+            "原文をすべて表示",
+            "末尾へ自動スクロール",
+            "ダークモード",
+            "訳文の文字サイズ",
+        ];
+        let tops: Vec<f32> = options
+            .iter()
+            .map(|option| window.at(option).top())
+            .collect();
+        assert!(
+            tops.windows(2).all(|pair| pair[0] < pair[1]),
+            "{size:?}: ダークモード is not right after 末尾へ自動スクロール: {tops:?}"
+        );
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0, size.1));
+        for option in options {
+            assert!(
+                screen.contains_rect(window.at(option)),
+                "{size:?}: {option} leaves the window"
+            );
+        }
+        assert_eq!(
+            dark_chat_saved(&app),
+            serde_json::json!(false),
+            "{size:?}: it does not start off"
+        );
+        window.click(&mut app, "ダークモード");
+        assert_eq!(
+            dark_chat_saved(&app),
+            serde_json::json!(true),
+            "{size:?}: it is not the setting the main window saves"
+        );
+    }
+}
+
+#[test]
+fn dark_mode_draws_the_mini_chat_dark_and_turning_it_off_brings_today_s_colours_back_at_once() {
+    // The talk of the mini view's preview: the last two messages are in view,
+    // with a time, a name, a message still forming and the scroll bar.
+    let words = "翻訳は保存されるので、あとから読み返せます。";
+    let mut app = with_dark_chat(mini());
+    app.rows = crate::demo_talk(4);
+    app.current_live_id = Some(4);
+    let mut window = drawn(&mut app, USUAL);
+    let panel = app.live_chat.panel().expect("the chat is drawn");
+    assert_drawn_dark(&window.output, panel, words);
+    assert_eq!(
+        light_colours(&window.output, panel),
+        Vec::<&str>::new(),
+        "parts of the mini chat are still light"
+    );
+
+    open_menu(&mut window, &mut app);
+    window.click(&mut app, "表示");
+    window.click(&mut app, "ダークモード");
+    assert_eq!(background(&window.output, panel), theme::CHAT_BACKGROUND);
+    assert_eq!(fill_behind(&window.output, words), theme::CHAT_BUBBLE);
+    assert_eq!(find_text(&window.output, words).1, theme::CHAT_TEXT);
 }
 
 #[test]

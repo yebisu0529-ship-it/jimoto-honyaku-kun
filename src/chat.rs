@@ -1703,6 +1703,123 @@ pub(super) mod testing {
         box_of(output, wanted, theme::CHAT_BUBBLE)
     }
 
+    /// The colour the chat's panel is filled with: what the messages are on.
+    pub fn background(output: &FullOutput, panel: Rect) -> Color32 {
+        shapes(output)
+            .into_iter()
+            .find_map(|(_, shape)| match shape {
+                Shape::Rect(rect) if rect.rect == panel => Some(rect.fill),
+                _ => None,
+            })
+            .expect("the chat's panel is painted")
+    }
+
+    /// The fill of the smallest rectangle behind the text `wanted`: its bubble
+    /// or its pill.
+    pub fn fill_behind(output: &FullOutput, wanted: &str) -> Color32 {
+        let (text, _) = find_text(output, wanted);
+        shapes(output)
+            .into_iter()
+            .filter_map(|(_, shape)| match shape {
+                Shape::Rect(rect)
+                    if rect.fill != Color32::TRANSPARENT && rect.rect.contains_rect(text) =>
+                {
+                    Some(rect)
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+            .map(|rect| rect.fill)
+            .unwrap_or_else(|| panic!("{wanted} is on nothing"))
+    }
+
+    /// The dark chat as its reader sees it: a near-black background that is
+    /// still told apart from the app's canvas, a dark grey bubble behind
+    /// `words`, and the words light on it.
+    pub fn assert_drawn_dark(output: &FullOutput, panel: Rect, words: &str) {
+        let luminance = theme::relative_luminance;
+        let background = background(output, panel);
+        assert!(
+            luminance(background) < 0.01
+                && theme::contrast_ratio(background, theme::CANVAS) >= 1.05,
+            "the background {background:?} is not a near-black told apart from the canvas"
+        );
+        let bubble = fill_behind(output, words);
+        let channels = [bubble.r(), bubble.g(), bubble.b()];
+        let grey = channels.iter().max().unwrap() - channels.iter().min().unwrap() <= 16;
+        assert!(
+            grey && luminance(bubble) > luminance(background) && luminance(bubble) < 0.1,
+            "the bubble {bubble:?} of {words} is not a dark grey on the background"
+        );
+        let (_, ink) = find_text(output, words);
+        assert!(
+            luminance(ink) > 0.5 && theme::contrast_ratio(ink, bubble) >= 4.5,
+            "{words} in {ink:?} is not light on its bubble"
+        );
+    }
+
+    /// The colours of the light chat that `output` paints inside `panel`, by
+    /// role: as fills, as the ink of a text, and behind selected text. The
+    /// dark chat paints none of them. The text on the pills is left out: it
+    /// is white, as the glyph on the avatars is in both.
+    pub fn light_colours(output: &FullOutput, panel: Rect) -> Vec<&'static str> {
+        let fills = [
+            ("background", theme::CHAT_BACKGROUND),
+            ("bubble", theme::CHAT_BUBBLE),
+            ("rule", theme::CHAT_RULE),
+            ("pill", theme::CHAT_PILL),
+            ("hovered pill", theme::CHAT_PILL_HOVER),
+            ("track", theme::CHAT_TRACK),
+            ("dragged handle", theme::CHAT_META),
+        ];
+        let inks = [
+            ("text", theme::CHAT_TEXT),
+            ("forming text", theme::CHAT_TEXT_FORMING),
+            ("muted text", theme::CHAT_TEXT_MUTED),
+            ("meta", theme::CHAT_META),
+        ];
+        let mut found = Vec::new();
+        for (_, shape) in shapes(output) {
+            if !panel
+                .expand(1.0)
+                .contains_rect(shape.visual_bounding_rect())
+            {
+                continue;
+            }
+            let roles: Vec<&'static str> = match shape {
+                Shape::Rect(egui::epaint::RectShape { fill, .. })
+                | Shape::Path(egui::epaint::PathShape { fill, .. }) => fills
+                    .iter()
+                    .filter(|(_, color)| fill == color)
+                    .map(|(role, _)| *role)
+                    .collect(),
+                Shape::Text(text) => {
+                    let ink = text.galley.job.sections[0].format.color;
+                    let selection = text.galley.rows.iter().any(|row| {
+                        row.row
+                            .visuals
+                            .mesh
+                            .vertices
+                            .iter()
+                            .any(|vertex| vertex.color == theme::CHAT_SELECTION)
+                    });
+                    inks.iter()
+                        .filter(|(_, color)| ink == *color)
+                        .map(|(role, _)| *role)
+                        .chain(selection.then_some("selection"))
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+            for role in roles {
+                if !found.contains(&role) {
+                    found.push(role);
+                }
+            }
+        }
+        found
+    }
+
     /// The little triangles that join the first bubble of a group to its avatar.
     pub fn tails(output: &FullOutput) -> usize {
         shapes(output)

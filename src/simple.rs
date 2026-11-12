@@ -66,9 +66,11 @@ impl SimpleState {
 
     /// A reading took the lane, and its text is the input now. A press that
     /// waited for the lane is not sent for that text: the reading is what the
-    /// reader asked for last.
+    /// reader asked for last. The translation before it is of another text,
+    /// so the card does not keep it.
     pub(super) fn reading_sent(&mut self) {
         self.pressed = false;
+        self.previous.clear();
     }
 }
 

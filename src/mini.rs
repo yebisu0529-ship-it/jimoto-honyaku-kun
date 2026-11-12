@@ -179,7 +179,7 @@ impl App {
             Card::Failed(why)
         } else if self.reading_picture() {
             Card::Reading
-        } else if self.manual_busy.is_some() {
+        } else if self.manual_busy.is_some_and(|id| self.on_card(id)) {
             Card::Translating(&self.output)
         } else if !self.output.is_empty() {
             Card::Translated(&self.output)

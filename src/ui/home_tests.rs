@@ -309,7 +309,6 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
     let items = [
         "ミニ表示",
         "履歴",
-        "YouTube字幕の接続",
         "モデル",
         "設定",
         "状態の詳細",
@@ -333,13 +332,7 @@ fn the_menu_lists_the_screens_in_order_with_the_shortcut_each_has() {
     );
     assert_no_shortcut(
         &window,
-        &[
-            "YouTube字幕の接続",
-            "モデル",
-            "状態の詳細",
-            "書き出し",
-            OTHER_FEATURES,
-        ],
+        &["モデル", "状態の詳細", "書き出し", OTHER_FEATURES],
     );
     assert!(
         !window.has("新しく始める"),
@@ -464,7 +457,7 @@ fn each_screen_in_the_menu_opens_and_the_back_button_returns_to_the_chat() {
     for (screen, item) in SCREENS {
         let mut app = chat();
         let mut window = Window::new(860.0, 620.0);
-        if screen == Tab::Text {
+        if matches!(screen, Tab::Text | Tab::YouTube) {
             window.open_other_features(&mut app);
         } else {
             window.open_menu(&mut app);

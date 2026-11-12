@@ -26,9 +26,9 @@ fn ctrl_alt(code: Code) -> u32 {
 }
 
 pub(super) const INPUTS: [(&str, LiveSourceMode, (bool, bool)); 3] = [
-    ("自動（字幕を優先）", LiveSourceMode::Auto, (true, true)),
-    ("YouTube字幕だけ", LiveSourceMode::Captions, (true, false)),
     ("PC音声だけ", LiveSourceMode::Audio, (false, true)),
+    ("YouTube字幕だけ", LiveSourceMode::Captions, (true, false)),
+    ("自動（字幕を優先）", LiveSourceMode::Auto, (true, true)),
 ];
 pub(super) const SCREEN: &str = "画面の文字";
 
@@ -90,8 +90,8 @@ fn listening_starts_with_pc_audio_alone() {
 #[test]
 fn ctrl_alt_l_listens_in_the_automatic_mode_and_the_next_press_stops_every_input() {
     let ctx = egui::Context::default();
-    let mut app = chat_without_speech();
-    assert!(app.listen_input == LiveSourceMode::Auto);
+    let mut app = with_youtube_captions(chat_without_speech());
+    app.listen_input = LiveSourceMode::Auto;
 
     app.press_hotkey(&ctx, ctrl_alt(Code::KeyL));
     assert!(
@@ -195,15 +195,9 @@ fn the_inputs_are_one_menu_item_on_the_chat_and_on_no_other_screen() {
     let mut app = chat_without_speech();
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
-    assert!(
-        !window.has("自動（字幕を優先）"),
-        "they are behind the item"
-    );
+    assert!(!window.has("PC音声だけ"), "they are behind the item");
     window.click(&mut app, "入力の切り替え");
-    assert_eq!(
-        listed(&window),
-        ["自動（字幕を優先）", "YouTube字幕だけ", "PC音声だけ"]
-    );
+    assert_eq!(listed(&window), ["PC音声だけ"]);
 
     for tab in [Tab::Text, Tab::Files, Tab::Settings, Tab::Setup] {
         let mut app = chat_without_speech();
@@ -335,18 +329,18 @@ pub(super) fn marked(window: &Window) -> Vec<&'static str> {
 
 #[test]
 fn the_list_has_the_screen_only_while_it_is_the_input_shown() {
-    let three = ["自動（字幕を優先）", "YouTube字幕だけ", "PC音声だけ"];
+    let three = ["PC音声だけ", "YouTube字幕だけ", "自動（字幕を優先）"];
     let four = [
-        "自動（字幕を優先）",
-        "YouTube字幕だけ",
         "PC音声だけ",
+        "YouTube字幕だけ",
+        "自動（字幕を優先）",
         SCREEN,
     ];
     let open_list = |window: &mut Window, app: &mut App| {
         window.open_menu(app);
         window.click(app, "入力の切り替え");
     };
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
     let mut window = Window::new(860.0, 620.0);
     open_list(&mut window, &mut app);
     assert_eq!(
@@ -371,7 +365,7 @@ fn the_list_has_the_screen_only_while_it_is_the_input_shown() {
     assert_eq!(listed(&window), three);
     assert_eq!(marked(&window), ["PC音声だけ"]);
 
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
     app.start_screen_feed(1, (0, 0, 120, 40));
     let mut window = Window::new(860.0, 620.0);
     open_list(&mut window, &mut app);
@@ -383,18 +377,18 @@ fn the_list_has_the_screen_only_while_it_is_the_input_shown() {
 
 #[test]
 fn the_menu_marks_the_input_that_is_on_or_else_the_one_the_next_listen_turns_on() {
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
     let mut window = Window::new(860.0, 620.0);
     window.open_menu(&mut app);
     window.click(&mut app, "入力の切り替え");
-    assert_eq!(marked(&window), ["自動（字幕を優先）"], "the default");
+    assert_eq!(marked(&window), ["PC音声だけ"], "the default");
 
-    window.click(&mut app, "PC音声だけ");
+    window.click(&mut app, "自動（字幕を優先）");
     window.open_menu(&mut app);
     window.click(&mut app, "入力の切り替え");
     assert_eq!(
         marked(&window),
-        ["PC音声だけ"],
+        ["自動（字幕を優先）"],
         "what the next 聞く turns on"
     );
 
@@ -407,7 +401,7 @@ fn the_menu_marks_the_input_that_is_on_or_else_the_one_the_next_listen_turns_on(
 #[test]
 fn a_choice_made_while_stopped_waits_for_the_next_listen() {
     for (label, mode, on) in INPUTS {
-        let mut app = chat_without_speech();
+        let mut app = with_youtube_captions(chat_without_speech());
         let settings = serde_json::to_value(&app.settings).unwrap();
         let mut window = Window::new(860.0, 620.0);
         choose(&mut window, &mut app, label);
@@ -431,7 +425,8 @@ fn a_choice_made_while_stopped_waits_for_the_next_listen() {
 #[test]
 fn a_choice_made_while_listening_switches_at_once() {
     for (label, mode, on) in INPUTS {
-        let mut app = chat_without_speech();
+        let mut app = with_youtube_captions(chat_without_speech());
+        app.listen_input = LiveSourceMode::Auto;
         listen(&mut app);
         assert_eq!(armed(&app), (true, true));
         let generation = app.caption_generation;
@@ -448,7 +443,7 @@ fn a_choice_made_while_listening_switches_at_once() {
     }
 
     // PC audio that is really on stops when captions are chosen.
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
     app.audio_enabled = true;
     let mut window = Window::new(860.0, 620.0);
     choose(&mut window, &mut app, "YouTube字幕だけ");
@@ -481,7 +476,7 @@ fn the_menu_entry_for_the_screen_still_starts_reading_at_once_and_is_the_same_ch
     window.click(&mut app, "画面の文字を翻訳");
     assert!(app.listen_input == LiveSourceMode::Screen);
     assert_eq!(app.status, "取得できる画面がありません。");
-    assert_eq!(armed(&app), (true, true));
+    assert_eq!(armed(&app), (false, true));
 }
 
 pub(super) fn drawn(app: &mut App, (width, height): (f32, f32)) -> Window {
@@ -492,7 +487,8 @@ pub(super) fn drawn(app: &mut App, (width, height): (f32, f32)) -> Window {
 
 #[test]
 fn the_button_listens_in_the_automatic_mode_and_stops_every_input() {
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
+    app.listen_input = LiveSourceMode::Auto;
     let mut window = drawn(&mut app, (860.0, 620.0));
     assert!(window.has("● 聞く") && window.has("止まっています"));
     assert!(!window.has("■ 止める"));
@@ -706,7 +702,8 @@ fn an_error_is_the_line_beside_the_button_in_red() {
 
 #[test]
 fn speech_that_is_not_prepared_follows_the_same_path_as_before() {
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
+    app.listen_input = LiveSourceMode::Auto;
     let mut window = drawn(&mut app, (860.0, 620.0));
     window.click(&mut app, "● 聞く");
     assert!(app.audio_confirmation && app.audio_start_requested);
@@ -731,7 +728,8 @@ fn the_mini_window_and_the_subtitle_window_see_the_same_state() {
         epoch: 2,
     };
 
-    let mut app = chat_without_speech();
+    let mut app = with_youtube_captions(chat_without_speech());
+    app.listen_input = LiveSourceMode::Auto;
     app.document_update_subtitle_window();
     assert_eq!(app.subtitle_window.playback(), Playback::Stopped);
     let mut window = drawn(&mut app, (860.0, 620.0));

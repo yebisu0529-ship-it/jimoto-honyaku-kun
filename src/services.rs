@@ -624,7 +624,7 @@ impl App {
         }
         let width = (ctx.content_rect().width() - 48.0).clamp(260.0, 510.0);
         egui::Window::new("音声認識の追加準備").collapsible(false).resizable(false).default_width(width).anchor(egui::Align2::CENTER_CENTER,[0.0,0.0]).show(ctx,|ui|{
-            ui.label("再生中の音声を、このPCで文字起こしする機能です。YouTube字幕だけを使う場合は不要です。");
+            ui.label(if self.settings.translate_youtube_captions {"再生中の音声を、このPCで文字起こしする機能です。YouTube字幕だけを使う場合は不要です。"} else {"再生中の音声を、このPCで文字起こしする機能です。"});
             ui.add_space(12.0);ui.label(match self.settings.asr_backend.as_str(){"nemotron"=>"Nemotron Speech · 英語 / 連続認識","qwen"=>"Qwen3-ASR · 多言語 / GPU対応",_=>"Whisper · 多言語 / CPU"});
             ui.label(match self.settings.asr_backend.as_str(){"nemotron"=>"英語専用モデル約700MBと実行環境を取得します。作業用を含め、保存先に約2GBの空きが必要です。モデルにはNVIDIA Open Model Licenseが適用されます。","qwen"=>"初回は数GBを取得します。GPU用の音声認識環境は、保存先に最大14GB程度の空きが必要です。",_=>"小型の音声モデルと実行環境を追加します。保存先には約4GBの空きが必要です。"});
             if self.settings.asr_backend=="nemotron" {ui.hyperlink_to("モデルの利用条件", "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/");}

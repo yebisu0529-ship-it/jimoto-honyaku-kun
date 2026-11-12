@@ -2210,7 +2210,7 @@ fn the_menu_button_is_called_other_and_escape_closes_the_menu_before_the_mini_vi
 #[test]
 fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
     for size in SIZES {
-        let mut app = mini();
+        let mut app = with_youtube_captions(mini());
         let mut window = drawn(&mut app, size);
         open_menu(&mut window, &mut app);
         assert!(!window.has("自動（字幕を優先）"), "they are behind the row");
@@ -2232,14 +2232,14 @@ fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
             !window.has(SCREEN),
             "{SCREEN} is listed while it is not the input"
         );
-        assert_eq!(marked(&window), ["自動（字幕を優先）"], "the default");
+        assert_eq!(marked(&window), ["PC音声だけ"], "the default");
 
-        window.click(&mut app, "PC音声だけ");
+        window.click(&mut app, "自動（字幕を優先）");
         open_menu(&mut window, &mut app);
         window.click(&mut app, "入力の切り替え");
         assert_eq!(
             marked(&window),
-            ["PC音声だけ"],
+            ["自動（字幕を優先）"],
             "what the next 聞く turns on"
         );
 
@@ -2291,7 +2291,7 @@ fn the_mini_inputs_are_pc_audio_alone_until_youtube_captions_are_turned_on() {
 fn an_input_chosen_while_stopped_waits_for_the_button_and_one_chosen_while_listening_is_on_at_once()
 {
     for (label, mode, on) in INPUTS {
-        let mut app = mini();
+        let mut app = with_youtube_captions(mini());
         let mut window = drawn(&mut app, USUAL);
         choose(&mut window, &mut app, label);
         assert!(app.listen_input == mode, "{label} is not remembered");
@@ -2304,7 +2304,8 @@ fn an_input_chosen_while_stopped_waits_for_the_button_and_one_chosen_while_liste
     }
 
     for (label, mode, on) in INPUTS {
-        let mut app = mini();
+        let mut app = with_youtube_captions(mini());
+        app.listen_input = LiveSourceMode::Auto;
         let mut window = drawn(&mut app, USUAL);
         window.click(&mut app, "● 聞く");
         assert_eq!(armed(&app), (true, true));

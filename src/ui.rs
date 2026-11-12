@@ -503,6 +503,15 @@ fn settings_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Re
 fn secondary(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(theme::label(text));
 }
+/// A speech recognizer as the 音声認識 card names it. The multilingual ones
+/// say how much they need, so the choice is made knowing the download.
+fn asr_name(backend: &str) -> &'static str {
+    match backend {
+        "nemotron" => "Nemotron Speech · 英語 / 連続認識",
+        "qwen" => "Qwen3-ASR · 多言語 / GPU · 数GB",
+        _ => "Whisper · 多言語 / CPU · 約4GB",
+    }
+}
 pub(super) fn primary(label: &str) -> egui::Button<'_> {
     egui::Button::new(
         RichText::new(label)
@@ -558,15 +567,21 @@ fn badge(ui: &mut egui::Ui, text: &str, color: Color32, fill: Color32) {
 /// and the PC audio is used while no captions arrive.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum LiveSourceMode {
-    #[default]
     Auto,
     Captions,
+    #[default]
     Audio,
     Screen,
 }
 
 impl LiveSourceMode {
-    const ALL: [Self; 4] = [Self::Auto, Self::Captions, Self::Audio, Self::Screen];
+    /// In the order 入力の切り替え lists them.
+    const ALL: [Self; 4] = [Self::Audio, Self::Captions, Self::Auto, Self::Screen];
+
+    /// The inputs that are offered while 「YouTube字幕も訳す」 is on.
+    fn uses_youtube(self) -> bool {
+        matches!(self, Self::Captions | Self::Auto)
+    }
 
     fn from_flags(captions: bool, audio: bool) -> Option<Self> {
         match (captions, audio) {
@@ -923,14 +938,6 @@ impl App {
             );
             row(
                 ui,
-                MenuChoice::YouTube,
-                "YouTube字幕の接続",
-                "",
-                "ChromeやEdgeの拡張機能とつなぎ、YouTubeの字幕を受け取ります。",
-                true,
-            );
-            row(
-                ui,
                 MenuChoice::Models,
                 "モデル",
                 "",
@@ -1004,6 +1011,14 @@ impl App {
                     SUBTITLE_WINDOW.hover,
                     true,
                 );
+                row(
+                    ui,
+                    MenuChoice::YouTube,
+                    "YouTube字幕の接続",
+                    "",
+                    "ChromeやEdgeの拡張機能とつなぎ、YouTubeの字幕を受け取ります。",
+                    true,
+                );
             });
         });
         choice.or(input.map(MenuChoice::Input))
@@ -1013,6 +1028,7 @@ impl App {
     /// `shown_input` names marked. Returns the input that was picked.
     pub(super) fn input_menu(&self, ui: &mut egui::Ui) -> Option<LiveSourceMode> {
         let shown = self.shown_input();
+        let youtube = self.settings.translate_youtube_captions;
         ui.menu_button(
             RichText::new("入力の切り替え").size(theme::SIZE_LABEL),
             |ui| {
@@ -1020,9 +1036,10 @@ impl App {
                 // 画面の文字 is started behind その他の機能. It is listed while
                 // it is the input shown, so that the mark is true and the
                 // reader can switch away from it.
-                let listed = LiveSourceMode::ALL
-                    .into_iter()
-                    .filter(|mode| *mode != LiveSourceMode::Screen || *mode == shown);
+                let listed = LiveSourceMode::ALL.into_iter().filter(|mode| match mode {
+                    LiveSourceMode::Screen => *mode == shown,
+                    _ => youtube || !mode.uses_youtube(),
+                });
                 for mode in listed {
                     if choice_button(ui, mode.label(), mode == shown)
                         .on_hover_text(mode.hint())
@@ -1236,7 +1253,9 @@ impl App {
         let (captions, audio) = mode.flags();
         self.set_caption_enabled(captions);
         let audio_active = self.audio_enabled || self.audio_start_requested;
-        if audio && !audio_active {
+        // A recognizer that cannot hear the language is neither prepared nor
+        // loaded. The line beside the 聞く button says what to choose instead.
+        if audio && !audio_active && !self.nemotron_cannot_hear_the_language() {
             if self.backend_ready && self.asr_ready && self.audio_environment_ready() {
                 self.start_audio();
             } else {
@@ -1259,6 +1278,10 @@ impl App {
         let model = self.translation_readiness();
         if let Some(words) = model.needed() {
             return (words, model.headline_color());
+        }
+        let (_, pc_audio) = self.listen_input.flags();
+        if pc_audio && self.nemotron_cannot_hear_the_language() {
+            return (streaming::ENGLISH_ONLY, WARNING);
         }
         match self.current_input() {
             None => ("止まっています", TEXT_SECONDARY),
@@ -1291,12 +1314,19 @@ impl App {
             }
             Readiness::Ready => {}
         }
+        let youtube = self.settings.translate_youtube_captions;
         match self.current_input() {
+            None if mini && youtube => {
+                "PCで再生中の英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n上の「● 聞く」を押すと始まります。"
+            }
             None if mini => {
-                "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n上の「● 聞く」を押すと始まります。"
+                "PCで再生中の英語の音声を、ここにやさしい日本語で表示します。\n上の「● 聞く」を押すと始まります。"
+            }
+            None if youtube => {
+                "PCで再生中の英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n下の「● 聞く」を押すと始まります。"
             }
             None => {
-                "英語の音声やYouTube字幕を、ここにやさしい日本語で表示します。\n下の「● 聞く」を押すと始まります。"
+                "PCで再生中の英語の音声を、ここにやさしい日本語で表示します。\n下の「● 聞く」を押すと始まります。"
             }
             Some(LiveSourceMode::Screen) => "選んだ範囲の文字が変わると、ここに訳が出ます。",
             Some(LiveSourceMode::Captions) => {
@@ -2039,17 +2069,13 @@ impl App {
     fn settings_asr_card(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("音声認識").strong());
         egui::ComboBox::from_id_salt("asr-backend")
-            .selected_text(match self.settings.asr_backend.as_str() {
-                "nemotron" => "Nemotron Speech · 英語 / 連続認識",
-                "qwen" => "Qwen3-ASR · 多言語",
-                _ => "Whisper · 多言語 / CPU",
-            })
+            .selected_text(asr_name(&self.settings.asr_backend))
             .show_ui(ui, |ui| {
                 if ui
                     .selectable_value(
                         &mut self.settings.asr_backend,
                         "nemotron".into(),
-                        "Nemotron Speech · 英語 / 連続認識",
+                        asr_name("nemotron"),
                     )
                     .changed()
                 {
@@ -2061,7 +2087,7 @@ impl App {
                     .selectable_value(
                         &mut self.settings.asr_backend,
                         "qwen".into(),
-                        "Qwen3-ASR · 多言語",
+                        asr_name("qwen"),
                     )
                     .changed()
                 {
@@ -2079,7 +2105,7 @@ impl App {
                     .selectable_value(
                         &mut self.settings.asr_backend,
                         "whisper".into(),
-                        "Whisper · 多言語 / CPU",
+                        asr_name("whisper"),
                     )
                     .changed()
                 {
@@ -2088,6 +2114,9 @@ impl App {
                     self.settings.asr_device = "cpu".into();
                 }
             });
+        if self.nemotron_cannot_hear_the_language() {
+            ui.label(theme::label(streaming::ENGLISH_ONLY).color(WARNING));
+        }
         secondary(
             ui,
             if self.asr_ready {
@@ -2127,6 +2156,32 @@ impl App {
         if ui.add(standard("音声認識を準備")).clicked() {
             self.prepare_audio();
         }
+    }
+
+    /// 「YouTube字幕も訳す」, in the settings and on the YouTube screen, with
+    /// what it changes. Turned off, the captions stop and an input that has
+    /// them gives way to the PC audio for the next 「聞く」. The PC audio itself
+    /// is left as it is.
+    pub(super) fn youtube_captions_switch(&mut self, ui: &mut egui::Ui) {
+        if toggle(
+            ui,
+            &mut self.settings.translate_youtube_captions,
+            "YouTube字幕も訳す",
+        )
+        .changed()
+            && !self.settings.translate_youtube_captions
+        {
+            if self.listen_input.uses_youtube() {
+                self.listen_input = LiveSourceMode::Audio;
+            }
+            // The 画面 input reads the screen through the caption path.
+            if self.screen_feed.is_none() {
+                self.set_caption_enabled(false);
+            }
+        }
+        ui.label(theme::caption(
+            "オンにすると、「入力の切り替え」に「YouTube字幕だけ」と「自動（字幕を優先）」が出ます。",
+        ));
     }
 
     fn settings_youtube_card(&mut self, ui: &mut egui::Ui) {
@@ -2241,7 +2296,7 @@ impl App {
             .default_open(false)
             .open(reveal.map(|_| true))
             .show(ui, |ui| {
-                [
+                let cards = [
                     (
                         OtherSetting::Readout,
                         settings_card(ui, |ui| self.readout_settings_ui(ui)),
@@ -2250,7 +2305,12 @@ impl App {
                         OtherSetting::ScreenOcr,
                         settings_card(ui, |ui| self.screen_ocr_settings_ui(ui)),
                     ),
-                ]
+                ];
+                settings_card(ui, |ui| {
+                    ui.label(RichText::new("YouTube字幕").strong());
+                    self.youtube_captions_switch(ui);
+                });
+                cards
             });
         if let Some(card) = reveal
             && section.fully_open()

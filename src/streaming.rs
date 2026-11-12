@@ -2,7 +2,21 @@
 use super::*;
 use plamo_translate::nemotron::{NemotronEngine, NemotronEvent};
 
+/// What the line beside 「聞く」 and the 音声認識 card say while Nemotron
+/// cannot hear the language to translate from.
+pub(super) const ENGLISH_ONLY: &str = "Nemotronは英語だけを聞き取ります。中国語などほかの言語は、設定の「音声認識」でQwen3-ASR（GPU・数GB）かWhisper（CPU・約4GB）を選んでください。";
+
 impl App {
+    /// Nemotron is the recognizer, and the language to translate from is
+    /// neither 英語 nor 自動判定.
+    pub(super) fn nemotron_cannot_hear_the_language(&self) -> bool {
+        self.settings.asr_backend == "nemotron"
+            && !matches!(
+                self.settings.translation.source_lang.as_str(),
+                "auto" | "en"
+            )
+    }
+
     pub(super) fn clear_streaming_audio(&mut self) {
         if let Some(engine) = &self.nemotron {
             self.nemotron_epoch = engine.clear();
@@ -37,14 +51,10 @@ impl App {
     }
 
     pub(super) fn start_streaming_audio(&mut self) {
-        if !matches!(
-            self.settings.translation.source_lang.as_str(),
-            "auto" | "en"
-        ) {
+        // The language changed while Nemotron was getting ready. The line
+        // beside the 聞く button says why nothing starts.
+        if self.nemotron_cannot_hear_the_language() {
             self.audio_start_requested = false;
-            self.service_error =
-                "Nemotronは英語専用です。他の言語は設定でQwen3-ASRかWhisperを選んでください。"
-                    .into();
             return;
         }
         self.audio_offset_ms = self
@@ -83,14 +93,8 @@ impl App {
         if self.settings.asr_backend != "nemotron" || !self.audio_enabled {
             return;
         }
-        if !matches!(
-            self.settings.translation.source_lang.as_str(),
-            "auto" | "en"
-        ) {
+        if self.nemotron_cannot_hear_the_language() {
             self.stop_audio();
-            self.service_error =
-                "Nemotronは英語専用です。他の言語は設定でQwen3-ASRかWhisperを選んでください。"
-                    .into();
             return;
         }
         let suspended = self.captions_fresh() || self.readout.suppress.load(Ordering::Acquire);

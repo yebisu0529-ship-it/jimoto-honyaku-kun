@@ -47,7 +47,8 @@ pub(super) struct SimpleState {
     card: Option<Input>,
     /// The translation the card showed when the one in flight was sent. It
     /// stays on the card until the first part of the new one arrives, so a
-    /// pause in typing does not empty the card.
+    /// pause in typing does not empty the card. A reading drops it: it is the
+    /// translation of another text.
     previous: String,
     /// The translation that was in flight when the input was emptied. Its
     /// result is not shown.
@@ -82,7 +83,7 @@ impl App {
 
     /// What the 訳文 card shows: the last translation as far as it has come.
     /// Until the first part of the one in flight arrives, the one before it
-    /// stays.
+    /// stays, unless a reading took its place.
     pub(super) fn card_text(&self) -> &str {
         if self.manual_busy.is_some() && self.output.is_empty() {
             &self.simple.previous

@@ -99,7 +99,8 @@ enum Card<'a> {
     /// A picture is being read, or waits to be. The result before it is not
     /// shown, because it would look like the new one.
     Reading,
-    /// A translation in flight, as far as it has come.
+    /// A translation in flight whose result will be shown, as far as it has
+    /// come.
     Translating(&'a str),
     Translated(&'a str),
     Empty,

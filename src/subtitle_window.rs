@@ -345,6 +345,7 @@ impl State {
                 follow: true,
                 readout: None,
                 empty: chat::EMPTY_HINT,
+                cut_from_a_whole_line: false,
             },
         );
         if closed {

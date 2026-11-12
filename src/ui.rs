@@ -1843,7 +1843,8 @@ impl App {
 
     /// The chat, in all the room `ui` has left. Every window that shows the
     /// talk draws it here, with one state and one set of options, so what
-    /// they show cannot differ.
+    /// they show cannot differ, apart from how the small mini view draws a
+    /// bubble cut at its top.
     pub(super) fn live_chat_ui(&mut self, ui: &mut egui::Ui) {
         let options = chat::Options {
             text_size: theme::reading_size(self.settings.font_size),
@@ -1851,6 +1852,7 @@ impl App {
             follow: self.settings.auto_scroll,
             readout: self.settings.readout_enabled.then(|| self.readout_busy()),
             empty: self.empty_chat_hint(),
+            cut_from_a_whole_line: self.window_mode.is_mini(),
         };
         match self.with_talk(|chat, messages| chat.show(ui, "live-chat", messages, options)) {
             Some(chat::Action::Read(text)) => self.read_translation(text),

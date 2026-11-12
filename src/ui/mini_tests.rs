@@ -5,8 +5,8 @@ use super::home_tests::{Window, key, row};
 use super::listen_tests::{INPUTS, SCREEN, armed, chat_without_speech, drawn, hint, marked};
 use super::*;
 use crate::chat::testing::{
-    box_of, cut_at_the_top, dots, filled, find_text, has_text_containing, line_cut_at_the_top,
-    press, selected, shapes, texts, wheel,
+    box_of, dots, filled, find_text, has_text_containing, line_cut_at_the_top, press, selected,
+    shapes, texts, wheel,
 };
 use plamo_translate::journal::{ParagraphMeta, ParagraphState};
 
@@ -1420,8 +1420,8 @@ fn nothing_leaves_the_window_or_overlaps_and_a_long_error_does_not_move_the_chat
         }
         assert_apart_and_inside(&around(&window, ""), size);
         assert!(
-            !cut_at_the_top(&window.output, app.live_chat.body().unwrap()),
-            "a message is cut at the top at {size:?}"
+            !line_cut_at_the_top(&window.output, app.live_chat.body().unwrap()),
+            "a line of a message is cut at the top at {size:?}"
         );
 
         // The toolbar is one row of controls 32 points tall, above the chat.

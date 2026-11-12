@@ -174,6 +174,13 @@ pub struct Options {
     /// What the chat says while it has no message: what it is for, or what
     /// to do next.
     pub empty: &'static str,
+    /// A bubble that starts above the top while the chat follows, older or
+    /// newest, is drawn from its first whole line while a line of its text is
+    /// whole in view, and keeps its room empty otherwise. In a small window the
+    /// room an older bubble kept was most of the chat, and an empty strip of
+    /// bubble reads as an empty message, dots alone as speech still being
+    /// recognised. Without it, only the newest message is drawn there.
+    pub cut_from_a_whole_line: bool,
 }
 
 pub enum Action {
@@ -610,10 +617,16 @@ impl State {
         let metrics = Metrics::new(ui, options.text_size);
         let visible_top = ui.max_rect().top() + viewport.top();
         // While the reader is at the end, a bubble that starts above the top
-        // would show only its lower part. It keeps its space but is not drawn.
-        // The newest message is drawn even when it is taller than the window,
-        // but without the avatar, the name and the line that would be cut.
+        // would show only its lower part. It keeps its space but is not drawn,
+        // except the newest message, which is drawn even when it is taller
+        // than the window. When the options ask for it, the rule is instead
+        // that such a bubble, newest or not, is drawn while a line of its text
+        // is whole in view. It is drawn without the avatar, the name and the
+        // line that would be cut.
         let whole = |rect: Rect| !following || rect.top() >= visible_top - 0.5;
+        // paint_lines leaves out the lines above the painter's clip, which at
+        // a fractional scale can be a fraction of a pixel off `visible_top`.
+        let clip_top = ui.clip_rect().top();
         let mut action = None;
         let mut after_day = false;
         let entries = plan(messages);
@@ -664,7 +677,17 @@ impl State {
                         metrics.width,
                         header + laid.size.y + laid.below,
                     ));
-                    if ui.is_rect_visible(rect) && (whole(rect) || bubble.newest) {
+                    // While the chat follows, a bubble cut at the top ends in
+                    // view, so its last line is whole when any of its lines is.
+                    let line_in_view = laid
+                        .last_line(rect.top() + header + MARGIN_Y)
+                        .is_some_and(|line| line >= clip_top - 0.5);
+                    let shown_cut = if options.cut_from_a_whole_line {
+                        line_in_view
+                    } else {
+                        bubble.newest
+                    };
+                    if ui.is_rect_visible(rect) && (whole(rect) || shown_cut) {
                         let from_top = whole(rect);
                         let place = Place {
                             at: order[&(bubble.message.id, bubble.part)],
@@ -1007,8 +1030,9 @@ impl Metrics {
 }
 
 /// Paints a text of a bubble at `at`. A bubble that is not drawn `from_top`
-/// starts above the view: it is the newest message, which is drawn although
-/// the chat follows its end. A line of it that the top of the view would cut
+/// starts above the view and is drawn although the chat follows its end: it
+/// has a whole line of text in view when the options ask for that, and is the
+/// newest message otherwise. A line of it that the top of the view would cut
 /// is left out, so the first line in view is a whole one.
 fn paint_lines(
     painter: &egui::Painter,
@@ -1130,6 +1154,24 @@ struct Time {
     galley: Arc<Galley>,
     /// Beside the bubble's bottom right, or under it when there is no room.
     beside: bool,
+}
+
+impl Laid {
+    /// Where the last line of text starts when the content starts at `top`:
+    /// the video time's, the original's or the body's. Dots are not text. It
+    /// is added up as paint_lines adds it up, so both agree on a line at the
+    /// edge of the view.
+    fn last_line(&self, top: f32) -> Option<f32> {
+        let (text, y) = match &self.original {
+            Some(Original {
+                video: Some((video, y)),
+                ..
+            }) => (video, *y),
+            Some(original) => (&original.text, original.text_y),
+            None => (self.body.as_ref()?, 0.0),
+        };
+        Some(top + y + text.rows.last()?.rect().top())
+    }
 }
 
 fn shows_original_as_body(bubble: &Bubble<'_>) -> bool {
@@ -1765,6 +1807,7 @@ pub(super) mod testing {
                     follow: true,
                     readout: None,
                     empty: EMPTY_HINT,
+                    cut_from_a_whole_line: false,
                 },
                 time: 0.0,
             }

@@ -819,6 +819,49 @@ fn text_that_was_read_waits_for_the_translator_without_showing_the_translation_i
 }
 
 #[test]
+fn a_reading_s_translation_takes_the_card_from_its_own_state_not_from_the_translation_before_it() {
+    const BEFORE: &str = "前に訳した文章です。";
+    let mut app = mini();
+    app.output = BEFORE.into();
+    app.settings.translation.endpoint = "no translator".into();
+    // The recogniser is reading a picture given in the mini view.
+    app.ocr.busy = Some(app.ocr.generation);
+    app.reading_given();
+    let mut window = drawn(&mut app, USUAL);
+    assert!(window.has(READING) && !has_text_containing(&window.output, BEFORE));
+
+    let generation = app.ocr.generation;
+    answer(
+        &mut app,
+        Event::Ocr {
+            generation,
+            result: Ok("Text read from a picture.".into()),
+        },
+    );
+    let id = app.manual_busy.expect("the text that was read is not sent");
+    // The worker cannot reach a translator at this address and gives up at
+    // once; the test answers in its place.
+    assert!(matches!(
+        app.rx.recv_timeout(Duration::from_secs(10)),
+        Ok(Event::Done { .. })
+    ));
+    window.settle(&mut app);
+    assert!(
+        window.has("翻訳中") && !has_text_containing(&window.output, BEFORE),
+        "the translation before the reading is shown as the reading's"
+    );
+    answer(
+        &mut app,
+        Event::Partial {
+            id,
+            text: "読み取った文の途中の訳".into(),
+        },
+    );
+    window.settle(&mut app);
+    assert!(window.has("読み取った文の途中の訳") && !window.has("翻訳中"));
+}
+
+#[test]
 fn a_translation_fills_the_card_as_it_comes_and_is_copied_with_the_credit_once_done() {
     for size in SIZES {
         let mut app = chat_without_speech();

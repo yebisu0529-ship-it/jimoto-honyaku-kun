@@ -41,10 +41,15 @@ pub(super) struct SimpleState {
     seen: Input,
     changed: f64,
     /// What the 訳文 card is about: the input of the last translation sent on
-    /// the lane, by any route. The card shows that translation as far as it
-    /// has come, or nothing if it failed, and the screen does not send the
+    /// the lane, by any route. The card shows that translation from its first
+    /// part on, or nothing if it failed, and the screen does not send the
     /// same input again by itself. Emptying the input forgets it.
     card: Option<Input>,
+    /// The translation the card showed when the one in flight was sent. It
+    /// stays on the card until the first part of the new one arrives, so a
+    /// pause in typing does not empty the card. A reading drops it: it is the
+    /// translation of another text.
+    previous: String,
     /// The translation that was in flight when the input was emptied. Its
     /// result is not shown.
     dropped: Option<u64>,
@@ -53,9 +58,20 @@ pub(super) struct SimpleState {
 }
 
 impl SimpleState {
-    /// A translation of `input` was sent on the lane.
-    pub(super) fn sent(&mut self, input: Input) {
+    /// A translation of `input` was sent on the lane while the card showed
+    /// `shown`.
+    pub(super) fn sent(&mut self, input: Input, shown: String) {
         self.card = Some(input);
+        self.previous = shown;
+    }
+
+    /// A reading took the lane, and its text is the input now. A press that
+    /// waited for the lane is not sent for that text: the reading is what the
+    /// reader asked for last. The translation before it is of another text,
+    /// so the card does not keep it.
+    pub(super) fn reading_sent(&mut self) {
+        self.pressed = false;
+        self.previous.clear();
     }
 }
 
@@ -63,6 +79,17 @@ impl App {
     /// The translation with `id` is shown on the 訳文 card as it comes.
     pub(super) fn on_card(&self, id: u64) -> bool {
         self.manual_busy == Some(id) && self.simple.dropped != Some(id)
+    }
+
+    /// What the 訳文 card shows: the last translation as far as it has come.
+    /// Until the first part of the one in flight arrives, the one before it
+    /// stays, unless a reading took its place.
+    pub(super) fn card_text(&self) -> &str {
+        if self.manual_busy.is_some() && self.output.is_empty() {
+            &self.simple.previous
+        } else {
+            &self.output
+        }
     }
 
     /// 翻訳する and Ctrl+Enter translate the input at once and write the
@@ -96,9 +123,11 @@ impl App {
         if newest != self.simple.seen {
             if newest.is_empty() && !self.simple.seen.is_empty() {
                 self.output.clear();
+                self.simple.previous.clear();
                 self.simple.card = None;
                 self.simple.dropped = self.manual_busy;
                 self.simple.pressed = false;
+                self.mini.input_emptied();
             }
             self.simple.seen = newest.clone();
             self.simple.changed = now;

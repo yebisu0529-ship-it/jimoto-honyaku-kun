@@ -716,3 +716,440 @@ fn nothing_is_sent_while_the_model_is_not_ready_or_the_screen_is_out_of_view() {
     );
     assert_eq!(into(&translated(&mut app, &prompts)), "en");
 }
+
+#[test]
+fn the_translation_stays_on_the_card_until_the_first_part_of_the_next_one_arrives() {
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("こんにちは。"),
+        Completion::Text("こんにちは。またね。"),
+        Completion::Text("こんにちは。また明日。"),
+    ]);
+    let mut app = screen(endpoint);
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    translated(&mut app, &prompts);
+    window.settle(&mut app);
+    assert!(window.has("こんにちは。"));
+    let done = (window.ink("コピー"), window.ink("保存"));
+
+    app.input = "Hello. See you.".into();
+    wait(&mut window, &mut app, 1.2);
+    assert!(
+        app.manual_busy.is_some(),
+        "the changed input was not sent by itself"
+    );
+    assert!(
+        window.has("こんにちは。"),
+        "the card was emptied while the next translation was coming"
+    );
+    assert_ne!(
+        (window.ink("コピー"), window.ink("保存")),
+        done,
+        "コピー and 保存 can be pressed while the translation is being replaced"
+    );
+
+    // The translator's answer is held back after its first part.
+    prompts
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the translator was not asked");
+    let part = app.rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let end = app.rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(matches!(part, Event::Partial { .. }) && matches!(end, Event::Done { .. }));
+    app.tx.send(part).unwrap();
+    app.process(&egui::Context::default());
+    window.settle(&mut app);
+    assert!(
+        window.has("こんにちは。またね。") && !window.has("こんにちは。"),
+        "the first part of the new translation did not replace the one before"
+    );
+    app.tx.send(end).unwrap();
+    app.process(&egui::Context::default());
+    window.settle(&mut app);
+    assert_eq!((window.ink("コピー"), window.ink("保存")), done);
+
+    window.click(&mut app, "翻訳する");
+    assert!(
+        app.manual_busy.is_some(),
+        "翻訳する does not translate at once"
+    );
+    assert!(
+        window.has("こんにちは。またね。"),
+        "翻訳する emptied the card it was pressed on"
+    );
+    assert_eq!(words(&translated(&mut app, &prompts)), "Hello. See you.");
+    window.settle(&mut app);
+    assert!(window.has("こんにちは。また明日。"));
+}
+
+#[test]
+fn a_reading_that_takes_the_lane_ends_a_waiting_press_and_is_written_to_the_history_once() {
+    const READ: &str = "Read from a picture.";
+    let folder = tempfile::tempdir().unwrap();
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("一つ目。"),
+        Completion::Text("読み取った文です。"),
+        Completion::Text("もう一度読み取った文です。"),
+    ]);
+    let mut app = screen(endpoint);
+    app.journal = Some(Journal::new(folder.path()).unwrap());
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "One.".into();
+    wait(&mut window, &mut app, 1.2);
+    let first = app.manual_busy.expect("One. was not sent by itself");
+
+    // 翻訳する on another input waits for One., and a picture is read
+    // before One. is done.
+    app.input = "Two.".into();
+    window.settle(&mut app);
+    window.click(&mut app, "翻訳する");
+    assert_eq!(app.manual_busy, Some(first), "the press did not wait");
+    app.accept_ocr(READ.into());
+    assert_eq!(words(&translated(&mut app, &prompts)), "One.");
+    assert_eq!(app.input, READ, "the reading did not take the lane");
+    assert_eq!(words(&translated(&mut app, &prompts)), READ);
+    wait(&mut window, &mut app, 1.2);
+    app.tab = Tab::Files;
+    window.settle(&mut app);
+    let listed = texts(&window.output)
+        .into_iter()
+        .filter(|(text, _, _)| text == READ)
+        .count();
+    assert_eq!(listed, 1, "履歴 does not list the reading once");
+    assert!(
+        app.manual_busy.is_none() && prompts.try_recv().is_err(),
+        "the waiting press sent the reading's text again"
+    );
+    assert_eq!(history(&app).matches(READ).count(), 1);
+
+    // The press is over: the next change is translated by itself.
+    app.tab = Tab::Text;
+    app.input.push_str(" Again.");
+    wait(&mut window, &mut app, 1.2);
+    assert_eq!(
+        words(&translated(&mut app, &prompts)),
+        "Read from a picture. Again."
+    );
+    assert!(
+        !history(&app).contains("Again."),
+        "the press that waited wrote a later input to 履歴"
+    );
+}
+
+#[test]
+fn emptying_the_input_ends_its_failure_and_the_mini_view_opens_on_the_chat() {
+    let (endpoint, prompts) = translation_stub(vec![Completion::Failure]);
+    let mut app = screen(endpoint);
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    translated(&mut app, &prompts);
+    let failure = app.status.clone();
+    assert!(!failure.is_empty(), "the request did not fail");
+    window.settle(&mut app);
+    window.click(&mut app, "クリア");
+    assert!(app.input.is_empty());
+
+    window.draw(
+        &mut app,
+        vec![key(
+            egui::Key::M,
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+        )],
+    );
+    window.resize(520.0, 360.0);
+    window.settle(&mut app);
+    assert!(app.window_mode.is_mini());
+    assert!(
+        !window.has(BACK_TO_CHAT) && !has_text_containing(&window.output, &failure),
+        "the mini view opens on the failure of an input that was emptied"
+    );
+    assert!(
+        has_text_containing(&window.output, "上の「● 聞く」を押すと始まります。"),
+        "the mini view does not open on the chat"
+    );
+}
+
+#[test]
+fn the_mini_view_opens_on_the_chat_after_the_input_was_emptied_while_it_was_being_translated() {
+    let (endpoint, prompts) = translation_stub(vec![Completion::Text("こんにちは。")]);
+    let mut app = screen(endpoint);
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    assert!(
+        app.manual_busy.is_some(),
+        "the input was not sent by itself"
+    );
+    // The answer is not taken in: the translation is still in flight.
+    prompts
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the translator was not asked");
+    window.click(&mut app, "クリア");
+    assert!(app.input.is_empty() && app.manual_busy.is_some());
+
+    window.draw(
+        &mut app,
+        vec![key(
+            egui::Key::M,
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+        )],
+    );
+    window.resize(520.0, 360.0);
+    window.settle(&mut app);
+    assert!(app.window_mode.is_mini());
+    assert!(
+        !window.has(BACK_TO_CHAT) && !window.has("翻訳中"),
+        "the mini view opens on a translation that will not be shown"
+    );
+    assert!(
+        has_text_containing(&window.output, "上の「● 聞く」を押すと始まります。"),
+        "the mini view does not open on the chat"
+    );
+}
+
+#[test]
+fn a_reading_does_not_show_the_translation_of_the_text_before_it_while_its_own_is_coming() {
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("こんにちは。"),
+        Completion::Text("読み取った文です。"),
+    ]);
+    let mut app = screen(endpoint);
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    translated(&mut app, &prompts);
+    window.settle(&mut app);
+    assert!(window.has("こんにちは。"));
+
+    app.accept_ocr("Read from a picture.".into());
+    app.process(&egui::Context::default());
+    assert!(app.manual_busy.is_some(), "the reading was not sent");
+    window.settle(&mut app);
+    assert!(
+        !window.has("こんにちは。"),
+        "the translation of another text is shown beside the reading"
+    );
+    assert_eq!(
+        words(&translated(&mut app, &prompts)),
+        "Read from a picture."
+    );
+    window.settle(&mut app);
+    assert!(window.has("読み取った文です。"));
+}
+
+#[test]
+fn a_failed_request_leaves_the_card_empty_and_is_sent_again_only_once_the_input_changes() {
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("こんにちは。"),
+        Completion::Failure,
+        Completion::Text("また会いましょう。"),
+    ]);
+    let mut app = screen(endpoint);
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    translated(&mut app, &prompts);
+    window.settle(&mut app);
+    assert!(window.has("こんにちは。"));
+
+    app.input = "See you.".into();
+    wait(&mut window, &mut app, 1.2);
+    assert_eq!(words(&translated(&mut app, &prompts)), "See you.");
+    window.settle(&mut app);
+    assert!(
+        window.has(TRANSLATION_HINT) && !window.has("こんにちは。"),
+        "the card is not empty after the request failed"
+    );
+    wait(&mut window, &mut app, 5.0);
+    assert!(
+        app.manual_busy.is_none() && prompts.try_recv().is_err(),
+        "the failed request was sent again by itself"
+    );
+
+    app.input = "See you later.".into();
+    wait(&mut window, &mut app, 1.2);
+    assert_eq!(words(&translated(&mut app, &prompts)), "See you later.");
+    window.settle(&mut app);
+    assert!(window.has("また会いましょう。"));
+}
+
+#[test]
+fn a_press_whose_input_is_emptied_before_its_result_is_not_shown_but_is_written_to_the_history() {
+    let folder = tempfile::tempdir().unwrap();
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("こんにちは。"),
+        Completion::Text("また会いましょう。"),
+    ]);
+    let mut app = screen(endpoint);
+    app.journal = Some(Journal::new(folder.path()).unwrap());
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    translated(&mut app, &prompts);
+    window.settle(&mut app);
+    assert!(window.has("こんにちは。"));
+
+    app.input = "See you.".into();
+    window.settle(&mut app);
+    window.click(&mut app, "翻訳する");
+    assert!(
+        app.manual_busy.is_some(),
+        "翻訳する does not translate at once"
+    );
+    window.click(&mut app, "クリア");
+    assert!(
+        window.has(TRANSLATION_HINT) && !window.has("こんにちは。"),
+        "the card is not empty once the input is"
+    );
+    assert_eq!(words(&translated(&mut app, &prompts)), "See you.");
+    window.settle(&mut app);
+    assert!(
+        window.has(TRANSLATION_HINT) && !window.has("また会いましょう。"),
+        "the result of the emptied input is shown"
+    );
+    assert_eq!(
+        history(&app).matches("See you.").count(),
+        1,
+        "the press is not in 履歴 once"
+    );
+}
+
+#[test]
+fn a_waiting_press_is_sent_while_another_screen_is_shown() {
+    let folder = tempfile::tempdir().unwrap();
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("一つ目。"),
+        Completion::Text("二つ目。"),
+    ]);
+    let mut app = screen(endpoint);
+    app.journal = Some(Journal::new(folder.path()).unwrap());
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "One.".into();
+    wait(&mut window, &mut app, 1.2);
+    let first = app.manual_busy.expect("One. was not sent by itself");
+    app.input = "Two.".into();
+    window.settle(&mut app);
+    window.click(&mut app, "翻訳する");
+    window.click(&mut app, BACK_TO_CHAT);
+    assert!(app.tab == Tab::Live);
+
+    assert_eq!(words(&translated(&mut app, &prompts)), "One.");
+    window.draw(&mut app, vec![]);
+    assert!(
+        app.manual_busy.is_some_and(|id| id != first),
+        "the waiting press was not sent while the chat was shown"
+    );
+    assert_eq!(words(&translated(&mut app, &prompts)), "Two.");
+    assert_eq!(history(&app).matches("Two.").count(), 1);
+}
+
+#[test]
+fn emptying_the_input_drops_a_waiting_press() {
+    let folder = tempfile::tempdir().unwrap();
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("一つ目。"),
+        Completion::Text("三つ目。"),
+    ]);
+    let mut app = screen(endpoint);
+    app.journal = Some(Journal::new(folder.path()).unwrap());
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "One.".into();
+    wait(&mut window, &mut app, 1.2);
+    assert!(app.manual_busy.is_some(), "One. was not sent by itself");
+    app.input = "Two.".into();
+    window.settle(&mut app);
+    window.click(&mut app, "翻訳する");
+    window.click(&mut app, "クリア");
+
+    // Typed again before One. is done: that input waits for the pause.
+    app.input = "Three.".into();
+    window.draw(&mut app, vec![]);
+    translated(&mut app, &prompts);
+    window.draw(&mut app, vec![]);
+    assert!(
+        app.manual_busy.is_none(),
+        "the press was carried out after the input was emptied"
+    );
+    wait(&mut window, &mut app, 1.2);
+    assert_eq!(words(&translated(&mut app, &prompts)), "Three.");
+    assert!(
+        !history(&app).contains("Two.") && !history(&app).contains("Three."),
+        "a press that was dropped wrote to 履歴"
+    );
+}
+
+#[test]
+fn nothing_is_sent_by_itself_while_the_mini_view_is_shown() {
+    let (endpoint, prompts) = translation_stub(vec![Completion::Text("こんにちは。")]);
+    let mut app = screen(endpoint);
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    app.input = "Hello.".into();
+    window.draw(
+        &mut app,
+        vec![key(
+            egui::Key::M,
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+        )],
+    );
+    window.resize(520.0, 360.0);
+    wait(&mut window, &mut app, 1.5);
+    assert!(app.window_mode.is_mini());
+    assert!(
+        app.manual_busy.is_none() && prompts.try_recv().is_err(),
+        "the input was sent while the mini view was shown"
+    );
+
+    window.draw(
+        &mut app,
+        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+    );
+    window.resize(860.0, 620.0);
+    window.draw(&mut app, vec![]);
+    assert!(!app.window_mode.is_mini() && app.tab == Tab::Text);
+    assert!(
+        app.manual_busy.is_some(),
+        "the input was not sent once the screen was shown again"
+    );
+    assert_eq!(words(&translated(&mut app, &prompts)), "Hello.");
+}
+
+#[test]
+fn an_automatic_translation_is_not_read_aloud_and_a_pressed_one_is() {
+    const NO_VOICE: &str = "選択した固定声がありません";
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("こんにちは。"),
+        Completion::Text("こんにちは。"),
+    ]);
+    let mut app = screen(endpoint);
+    app.settings.readout_enabled = true;
+    app.settings.auto_read = true;
+    // With a voice that is not there, an attempt to read is an error message
+    // instead of a voice, so the attempt itself can be seen.
+    app.readout.ready = Some(plamo_translate::speech_setup::SpeechInstallation {
+        executable: Default::default(),
+        model: Default::default(),
+        backend: String::new(),
+        voice: String::new(),
+    });
+    app.settings.tts_voice_profile = "missing".into();
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    translated(&mut app, &prompts);
+    window.settle(&mut app);
+    assert!(window.has("こんにちは。"));
+    assert!(
+        !has_text_containing(&window.output, NO_VOICE),
+        "the automatic translation was read aloud"
+    );
+
+    window.click(&mut app, "翻訳する");
+    translated(&mut app, &prompts);
+    window.settle(&mut app);
+    assert!(
+        has_text_containing(&window.output, NO_VOICE),
+        "the pressed translation was not read aloud"
+    );
+}

@@ -16,6 +16,7 @@ const LISTEN_BUTTON: Vec2 = Vec2::new(88.0, theme::CONTROL_H);
 /// Height of the row under the chat: one line of small text.
 const STATUS_ROW: f32 = 20.0;
 const TOPMOST: &str = "最前面";
+const TOPMOST_HINT: &str = "ほかの窓より手前に置きます。通常表示に戻ると外れます。";
 
 /// A control that is in the toolbar while the toolbar has room for it, and a
 /// row of the 「⋯」 menu while it has not.
@@ -262,10 +263,10 @@ impl App {
     /// `control` as a button of the toolbar. True when it was pressed.
     fn movable_button(&self, ui: &mut egui::Ui, control: Movable) -> bool {
         match control {
-            Movable::Clear => ui::CLEAR.button(ui, self.can_clear_talk()).clicked(),
-            Movable::Topmost => {
-                ui::choice_button(ui, TOPMOST, self.window_mode.always_on_top()).clicked()
-            }
+            Movable::Clear => ui::CLEAR.button(ui, self.can_clear_shown_talk()).clicked(),
+            Movable::Topmost => ui::choice_button(ui, TOPMOST, self.window_mode.always_on_top())
+                .on_hover_text(TOPMOST_HINT)
+                .clicked(),
             Movable::CopyAll => ui::COPY_ALL.button(ui, self.can_copy_talk()).clicked(),
         }
     }
@@ -273,13 +274,20 @@ impl App {
     /// `control` as a row of the 「⋯」 menu. True when it was chosen.
     fn movable_row(&self, ui: &mut egui::Ui, control: Movable) -> bool {
         match control {
-            Movable::Clear => ui::CLEAR.row(ui, self.can_clear_talk()),
+            Movable::Clear => ui::CLEAR.row(ui, self.can_clear_shown_talk()),
             Movable::Topmost => {
                 let mut top = self.window_mode.always_on_top();
-                ui::toggle(ui, &mut top, TOPMOST).changed()
+                ui::toggle(ui, &mut top, TOPMOST)
+                    .on_hover_text(TOPMOST_HINT)
+                    .changed()
             }
             Movable::CopyAll => ui::COPY_ALL.row(ui, self.can_copy_talk()),
         }
+    }
+
+    /// クリア clears the talk on screen, so it waits while the card covers it.
+    fn can_clear_shown_talk(&self) -> bool {
+        !self.mini.shows_card() && self.can_clear_talk()
     }
 
     /// What `control` does, in the toolbar and in the menu alike.

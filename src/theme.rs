@@ -113,7 +113,8 @@ pub const CHAT_LIGHT: ChatPalette = ChatPalette {
 
 /// A near-black background a step darker than the canvas, dark grey bubbles
 /// and light text. The screen avatar is lighter than the light chat's, which
-/// is below 3:1 on this background.
+/// is below 3:1 on this background. A hovered pill or scroll handle turns
+/// lighter here, where the light chat's darker hover would sink into the track.
 pub const CHAT_DARK: ChatPalette = ChatPalette {
     background: Color32::from_rgb(6, 7, 9),
     bubble: Color32::from_rgb(44, 46, 51),
@@ -124,7 +125,7 @@ pub const CHAT_DARK: ChatPalette = ChatPalette {
     selection: Color32::from_rgb(44, 86, 150),
     meta: Color32::from_rgb(140, 145, 154),
     pill: Color32::from_rgb(98, 103, 112),
-    pill_hover: Color32::from_rgb(78, 82, 90),
+    pill_hover: Color32::from_rgb(108, 113, 122),
     pill_text: Color32::from_rgb(255, 255, 255),
     track: Color32::from_rgb(18, 20, 24),
     avatar_youtube: CHAT_AVATAR_YOUTUBE,

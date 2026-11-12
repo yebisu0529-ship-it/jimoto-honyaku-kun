@@ -3,7 +3,8 @@
 //! shows its result on a card in the chat's place.
 use super::home_tests::{Window, key, row};
 use super::listen_tests::{
-    INPUTS, SCREEN, armed, chat_without_speech, drawn, hint, marked, with_youtube_captions,
+    CAPTIONS_ARRIVING, INPUTS, SCREEN, armed, caption, chat_without_speech, drawn, extension, hint,
+    marked, with_youtube_captions,
 };
 use super::*;
 use crate::chat::testing::{
@@ -481,6 +482,33 @@ fn the_status_line_says_what_the_line_beside_the_main_button_says_in_its_colour(
             let main = drawn(&mut app, MAIN);
             assert_eq!(find_text(&main.output, words).1, color, "{words}");
         }
+    }
+}
+
+#[test]
+fn captions_that_arrive_while_they_are_not_translated_are_told_on_the_status_line_too() {
+    for size in SIZES {
+        let stopped = ("止まっています".to_owned(), theme::TEXT_SECONDARY);
+        let mut app = mini();
+        let extension = extension(&mut app);
+        extension
+            .send(caption("The library opens at nine.", false))
+            .unwrap();
+        app.process(&egui::Context::default());
+        let window = drawn(&mut app, size);
+        assert_eq!(
+            status_line(&window).0,
+            [
+                stopped.clone(),
+                (CAPTIONS_ARRIVING.to_owned(), theme::TEXT_SECONDARY)
+            ],
+            "at {size:?}"
+        );
+
+        // What the app tells next takes its place, as on the main window's row.
+        app.status = "準備ができました。".into();
+        let window = drawn(&mut app, size);
+        assert_eq!(status_line(&window).0, [stopped], "at {size:?}");
     }
 }
 

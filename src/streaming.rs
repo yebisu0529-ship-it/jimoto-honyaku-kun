@@ -322,4 +322,27 @@ mod tests {
         assert!(!app.nemotron_needs_origin);
         assert_eq!(app.nemotron_origin_ms, 800);
     }
+
+    #[test]
+    fn nemotron_that_gets_ready_after_the_language_changed_leaves_the_pc_audio_off() {
+        let mut app = App::inert();
+        app.backend_ready = true;
+        // 聞く was pressed while the language was English, and Nemotron was loading.
+        app.audio_start_requested = true;
+        app.settings.translation.source_lang = "zh-hans".into();
+        app.accept_nemotron_event(NemotronEvent::Ready {
+            model: "nemotron-speech-streaming-en-0.6b".into(),
+            backend: "cpu".into(),
+        });
+        assert!(app.asr_ready);
+        assert!(
+            !app.audio_enabled && app.audio.is_none(),
+            "the PC audio is taken for a recognizer that cannot hear it"
+        );
+        assert!(
+            !app.audio_start_requested,
+            "聞く still waits for the recognizer"
+        );
+        assert_eq!(app.listen_state().0, ENGLISH_ONLY);
+    }
 }

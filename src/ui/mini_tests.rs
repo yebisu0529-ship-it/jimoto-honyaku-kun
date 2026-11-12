@@ -82,6 +82,7 @@ const ROOM: [Room; 4] = [
 /// rests on them.
 const CLEAR_HINT: &str = "表示中の会話を消して、新しく始めます。消した会話は「履歴」に残ります。";
 const COPY_ALL_HINT: &str = "表示中の会話をすべて、PLaMoのクレジットを付けてコピーします。";
+const TOPMOST_HINT: &str = "ほかの窓より手前に置きます。通常表示に戻ると外れます。";
 
 const NO_SCREEN: &str = "取得できる画面がありません。";
 const READING: &str = "画像から文字を読み取っています…";
@@ -1605,8 +1606,8 @@ fn nothing_leaves_the_window_or_overlaps_and_a_long_error_does_not_move_the_chat
 
 #[test]
 fn a_control_is_in_the_menu_only_while_the_toolbar_has_no_room_for_it_at_every_width_and_scale() {
-    // At 1.1, 100% zoomed in once, the words of the controls are a fraction
-    // of a point wider than at 1 and 1.25.
+    // At 1.1, one zoom-in step above 100%, the words of the controls are a
+    // fraction of a point wider than at 1 and 1.25.
     for scale in [1.0, 1.1, 1.25] {
         // How wide each control and the gap between two are drawn, from a
         // toolbar that holds all three.
@@ -2727,6 +2728,68 @@ fn clear_in_the_toolbar_and_in_the_menu_starts_a_new_talk_as_the_chat_header_s_d
             "the earlier talk lost its messages"
         );
         assert!(app.window_mode.is_mini());
+    }
+}
+
+#[test]
+fn clear_waits_while_the_card_covers_the_chat_and_can_be_pressed_again_back_on_the_chat() {
+    for (size, readout, place) in [(USUAL, false, "toolbar"), (SMALLEST, true, "menu")] {
+        let open = |window: &mut Window, app: &mut App| {
+            if place == "menu" {
+                open_menu(window, app);
+            }
+        };
+        let faded = {
+            let mut app = mini();
+            app.settings.readout_enabled = readout;
+            let mut window = drawn(&mut app, size);
+            open(&mut window, &mut app);
+            window.ink("クリア")
+        };
+        let mut app = mini();
+        app.settings.readout_enabled = readout;
+        app.rows = talk(2);
+        app.capture(&egui::Context::default());
+        let mut window = drawn(&mut app, size);
+        open(&mut window, &mut app);
+        assert_eq!(
+            window.ink("クリア"),
+            faded,
+            "クリア in the {place} can be pressed while the card covers the chat"
+        );
+        window.click(&mut app, "クリア");
+        assert_eq!(
+            app.rows.len(),
+            2,
+            "the {place} cleared a talk that is out of sight"
+        );
+
+        open(&mut window, &mut app);
+        window.click(&mut app, "← チャットに戻る");
+        assert!(shows_talk(&window, 2), "the chat is back");
+        open(&mut window, &mut app);
+        assert_ne!(
+            window.ink("クリア"),
+            faded,
+            "クリア in the {place} is still faded back on the chat"
+        );
+    }
+}
+
+#[test]
+fn the_topmost_switch_says_what_it_does_in_the_toolbar_and_in_the_menu() {
+    for (size, readout, place) in [(USUAL, false, "toolbar"), (SMALLEST, true, "menu")] {
+        let mut app = mini();
+        app.settings.readout_enabled = readout;
+        let mut window = drawn(&mut app, size);
+        if place == "menu" {
+            open_menu(&mut window, &mut app);
+        }
+        hover_later(&mut window, &mut app, "最前面");
+        assert!(
+            has_text_containing(&window.output, TOPMOST_HINT),
+            "最前面 in the {place} does not say what it does"
+        );
     }
 }
 

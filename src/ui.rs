@@ -2640,6 +2640,8 @@ mod mini_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]
+mod simple_tests;
+#[cfg(test)]
 mod live_layout_tests {
     use super::*;
     fn row(id: u64, pending: bool, error: bool) -> Row {

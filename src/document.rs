@@ -1038,7 +1038,7 @@ fn rewrite_as_easy_japanese(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     impl From<&str> for LiveTranslation {
@@ -1734,7 +1734,7 @@ mod tests {
     }
 
     /// What the substitute server answers to one completion request.
-    enum Completion {
+    pub(crate) enum Completion {
         Text(&'static str),
         Failure,
     }
@@ -1742,7 +1742,7 @@ mod tests {
     /// Answers like the local PLaMo server and hands back every prompt it was
     /// sent, in order. Each completion gets the next scripted answer; a request
     /// beyond the script fails but is still counted.
-    fn translation_stub(script: Vec<Completion>) -> (String, mpsc::Receiver<String>) {
+    pub(crate) fn translation_stub(script: Vec<Completion>) -> (String, mpsc::Receiver<String>) {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", server.server_addr().to_ip().unwrap());
         let (prompts_tx, prompts) = mpsc::channel();

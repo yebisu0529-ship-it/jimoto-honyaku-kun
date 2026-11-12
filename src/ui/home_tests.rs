@@ -1,7 +1,8 @@
 //! The chat is the home screen and every other screen is behind one menu.
 use super::*;
 use crate::chat::testing::{
-    assert_drawn_dark, background, fill_behind, find_text, light_colours, press, texts, wheel,
+    assert_drawn_dark, background, fill_behind, filled, find_text, light_colours, press, shapes,
+    texts, wheel,
 };
 use plamo_translate::hardware::Hardware;
 
@@ -774,6 +775,95 @@ fn the_dark_chat_draws_its_pills_its_scroll_bar_and_its_empty_words_dark_too() {
         "the words of the empty chat in {ink:?} cannot be read on {background:?}"
     );
     assert_eq!(light_colours(&window.output, panel), Vec::<&str>::new());
+}
+
+/// The handle of the dark chat's scroll bar in `panel`: the one rectangle
+/// painted on the track, and its fill.
+fn scroll_handle(output: &egui::FullOutput, panel: egui::Rect) -> (egui::Rect, Color32) {
+    let track = filled(output, theme::CHAT_DARK.track)
+        .into_iter()
+        .find(|track| panel.contains_rect(*track))
+        .expect("the chat has a scroll bar");
+    let handles: Vec<(egui::Rect, Color32)> = shapes(output)
+        .into_iter()
+        .filter_map(|(_, shape)| match shape {
+            egui::Shape::Rect(handle)
+                if handle.rect != track && track.contains_rect(handle.rect) =>
+            {
+                Some((handle.rect, handle.fill))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(handles.len(), 1, "one handle on the track: {handles:?}");
+    handles[0]
+}
+
+#[test]
+fn the_dark_chat_paints_the_scroll_handle_in_its_hover_and_pressed_colours_under_the_pointer() {
+    let mut app = with_dark_chat(chat());
+    app.rows = crate::demo_talk(10);
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    let panel = app.live_chat.panel().expect("the chat is drawn");
+    let (handle, fill) = scroll_handle(&window.output, panel);
+    assert_eq!(fill, theme::CHAT_DARK.pill, "the handle at rest");
+
+    let on = handle.center();
+    window.draw(&mut app, vec![egui::Event::PointerMoved(on)]);
+    window.settle(&mut app);
+    assert_eq!(
+        scroll_handle(&window.output, panel).1,
+        theme::CHAT_DARK.pill_hover,
+        "the handle under the pointer"
+    );
+
+    window.draw(
+        &mut app,
+        vec![press(on, egui::PointerButton::Primary, true)],
+    );
+    window.draw(
+        &mut app,
+        vec![egui::Event::PointerMoved(on - egui::vec2(0.0, 40.0))],
+    );
+    let (dragged, fill) = scroll_handle(&window.output, panel);
+    assert!(
+        dragged.top() < handle.top(),
+        "the handle does not follow the pointer"
+    );
+    assert_eq!(fill, theme::CHAT_DARK.meta, "the handle being dragged");
+}
+
+/// The fill of the round avatar that `glyph` is written on.
+fn avatar(output: &egui::FullOutput, glyph: &str) -> Color32 {
+    let (words, _) = find_text(output, glyph);
+    shapes(output)
+        .into_iter()
+        .find_map(|(_, shape)| match shape {
+            egui::Shape::Circle(circle) if words.contains(circle.center) => Some(circle.fill),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{glyph} is on no avatar"))
+}
+
+#[test]
+fn a_screen_message_s_avatar_has_the_dark_palette_s_colour_in_the_dark_chat() {
+    let mut app = with_dark_chat(chat());
+    app.rows = vec![row(1, "画面", "画面から読み取った文の訳文です。")];
+    let mut window = Window::new(860.0, 620.0);
+    window.settle(&mut app);
+    assert_eq!(
+        avatar(&window.output, "画"),
+        theme::CHAT_DARK.avatar_screen,
+        "the 画面 avatar of the dark chat"
+    );
+
+    flip_dark_mode(&mut window, &mut app);
+    assert_eq!(
+        avatar(&window.output, "画"),
+        theme::CHAT_AVATAR_SCREEN,
+        "the light chat's avatar does not come back"
+    );
 }
 
 /// The subtitle window, drawn as `App::update` draws it on each frame.

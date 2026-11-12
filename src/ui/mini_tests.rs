@@ -42,7 +42,7 @@ const ROOM: [Room; 4] = [
         size: USUAL,
         readout: false,
         toolbar: &["通常表示", "● 聞く", "クリア", "全文コピー", "最前面", "⋯"],
-        menu: &["入力の切り替え", "表示", OTHER_FEATURES],
+        menu: &["表示", "入力の切り替え", OTHER_FEATURES],
     },
     Room {
         size: USUAL,
@@ -55,21 +55,21 @@ const ROOM: [Room; 4] = [
             "最前面",
             "⋯",
         ],
-        menu: &["入力の切り替え", "表示", "全文コピー", OTHER_FEATURES],
+        menu: &["表示", "入力の切り替え", "全文コピー", OTHER_FEATURES],
     },
     Room {
         size: SMALLEST,
         readout: false,
         toolbar: &["通常表示", "● 聞く", "クリア", "最前面", "⋯"],
-        menu: &["入力の切り替え", "表示", "全文コピー", OTHER_FEATURES],
+        menu: &["表示", "入力の切り替え", "全文コピー", OTHER_FEATURES],
     },
     Room {
         size: SMALLEST,
         readout: true,
         toolbar: &["通常表示", "● 聞く", "自動読み上げ", "⋯"],
         menu: &[
-            "入力の切り替え",
             "表示",
+            "入力の切り替え",
             "クリア",
             "全文コピー",
             "最前面",
@@ -2395,6 +2395,70 @@ fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window()
             );
         }
     }
+}
+
+#[test]
+fn the_display_and_input_submenus_open_left_of_the_menu_inside_the_window_at_every_small_size() {
+    // A submenu opens as soon as the pointer is on its row, so one drawn over
+    // the menu stands in the way of the rows under that row.
+    let submenus = [
+        (
+            "表示",
+            [
+                "原文をすべて表示",
+                "末尾へ自動スクロール",
+                "ダークモード",
+                "訳文の文字サイズ",
+            ],
+        ),
+        // With the captions on, and 画面の文字 listed while it is the input,
+        // 入力の切り替え has its most rows.
+        (
+            "入力の切り替え",
+            [
+                "PC音声だけ",
+                "YouTube字幕だけ",
+                "自動（字幕を優先）",
+                SCREEN,
+            ],
+        ),
+    ];
+    let mut over = Vec::new();
+    for width in [400.0, 520.0] {
+        for height in [260.0, 270.0, 280.0, 300.0, 360.0] {
+            for readout in [false, true] {
+                for (row, options) in submenus {
+                    let mut app = with_youtube_captions(mini());
+                    app.listen_input = LiveSourceMode::Screen;
+                    app.settings.readout_enabled = readout;
+                    let mut window = drawn(&mut app, (width, height));
+                    open_menu(&mut window, &mut app);
+                    let (frame, _) = menu(&window, "入力の切り替え");
+                    window.click(&mut app, row);
+                    let at = format!("{row} at {width}x{height}, read-aloud {readout}");
+                    for option in options {
+                        assert!(window.has(option), "{option} is not behind {at}");
+                    }
+                    let first = window.at(options[0]);
+                    let submenu = filled(&window.output, theme::SURFACE)
+                        .into_iter()
+                        .filter(|rect| *rect != frame && rect.contains_rect(first))
+                        .min_by(|a, b| a.area().total_cmp(&b.area()))
+                        .unwrap_or_else(|| panic!("{at} opens no submenu"));
+                    let inside =
+                        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+                    if submenu.right() > frame.left() || !inside.contains_rect(submenu) {
+                        over.push(format!("{at}: {submenu:?}, the menu {frame:?}"));
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        over,
+        Vec::<String>::new(),
+        "these submenus are drawn over the menu or leave the window"
+    );
 }
 
 #[test]

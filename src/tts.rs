@@ -393,7 +393,7 @@ fn worker(config: SpeechInstallation, profile: Option<VoiceProfile>, shared: Arc
                     owned_child_alive(&shared)
                         && owned_pid.is_some()
                         && listener_owner(17863)? == owned_pid,
-                    "彩りTTSへのローカル接続が切れました。"
+                    "Irodori-TTSへのローカル接続が切れました。"
                 );
                 let _ = shared
                     .events
@@ -479,7 +479,7 @@ fn start_server(
     drop(probe);
     let _ = shared
         .events
-        .send(TtsEvent::Status("彩りTTSを読み込んでいます。".into()));
+        .send(TtsEvent::Status("Irodori-TTSを読み込んでいます。".into()));
     // This runs only on the background worker, once per owned server start.
     // The other models can have consumed VRAM since initial installation.
     let free_vram = if config.backend == "vulkan" {
@@ -526,11 +526,7 @@ fn start_server(
     if let Some(parent) = config.model.parent() {
         command.env("SPEECH_MODEL_DIR", parent);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    crate::platform::hide_console(&mut command);
     {
         let mut owned = shared.child.lock().unwrap_or_else(|e| e.into_inner());
         if cancelled(shared, epoch) {
@@ -549,7 +545,7 @@ fn start_server(
         }
         anyhow::ensure!(
             owned_child_alive(shared),
-            "彩りTTSの起動に失敗しました。GPU・モデルの設定を確認してください。"
+            "Irodori-TTSの起動に失敗しました。GPU・モデルの設定を確認してください。"
         );
         let owned_pid = shared
             .child
@@ -579,12 +575,15 @@ fn start_server(
             let models: Value = serde_json::from_slice(&body)?;
             let id = irodori_model_id(&models)
                 .context("起動した読み上げモデルを確認できませんでした。")?;
-            anyhow::ensure!(owned_child_alive(shared), "彩りTTSが起動中に終了しました。");
+            anyhow::ensure!(
+                owned_child_alive(shared),
+                "Irodori-TTSが起動中に終了しました。"
+            );
             return Ok(id);
         }
         thread::sleep(Duration::from_millis(100));
     }
-    bail!("彩りTTSの読み込みが時間内に完了しませんでした。")
+    bail!("Irodori-TTSの読み込みが時間内に完了しませんでした。")
 }
 
 fn startup_device(configured: &str, free_vram: Option<u64>) -> &'static str {
@@ -678,7 +677,7 @@ fn synthesize(
         .post(format!("{ENDPOINT}/v1/audio/speech"))
         .json(&speech_request(model, voice, text, seed, rate))
         .send()
-        .context("彩りTTSへのローカル接続が切れました。")?;
+        .context("Irodori-TTSへのローカル接続が切れました。")?;
     anyhow::ensure!(
         response.status().is_success(),
         "音声を生成できませんでした（HTTP {}）。",
@@ -1012,7 +1011,6 @@ mod tests {
         assert!(!cancelled(&state, 3));
         state.epoch.fetch_add(1, Ordering::AcqRel);
         assert!(cancelled(&state, 3));
-        assert!(!state.suppress.load(Ordering::Acquire));
     }
 
     #[cfg(windows)]

@@ -380,8 +380,11 @@ impl Accumulator {
                 let common = common_prefix_bytes(&old.text, text);
                 let same_window = start_ms == old.start_ms && end_ms == old.end_ms;
                 let common_suffix = common_suffix_bytes(&old.text, text);
+                // The shared ends must cover half of the longer text: the
+                // first word of the next line can share a letter or two with
+                // the old window, and it is new speech.
                 let correction = same_window
-                    || common > 0 && (common + common_suffix) * 2 >= old.text.len().min(text.len());
+                    || common > 0 && (common + common_suffix) * 2 >= old.text.len().max(text.len());
                 if correction {
                     if let Some((key, anchor, offset)) = self.correctable_location(old.location)
                         && text.is_char_boundary(offset)
@@ -698,6 +701,19 @@ impl Accumulator {
         self.close_current()
     }
 
+    /// Sentence hints for `request` could split its paragraph: it is the open
+    /// paragraph in flight, and it has reached its length or its time limit.
+    pub fn wants_sentence_hints(&self, request: &Request, now_ms: u64) -> bool {
+        self.matches_inflight(request)
+            && !request.snapshot.closed
+            && self.current.as_ref().is_some_and(|p| {
+                p.snapshot.key == request.snapshot.key
+                    && p.snapshot.text.starts_with(&request.snapshot.text)
+                    && (p.snapshot.text.chars().count() >= self.paragraph_limit(&p.snapshot.text)
+                        || now_ms.saturating_sub(p.created_at) >= self.policy.max_paragraph_ms)
+            })
+    }
+
     /// Use word-preserving punctuation from an accumulated, still-active
     /// request. Hints are offsets in the untouched source, never replacement
     /// prose. A tail of at least six words supplies right-hand context and
@@ -708,18 +724,7 @@ impl Accumulator {
         boundaries: &[usize],
         now_ms: u64,
     ) -> PushOutcome {
-        if !self.matches_inflight(request) || request.snapshot.closed {
-            return PushOutcome::default();
-        }
-        let Some(p) = self.current.as_ref().filter(|p| {
-            p.snapshot.key == request.snapshot.key
-                && p.snapshot.text.starts_with(&request.snapshot.text)
-        }) else {
-            return PushOutcome::default();
-        };
-        if p.snapshot.text.chars().count() < self.paragraph_limit(&p.snapshot.text)
-            && now_ms.saturating_sub(p.created_at) < self.policy.max_paragraph_ms
-        {
+        if !self.wants_sentence_hints(request, now_ms) {
             return PushOutcome::default();
         }
         let text = &request.snapshot.text;
@@ -921,8 +926,8 @@ impl Accumulator {
         outcome
     }
 
-    /// At most one request exists per accumulator. The caller may additionally
-    /// arbitrate a global slot across audio and captions before calling this.
+    /// At most one request exists per accumulator. The caller asks audio and
+    /// captions both, then cancels the request it does not send.
     pub fn next_request(&mut self, now_ms: u64) -> Option<Request> {
         if self.inflight.is_some() {
             return None;
@@ -1206,7 +1211,7 @@ fn sentence_boundaries(text: &str) -> Vec<usize> {
     boundaries
 }
 
-fn cjk(c: char) -> bool {
+pub(crate) fn cjk(c: char) -> bool {
     matches!(c as u32, 0x2e80..=0x9fff | 0xac00..=0xd7af | 0xf900..=0xfaff | 0x20000..=0x323af)
 }
 
@@ -1636,6 +1641,50 @@ mod tests {
     }
 
     #[test]
+    fn sentence_hints_are_wanted_only_for_an_open_paragraph_at_its_limit() {
+        let policy = Policy {
+            min_boundary_chars: 50,
+            max_paragraph_chars: 80,
+            ..Policy::default()
+        };
+        let mut a = Accumulator::new(stamp(SourceKind::Audio), policy.clone());
+        audio(&mut a, 1, "The public exhibition opens on Friday", 0);
+        let young = a.next_request(1_500).unwrap();
+        assert!(
+            !a.wants_sentence_hints(&young, 1_500),
+            "a short paragraph under its time limit"
+        );
+        assert!(
+            a.wants_sentence_hints(&young, 60_000),
+            "the same paragraph at its time limit"
+        );
+
+        let mut b = Accumulator::new(stamp(SourceKind::Audio), policy);
+        audio(
+            &mut b,
+            1,
+            "The public exhibition contains 150 words and describes the shared learning space",
+            0,
+        );
+        audio(
+            &mut b,
+            2,
+            "visitors can then compare this account with the original source material",
+            200,
+        );
+        let open = b.next_request(250).unwrap();
+        assert!(
+            b.wants_sentence_hints(&open, 250),
+            "an open paragraph over its length limit"
+        );
+        b.cancel_request(&open, 250);
+        b.close(300);
+        let closed = b.next_request(300).unwrap();
+        assert!(closed.snapshot.closed);
+        assert!(!b.wants_sentence_hints(&closed, 300), "a closed paragraph");
+    }
+
+    #[test]
     fn ten_minutes_of_rolling_caption_windows_keep_every_word_and_ignore_heartbeats() {
         let words: Vec<String> = (0..200).flat_map(|index| {
             format!("Section{index} describes how the library team checks translations carefully before public display.")
@@ -2041,6 +2090,44 @@ mod tests {
         assert_eq!(
             a.current_snapshot().unwrap().text,
             "and maps for local readers"
+        );
+    }
+
+    #[test]
+    fn a_short_caption_after_a_clear_follows_the_words_before_it() {
+        let mut a = Accumulator::new(stamp(SourceKind::Caption), roomy());
+        a.push_caption("that is why we decided to hold", 0, 3_000, 0)
+            .unwrap();
+        a.push_caption("the", 4_000, 7_000, 4_000).unwrap();
+        assert_eq!(
+            a.current_snapshot().unwrap().text,
+            "that is why we decided to hold the"
+        );
+    }
+
+    #[test]
+    fn a_short_line_that_shares_its_first_and_last_letters_with_the_one_before_is_kept_too() {
+        let mut a = Accumulator::new(stamp(SourceKind::Caption), roomy());
+        a.push_caption("I know.", 0, 3_000, 0).unwrap();
+        a.push_caption("I see.", 2_000, 5_000, 2_000).unwrap();
+        assert_eq!(a.current_snapshot().unwrap().text, "I know. I see.");
+    }
+
+    #[test]
+    fn a_short_caption_after_a_committed_paragraph_starts_the_next_one() {
+        let mut a = Accumulator::new(stamp(SourceKind::Caption), roomy());
+        a.push_caption("The library opens on Monday", 0, 3_000, 0)
+            .unwrap();
+        a.close(1);
+        let request = a.next_request(1).unwrap();
+        assert!(matches!(
+            a.accept(&request, "図書館は月曜日に開きます。", 2),
+            Acceptance::Committed { .. }
+        ));
+        a.push_caption("There", 4_000, 7_000, 4_000).unwrap();
+        assert_eq!(
+            a.current_snapshot().map(|p| p.text),
+            Some("There".to_owned())
         );
     }
 

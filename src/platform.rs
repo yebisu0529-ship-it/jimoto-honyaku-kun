@@ -1,5 +1,6 @@
 //! Local Windows screen capture, installed Windows OCR, and system-audio capture.
-//! Audio is captured only while `capture_loopback` is running; no microphone is opened.
+//! Audio is captured only while `capture_loopback`, `capture_loopback_suppressing` or
+//! `capture_loopback_streaming` is running; no microphone is opened.
 
 use anyhow::{Context, Result, bail};
 use std::sync::{Arc, atomic::AtomicBool, mpsc::SyncSender};
@@ -52,6 +53,16 @@ pub fn pcm_to_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
         writer.finalize()?;
     }
     Ok(output.into_inner())
+}
+
+pub fn hide_console(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 #[cfg(windows)]

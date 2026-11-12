@@ -4,7 +4,7 @@ use super::*;
 use plamo_translate::bridge::{Contact, Heard};
 
 /// Captions count as arriving while the last one is at most this old.
-pub(super) const ARRIVING_WITHIN: Duration = Duration::from_secs(8);
+const ARRIVING_WITHIN: Duration = Duration::from_secs(8);
 /// How often the screen redraws, so that a new contact shows without input.
 const REDRAW: Duration = Duration::from_millis(500);
 
@@ -120,14 +120,14 @@ impl App {
                 "拡張機能とつながりました（{}）。YouTubeで字幕を出すと、ここに「字幕を受信中」と出ます。",
                 ago(since)
             ),
-            Link::Captions => match self.current_input() {
-                Some(LiveSourceMode::Auto | LiveSourceMode::Captions) => {
+            Link::Captions => match (self.current_input(), self.shown_input()) {
+                (Some(_), LiveSourceMode::Auto | LiveSourceMode::Captions) => {
                     "YouTube字幕を受け取り、チャットで訳しています。".into()
                 }
-                None => {
+                (None, LiveSourceMode::Auto | LiveSourceMode::Captions) => {
                     "YouTube字幕が届いています。チャットの「● 聞く」を押すと訳し始めます。".into()
                 }
-                Some(other) => format!(
+                (_, other) => format!(
                     "YouTube字幕が届いています。いまの入力は「{}」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「自動（字幕を優先）」か「YouTube字幕だけ」を選びます。",
                     other.label()
                 ),
@@ -163,7 +163,7 @@ impl App {
                     for note in [
                         "字幕はこのPC内の 127.0.0.1:17862 にだけ送られ、外部には送信されません。",
                         "YouTubeの窓を最小化したときなどは、YouTubeが字幕の表示を止めるため、字幕が届きません。「入力の切り替え」が「自動（字幕を優先）」なら、そのあいだはPC音声を訳します。",
-                        "拡張機能のファイルを新しくしたときは、chrome://extensions（Edgeは edge://extensions）で、この拡張機能の再読み込みボタンを押してください。",
+                        "拡張機能のファイルを新しくしたときは、chrome://extensions（Edgeは edge://extensions）で、この拡張機能の再読み込みボタンを押してください。そのあと、開いているYouTubeのページも再読み込みしてください。",
                     ] {
                         ui.add(egui::Label::new(theme::caption(note)).wrap());
                     }
@@ -206,14 +206,14 @@ impl App {
                 3,
                 done,
                 "YouTubeで字幕を出す",
-                "YouTubeで動画を開き、CCをオンにして英語などの字幕を選びます。字幕が届くと、上に「字幕を受信中」と出ます。訳すときは、チャットの「● 聞く」を押します（「入力の切り替え」が「自動（字幕を優先）」か「YouTube字幕だけ」のとき）。",
+                "YouTubeで動画を開き、CCをオンにして英語などの字幕を選びます。拡張機能を入れる前から開いていたYouTubeのページは、再読み込みします。字幕が届くと、上に「字幕を受信中」と出ます。訳すときは、チャットの「● 聞く」を押します（「入力の切り替え」が「自動（字幕を優先）」か「YouTube字幕だけ」のとき）。",
                 |_| {},
             );
         });
         if open_folder {
             let mut command = Command::new("explorer.exe");
             command.arg(&folder);
-            command_hidden(&mut command);
+            platform::hide_console(&mut command);
             let _ = command.spawn();
         }
         if copy_key {
@@ -441,6 +441,49 @@ mod tests {
                 .iter()
                 .any(|(text, _, _)| text.contains("「● 聞く」を押すと訳し始めます"))
         );
+    }
+
+    #[test]
+    fn captions_the_chosen_input_will_not_translate_are_said_so_before_listening() {
+        for (mode, label) in [
+            (LiveSourceMode::Audio, "PC音声だけ"),
+            (LiveSourceMode::Screen, "画面の文字"),
+        ] {
+            let mut app = screen(&[Contact::Caption]);
+            app.listen_input = mode;
+            let window = drawn(&mut app);
+            assert!(
+                window.has(&format!(
+                    "YouTube字幕が届いています。いまの入力は「{label}」なので、字幕は訳しません。字幕を訳すときは、「入力の切り替え」で「自動（字幕を優先）」か「YouTube字幕だけ」を選びます。"
+                )),
+                "{label}"
+            );
+            assert!(
+                !texts(&window.output)
+                    .iter()
+                    .any(|(text, _, _)| text.contains("「● 聞く」を押すと訳し始めます")),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_steps_say_to_reload_a_youtube_page_that_was_open_before() {
+        let window = drawn(&mut screen(&[]));
+        let drawn: Vec<String> = texts(&window.output)
+            .into_iter()
+            .map(|(text, _, _)| text)
+            .collect();
+        let find = |start: &str| {
+            drawn
+                .iter()
+                .find(|text| text.starts_with(start))
+                .unwrap_or_else(|| panic!("{start} is not drawn"))
+        };
+        let step = find("YouTubeで動画を開き");
+        assert!(step.contains("YouTubeのページは、再読み込み"), "{step}");
+        let note = find("拡張機能のファイルを新しくしたときは");
+        assert!(note.contains("YouTubeのページも再読み込み"), "{note}");
     }
 
     #[test]

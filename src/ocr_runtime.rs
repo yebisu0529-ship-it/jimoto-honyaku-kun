@@ -31,11 +31,7 @@ impl ProcessControl {
             child.is_none(),
             "An OCR child is already owned by this control"
         );
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000);
-        }
+        crate::platform::hide_console(command);
         let owned = command
             .spawn()
             .context("Could not start the local OCR process")?;
@@ -106,13 +102,11 @@ fn reap(child: &mut Child) {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill.exe")
-            .args(["/PID", &child.id().to_string(), "/T", "/F"])
-            .creation_flags(0x08000000)
+        let mut kill = Command::new("taskkill.exe");
+        kill.args(["/PID", &child.id().to_string(), "/T", "/F"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        let _ = crate::platform::hide_console(&mut kill).status();
     }
     let _ = child.kill();
     let _ = child.wait();

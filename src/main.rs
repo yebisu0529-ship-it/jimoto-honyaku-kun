@@ -5,7 +5,7 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 use plamo_translate::{
     bridge, credit,
     engine::{self, TranslationOptions, Translator},
-    journal::{Journal, Record},
+    journal::{EarlierTalks, Journal, Record},
     platform,
     subtitles::{self, Cue},
 };
@@ -59,7 +59,6 @@ struct Settings {
     bridge_token: String,
     audio_seconds: f32,
     nemotron_context: u32,
-    show_original: bool,
     live_show_original: bool,
     auto_scroll: bool,
     font_size: f32,
@@ -107,7 +106,6 @@ impl Default for Settings {
             bridge_token: uuid::Uuid::new_v4().to_string(),
             audio_seconds: 3.0,
             nemotron_context: 6,
-            show_original: true,
             live_show_original: false,
             auto_scroll: true,
             font_size: theme::READING_DEFAULT,
@@ -150,13 +148,6 @@ fn save_settings(settings: &Settings) -> Result<()> {
     fs::rename(tmp, path)?;
     Ok(())
 }
-fn command_hidden(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-}
 
 #[derive(Clone, Copy, Default, PartialEq)]
 enum Tab {
@@ -169,11 +160,6 @@ enum Tab {
     Setup,
     /// Connecting the browser extension that sends YouTube captions.
     YouTube,
-}
-#[derive(Clone, Copy, PartialEq)]
-enum Lane {
-    Manual,
-    Live,
 }
 enum Event {
     ParagraphTools(paragraph_tools::ToolsEvent),
@@ -196,10 +182,8 @@ enum Event {
     },
     Done {
         id: u64,
-        lane: Lane,
         result: std::result::Result<String, String>,
         elapsed: f32,
-        generation: u64,
     },
     Ocr {
         generation: u64,
@@ -218,6 +202,10 @@ enum Event {
         result: std::result::Result<String, String>,
     },
     FileDone(std::result::Result<String, String>),
+    Earlier {
+        generation: u64,
+        result: std::result::Result<EarlierTalks, String>,
+    },
     Info(String),
     Hardware(std::result::Result<plamo_translate::hardware::Hardware, String>),
     GpuMemory(Vec<plamo_translate::hardware::Gpu>),
@@ -319,6 +307,15 @@ struct PendingTranscript {
     end_ms: u64,
     generation: u64,
 }
+#[derive(Default)]
+enum Earlier {
+    #[default]
+    NotRead,
+    /// A worker reads them. Its answer carries this number.
+    Reading(u64),
+    Read(EarlierTalks),
+    Failed(String),
+}
 const MAX_AUDIO_AGE_MS: u64 = 8000;
 struct App {
     settings: Settings,
@@ -330,6 +327,10 @@ struct App {
     rows: Vec<Row>,
     journal: Option<Journal>,
     journal_error: String,
+    earlier: Earlier,
+    /// Rises with every read of the earlier talks.
+    earlier_reads: u64,
+    history: ui::HistoryView,
     next_id: u64,
     tx: SyncSender<Event>,
     rx: Receiver<Event>,
@@ -370,7 +371,6 @@ struct App {
     last_caption: Option<Instant>,
     pending_caption: Option<bridge::Caption>,
     last_live_text: String,
-    last_live_id: Option<u64>,
     current_live_id: Option<u64>,
     live_chat: chat::State,
     window_mode: window_mode::MiniWindowState,
@@ -380,10 +380,6 @@ struct App {
     document: document::DocumentState,
     paragraph_tools: paragraph_tools::ToolsState,
     subtitle_window: subtitle_window::State,
-    overlay_text: String,
-    overlay_source: String,
-    overlay_time: Option<Instant>,
-    overlay_kind: Option<LiveKind>,
     glossary_input: String,
     search: String,
     children: Vec<Child>,
@@ -414,6 +410,9 @@ struct App {
     ocr: screen_ocr::OcrState,
     /// The 状態の詳細 window is open.
     details_open: bool,
+    /// The card behind 「その他の機能」 that the settings page opens and
+    /// scrolls to the next time it is drawn.
+    reveal: Option<ui::OtherSetting>,
     native_window: Option<isize>,
     /// The window's place as eframe last saved it while the window was on the
     /// screen. `save` puts it back when eframe saves a minimized window.
@@ -438,6 +437,9 @@ impl App {
             rows: Vec::new(),
             journal: None,
             journal_error: String::new(),
+            earlier: Earlier::default(),
+            earlier_reads: 0,
+            history: ui::HistoryView::default(),
             next_id: 1,
             tx,
             rx,
@@ -478,7 +480,6 @@ impl App {
             last_caption: None,
             pending_caption: None,
             last_live_text: String::new(),
-            last_live_id: None,
             current_live_id: None,
             live_chat: chat::State::default(),
             window_mode: window_mode::MiniWindowState::default(),
@@ -488,10 +489,6 @@ impl App {
             document: document::DocumentState::default(),
             paragraph_tools: paragraph_tools::ToolsState::default(),
             subtitle_window: subtitle_window::State::default(),
-            overlay_text: String::new(),
-            overlay_source: String::new(),
-            overlay_time: None,
-            overlay_kind: None,
             glossary_input: String::new(),
             search: String::new(),
             children: Vec::new(),
@@ -520,6 +517,7 @@ impl App {
             readout: readout::ReadoutState::default(),
             ocr: screen_ocr::OcrState::default(),
             details_open: false,
+            reveal: None,
             native_window: None,
             window_place: None,
             window_minimized: false,
@@ -592,14 +590,13 @@ impl App {
             tab: Tab::default(),
             input: String::new(),
             output: String::new(),
-            status: if load_error.is_empty() {
-                "画面・文章・再生音声を手元で翻訳します。".into()
-            } else {
-                load_error
-            },
+            status: load_error,
             rows,
             journal,
             journal_error,
+            earlier: Earlier::default(),
+            earlier_reads: 0,
+            history: ui::HistoryView::default(),
             next_id,
             tx,
             rx,
@@ -640,7 +637,6 @@ impl App {
             last_caption: None,
             pending_caption: None,
             last_live_text: String::new(),
-            last_live_id: None,
             current_live_id: None,
             live_chat: chat::State::default(),
             window_mode: window_mode::MiniWindowState::default(),
@@ -650,10 +646,6 @@ impl App {
             document: document::DocumentState::default(),
             paragraph_tools: paragraph_tools::ToolsState::default(),
             subtitle_window: subtitle_window::State::default(),
-            overlay_text: String::new(),
-            overlay_source: String::new(),
-            overlay_time: None,
-            overlay_kind: None,
             glossary_input,
             search: String::new(),
             children: Vec::new(),
@@ -682,6 +674,7 @@ impl App {
             readout: readout::ReadoutState::default(),
             ocr: screen_ocr::OcrState::default(),
             details_open: false,
+            reveal: None,
             native_window: None,
             window_place: usable_place(
                 cc.storage
@@ -697,66 +690,33 @@ impl App {
         app.initialize_paragraph_tools();
         app
     }
-    fn translate(
-        &mut self,
-        text: String,
-        lane: Lane,
-        start_ms: u64,
-        end_ms: u64,
-        kind: &str,
-        reuse: Option<u64>,
-    ) {
+    fn translate(&mut self, text: String, kind: &str) {
         if text.trim().is_empty() {
             return;
         }
         let generation = self.source_generation(kind);
-        let id = reuse.unwrap_or_else(|| {
-            let id = self.next_id;
-            self.next_id += 1;
-            id
+        let id = self.next_id;
+        self.next_id += 1;
+        self.rows.push(Row {
+            record: Record {
+                id,
+                start_ms: 0,
+                end_ms: 0,
+                source: text.clone(),
+                translation: String::new(),
+                standard_translation: None,
+                kind: kind.into(),
+                video_id: String::new(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                paragraph: None,
+            },
+            pending: true,
+            error: None,
+            generation,
         });
-        if let Some(row) = self.rows.iter_mut().find(|r| r.record.id == id) {
-            row.record.source = text.clone();
-            row.record.end_ms = end_ms;
-            row.record.translation.clear();
-            row.pending = true;
-            row.error = None;
-            row.generation = generation;
-        } else {
-            self.rows.push(Row {
-                record: Record {
-                    id,
-                    start_ms,
-                    end_ms,
-                    source: text.clone(),
-                    translation: String::new(),
-                    standard_translation: None,
-                    kind: kind.into(),
-                    video_id: if kind == "YouTube" {
-                        self.video_id.clone()
-                    } else {
-                        String::new()
-                    },
-                    created_at: chrono::Local::now().to_rfc3339(),
-                    paragraph: None,
-                },
-                pending: true,
-                error: None,
-                generation,
-            });
-        }
-        if lane == Lane::Manual {
-            self.manual_busy = Some(id);
-            self.output.clear();
-            self.mini.result_begins();
-        } else {
-            self.live_busy = Some(id);
-            self.current_live_id = Some(id);
-            if kind == "YouTube" {
-                self.last_live_id = Some(id);
-                self.last_live_text = text.clone();
-            }
-        }
+        self.manual_busy = Some(id);
+        self.output.clear();
+        self.mini.result_begins();
         let options = self.settings.translation.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -770,10 +730,8 @@ impl App {
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Event::Done {
                 id,
-                lane,
                 result,
                 elapsed: start.elapsed().as_secs_f32(),
-                generation,
             });
         });
     }
@@ -785,17 +743,26 @@ impl App {
         if self.manual_busy.is_some() {
             return;
         }
-        self.translate(self.input.clone(), Lane::Manual, 0, 0, "文章", None);
+        self.translate(self.input.clone(), "文章");
     }
     fn manual_output_ready(&self) -> bool {
         self.manual_busy.is_none() && !self.output.is_empty()
+    }
+    fn mini_refusal(&self) -> Option<&'static str> {
+        if !self.backend_ready {
+            Some("モデルの準備ができると、ミニ表示を使えます。")
+        } else if self.tab == Tab::Setup {
+            Some("モデルの画面では、ミニ表示を使えません。")
+        } else {
+            None
+        }
     }
     fn enter_mini_view(&mut self, ctx: &egui::Context) {
         if self.window_mode.is_mini() || self.close_after_restore.is_some() {
             return;
         }
-        if !self.backend_ready || self.tab == Tab::Setup {
-            self.status = "モデルの準備ができると、ミニ表示を使えます。".into();
+        if let Some(why) = self.mini_refusal() {
+            self.status = why.into();
             return;
         }
         self.open_mini();
@@ -921,7 +888,7 @@ impl App {
                 .last_caption
                 .is_some_and(|i| i.elapsed() < Duration::from_secs(5))
     }
-    fn overlay_allowed(&self, kind: &str, generation: u64) -> bool {
+    fn may_read_aloud(&self, kind: &str, generation: u64) -> bool {
         match LiveKind::from_record(kind) {
             Some(LiveKind::Audio) => {
                 self.audio_enabled && generation == self.audio_generation && !self.captions_fresh()
@@ -932,14 +899,6 @@ impl App {
                     && generation == self.caption_generation
             }
             None => false,
-        }
-    }
-    fn clear_overlay(&mut self, kind: Option<LiveKind>) {
-        if kind.is_none() || self.overlay_kind == kind {
-            self.overlay_text.clear();
-            self.overlay_source.clear();
-            self.overlay_time = None;
-            self.overlay_kind = None;
         }
     }
     fn archive_current_live(&mut self, kind: Option<LiveKind>) {
@@ -986,7 +945,6 @@ impl App {
         self.pending_audio = None;
         self.pending_transcript = None;
         self.clear_streaming_audio();
-        self.clear_overlay(Some(LiveKind::Audio));
         self.archive_current_live(Some(LiveKind::Audio));
     }
     fn set_caption_enabled(&mut self, enabled: bool) {
@@ -1004,8 +962,6 @@ impl App {
         self.last_caption = None;
         self.pending_caption = None;
         self.last_live_text.clear();
-        self.last_live_id = None;
-        self.clear_overlay(Some(LiveKind::Caption));
         self.archive_current_live(Some(LiveKind::Caption));
     }
     fn accept_caption(&mut self, caption: bridge::Caption) {
@@ -1014,10 +970,8 @@ impl App {
         }
         if caption.video_id != self.video_id || caption.epoch != self.caption_epoch {
             self.caption_generation += 1;
-            self.clear_overlay(Some(LiveKind::Caption));
             self.archive_current_live(Some(LiveKind::Caption));
             self.pending_caption = None;
-            self.last_live_id = None;
             self.last_live_text.clear();
             self.last_caption = None;
             self.video_id = caption.video_id.clone();
@@ -1030,7 +984,6 @@ impl App {
             // Pausing a player does not complete an unfinished sentence. Keep
             // the paragraph for resume; explicit source OFF still flushes it.
             self.pending_caption = None;
-            self.clear_overlay(Some(LiveKind::Caption));
         } else {
             self.document_close(plamo_translate::live_text::SourceKind::Audio);
             self.last_caption = Some(Instant::now());
@@ -1039,7 +992,6 @@ impl App {
             if self.asr_busy {
                 self.asr_caption_suppressed = true;
             }
-            self.clear_overlay(Some(LiveKind::Audio));
         }
     }
     fn accept_ocr(&mut self, text: String) {
@@ -1114,11 +1066,9 @@ impl App {
         self.pending_transcript = None;
         self.clear_streaming_audio();
         self.pending_caption = None;
-        self.last_live_id = None;
         self.last_live_text.clear();
         self.last_caption = None;
         self.caption_paused = true;
-        self.clear_overlay(None);
         self.archive_current_live(None);
         self.live_chat.clear();
         // A new timeline clears only the subtitle content, preserving the
@@ -1132,17 +1082,7 @@ impl App {
         self.subtitle_window
             .update(Some(&stamp), None, subtitle_window::Playback::Stopped);
     }
-    fn toggle_audio(&mut self) {
-        if !self.audio_enabled && !self.asr_ready {
-            self.audio_start_requested = true;
-            self.prepare_audio();
-            return;
-        }
-        if self.audio_enabled {
-            self.stop_audio();
-            self.status = "音声認識を停止しました。保存済みの訳文は残っています。".into();
-            return;
-        }
+    fn start_audio(&mut self) {
         if self.settings.asr_backend == "nemotron" {
             self.start_streaming_audio();
             return;
@@ -1208,23 +1148,12 @@ impl App {
                 }
                 Event::Done {
                     id,
-                    lane,
                     result,
                     elapsed,
-                    generation,
                 } => {
-                    if lane == Lane::Manual && self.manual_busy == Some(id) {
+                    if self.manual_busy == Some(id) {
                         self.manual_busy = None;
                     }
-                    if lane == Lane::Live && self.live_busy == Some(id) {
-                        self.live_busy = None;
-                    }
-                    let show_overlay = lane == Lane::Live
-                        && self
-                            .rows
-                            .iter()
-                            .find(|r| r.record.id == id)
-                            .is_some_and(|r| self.overlay_allowed(&r.record.kind, generation));
                     let mut read_text = None;
                     // How a text translation ended: true when it has a result.
                     let mut manual_done = None;
@@ -1232,21 +1161,12 @@ impl App {
                         row.pending = false;
                         match result {
                             Ok(text) => {
-                                if self.settings.auto_read && (lane == Lane::Manual || show_overlay)
-                                {
+                                if self.settings.auto_read {
                                     read_text = Some(text.clone());
                                 }
                                 row.record.translation = text.clone();
-                                if lane == Lane::Manual {
-                                    self.output = text.clone();
-                                    manual_done = Some(true);
-                                }
-                                if show_overlay {
-                                    self.overlay_text = text;
-                                    self.overlay_source = row.record.source.clone();
-                                    self.overlay_time = Some(Instant::now());
-                                    self.overlay_kind = LiveKind::from_record(&row.record.kind);
-                                }
+                                self.output = text;
+                                manual_done = Some(true);
                                 if let Some(journal) = &self.journal
                                     && let Err(e) = journal.append(&row.record)
                                 {
@@ -1256,14 +1176,10 @@ impl App {
                             }
                             Err(error) => {
                                 row.record.translation.clear();
-                                if lane == Lane::Manual {
-                                    self.output.clear();
-                                }
+                                self.output.clear();
                                 row.error = Some(error.clone());
                                 self.status = error;
-                                if lane == Lane::Manual {
-                                    manual_done = Some(false);
-                                }
+                                manual_done = Some(false);
                             }
                         }
                     }
@@ -1273,9 +1189,7 @@ impl App {
                         None => {}
                     }
                     if let Some(text) = read_text {
-                        // read_text is populated for Live only after the
-                        // existing generation/freshness gate show_overlay.
-                        self.auto_read_translation(text, lane == Lane::Live);
+                        self.auto_read_translation(text, false);
                     }
                     self.archive_completed_audio_for_draft();
                 }
@@ -1367,6 +1281,15 @@ impl App {
                     self.file_busy = false;
                     self.status = result.unwrap_or_else(|e| format!("ファイル翻訳: {e}"));
                 }
+                Event::Earlier { generation, result } => {
+                    // 「クリア」 drops a read that is still going.
+                    if matches!(self.earlier, Earlier::Reading(reading) if reading == generation) {
+                        self.earlier = match result {
+                            Ok(talks) => Earlier::Read(talks),
+                            Err(error) => Earlier::Failed(error),
+                        };
+                    }
+                }
                 Event::Info(info) => self.status = info,
                 Event::Readout(event) => self.accept_readout_event(event),
                 Event::Hardware(result) => {
@@ -1397,7 +1320,7 @@ impl App {
         }
         if let Some(text) = self.take_ready_ocr() {
             self.input = text;
-            self.translate(self.input.clone(), Lane::Manual, 0, 0, "画面OCR", None);
+            self.translate(self.input.clone(), "画面OCR");
         }
         self.kick_screen_ocr();
         while let Ok(caption) = self.bridge_rx.try_recv() {
@@ -1466,12 +1389,6 @@ impl App {
                 });
             }
         }
-        if self
-            .overlay_time
-            .is_some_and(|i| i.elapsed() > Duration::from_secs(12))
-        {
-            self.clear_overlay(None);
-        }
         while let Ok(event) = global_hotkey::GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
                 self.press_hotkey(ctx, event.id);
@@ -1485,7 +1402,11 @@ impl App {
         use global_hotkey::hotkey::{Code, HotKey, Modifiers};
         let ctrl_alt = |code| HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), code).id();
         if id == ctrl_alt(Code::KeyT) {
-            self.capture(ctx);
+            if self.can_read_range() {
+                self.capture(ctx);
+            } else if !self.backend_ready {
+                self.status = "モデルの準備ができると、範囲翻訳を使えます。".into();
+            }
         }
         if id == ctrl_alt(Code::KeyL) {
             self.toggle_listening(ctx);
@@ -1565,6 +1486,25 @@ impl App {
             Ok(()) => self.status = "履歴を書き出しました。".into(),
             Err(e) => self.status = e.to_string(),
         }
+    }
+    fn read_earlier_talks(&mut self) {
+        let Some(journal) = &self.journal else {
+            return;
+        };
+        self.earlier_reads += 1;
+        let generation = self.earlier_reads;
+        // The worker only reads; the app's own journal stays the one writer.
+        let journal = Journal {
+            path: journal.path.clone(),
+        };
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = journal
+                .earlier_talks(plamo_translate::journal::LOAD_LIMIT)
+                .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(Event::Earlier { generation, result });
+        });
+        self.earlier = Earlier::Reading(generation);
     }
     fn translate_file(&mut self) {
         let Some(input) = rfd::FileDialog::new()
@@ -1830,29 +1770,7 @@ impl eframe::App for App {
         if ctx.input(|i| !i.raw.dropped_files.is_empty()) {
             self.open_dropped_file(ctx);
         }
-        self.children.retain_mut(|child| match child.try_wait() {
-            Ok(Some(status)) => {
-                if self.backend_pid == Some(child.id()) {
-                    self.backend_pid = None;
-                    self.backend_loading = false;
-                    self.backend_ready = false;
-                    self.backend_started_at = None;
-                }
-                if self.asr_pid == Some(child.id()) {
-                    self.asr_pid = None;
-                    self.asr_started_at = None;
-                    self.asr_ready = false;
-                    self.audio_start_requested = false;
-                }
-                if !status.success() {
-                    self.status =
-                        "モデルの起動に失敗しました。保存先のlogsを確認してください。".into();
-                    self.service_error = self.status.clone();
-                }
-                false
-            }
-            _ => true,
-        });
+        self.reap_children();
         ctx.request_repaint_after(Duration::from_millis(
             if self.audio_enabled
                 || self.caption_enabled
@@ -1977,7 +1895,7 @@ fn timeline_srt(records: &[Record]) -> Result<String> {
     });
     anyhow::ensure!(
         same_source,
-        "音声とYouTube、または複数の動画が混在する履歴はSRTに書き出せません。TXTかJSONを選んでください。"
+        "SRTに書き出せるのは、PC音声だけ、または1本のYouTube動画だけの履歴です。TXTかJSONを選んでください。"
     );
     Ok(subtitles::to_srt(
         &timed
@@ -2501,8 +2419,7 @@ fn render_youtube_views(folder: &Path) -> Result<()> {
 enum Overlay {
     Nothing,
     Menu,
-    /// The menu, with the submenu of the row 入力の切り替え open.
-    InputMenu,
+    Submenu(&'static str),
     Details,
     NoModel,
     Readout,
@@ -2519,7 +2436,7 @@ enum Listening {
 }
 
 /// What a preview of the mini view shows.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 enum MiniScene {
     /// Listening, with a paragraph still forming at the end of the talk.
     Live,
@@ -2533,8 +2450,7 @@ enum MiniScene {
     /// The reader is at the first message while new ones come in.
     NewMessages,
     Menu,
-    /// The menu, with the submenu of the row 入力の切り替え open.
-    InputMenu,
+    Submenu(&'static str),
     /// The result card: with a translation, while a picture is read, and
     /// after a reading that found no text.
     Result,
@@ -2542,12 +2458,29 @@ enum MiniScene {
     Failure,
 }
 
+/// Two screens, so that a menu has a choice of screen to read. They are
+/// fixtures, because previews never look at the machine.
+fn two_screens() -> Vec<platform::Screen> {
+    [(1, "DISPLAY1"), (2, "DISPLAY2")]
+        .map(|(id, name)| platform::Screen {
+            id,
+            name: name.into(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale: 1.0,
+        })
+        .into()
+}
+
 /// The mini view in each of its states, at the size it opens at and at its
-/// smallest. The screens are fixtures, because previews never look at the
-/// machine.
+/// smallest.
 fn render_mini_views(folder: &Path) -> Result<()> {
     let usual = window_mode::MiniWindowState::default().mini_size();
     let smallest = window_mode::MINI_MIN;
+    let inputs = MiniScene::Submenu("入力の切り替え");
+    let others = MiniScene::Submenu(ui::OTHER_FEATURES);
     for (name, size, scene) in [
         ("06-mini-live", usual, MiniScene::Live),
         ("07-mini-draft", usual, MiniScene::Draft),
@@ -2557,12 +2490,14 @@ fn render_mini_views(folder: &Path) -> Result<()> {
         ("11-mini-translating", usual, MiniScene::Translating),
         ("39-mini-stopped", usual, MiniScene::Stopped),
         ("40-mini-menu", smallest, MiniScene::Menu),
-        ("41-mini-input-menu", usual, MiniScene::InputMenu),
+        ("41-mini-input-menu", usual, inputs),
         ("42-mini-readout", usual, MiniScene::Readout),
         ("43-mini-reading", usual, MiniScene::Reading),
         ("44-mini-failure", usual, MiniScene::Failure),
         ("45-mini-new-messages", usual, MiniScene::NewMessages),
-        ("46-mini-input-menu-minimum", smallest, MiniScene::InputMenu),
+        ("46-mini-input-menu-minimum", smallest, inputs),
+        ("48-mini-other-features", usual, others),
+        ("49-mini-other-features-minimum", smallest, others),
     ] {
         let ctx = egui::Context::default();
         ui::configure_theme(&ctx);
@@ -2613,33 +2548,19 @@ fn render_mini_views(folder: &Path) -> Result<()> {
                 app.current_live_id = Some(10);
                 app.live_chat.reading_from_start(7);
             }
-            MiniScene::Menu | MiniScene::InputMenu => {
-                app.screens = [(1, "DISPLAY1"), (2, "DISPLAY2")]
-                    .map(|(id, name)| platform::Screen {
-                        id,
-                        name: name.into(),
-                        x: 0,
-                        y: 0,
-                        width: 1920,
-                        height: 1080,
-                        scale: 1.0,
-                    })
-                    .into();
+            MiniScene::Menu | MiniScene::Submenu(_) => {
+                app.screens = two_screens();
                 // The menu fades in; the picture shows it after it has.
                 ctx.style_mut(|style| style.animation_time = 0.0);
-                if scene == MiniScene::InputMenu {
+                if let MiniScene::Submenu(row) = scene {
                     // A context of its own finds the row, so that the pointer
                     // can rest on it and open the submenu.
                     let probe = egui::Context::default();
                     ui::configure_theme(&probe);
                     open_menu(&probe);
-                    pointer = preview::locate(
-                        &probe,
-                        size.x as u32,
-                        size.y as u32,
-                        "入力の切り替え",
-                        |ctx| app.render_ui(ctx),
-                    );
+                    pointer = preview::locate(&probe, size.x as u32, size.y as u32, row, |ctx| {
+                        app.render_ui(ctx)
+                    });
                 }
                 open_menu(&ctx);
             }
@@ -2679,11 +2600,87 @@ fn render_mini_views(folder: &Path) -> Result<()> {
     Ok(())
 }
 
+fn render_earlier_talk_views(folder: &Path) -> Result<()> {
+    use plamo_translate::journal::Talk;
+    let record = |id: u64, kind: &str, at: &str, source: &str, translation: &str| Record {
+        id,
+        start_ms: 0,
+        end_ms: 0,
+        source: source.into(),
+        translation: translation.into(),
+        standard_translation: None,
+        kind: kind.into(),
+        video_id: String::new(),
+        created_at: format!("2026-11-{at}:00+09:00"),
+        paragraph: None,
+    };
+    for (width, height) in [(1280, 880), (860, 620)] {
+        let ctx = egui::Context::default();
+        ui::configure_theme(&ctx);
+        let mut app = App::inert();
+        app.tab = Tab::Files;
+        app.backend_ready = true;
+        app.startup_decided = true;
+        app.status = "プレビュー · 接続や保存は行いません".into();
+        let opened = PathBuf::from("preview-earlier-1.jsonl");
+        app.earlier = Earlier::Read(EarlierTalks {
+            talks: vec![
+                Talk {
+                    file: opened.clone(),
+                    records: vec![
+                        record(
+                            1,
+                            "音声",
+                            "09T19:30",
+                            "The committee will meet again next month to review the data.",
+                            "委員会は来月もう一度集まり、データを確認します。",
+                        ),
+                        record(
+                            2,
+                            "音声",
+                            "09T19:31",
+                            "Questions from the press will be taken at the end.",
+                            "記者からの質問は最後に受け付けます。",
+                        ),
+                    ],
+                },
+                Talk {
+                    file: PathBuf::from("preview-earlier-2.jsonl"),
+                    records: (1..=3)
+                        .map(|id| {
+                            record(
+                                id,
+                                "YouTube",
+                                "08T10:02",
+                                "Your translations are saved, so you can come back to them later.",
+                                "翻訳は保存されるので、あとから読み返せます。",
+                            )
+                        })
+                        .collect(),
+                },
+            ],
+            older_left_out: false,
+            unreadable: 0,
+        });
+        app.history.opened.insert(opened);
+        let name = if width == 1280 {
+            "50-history-earlier.png".to_owned()
+        } else {
+            format!("50-history-earlier-{width}x{height}.png")
+        };
+        preview::render(&ctx, &folder.join(name), width, height, |ctx| {
+            app.render_ui(ctx)
+        })?;
+    }
+    Ok(())
+}
+
 fn render_demo_views(folder: &Path) -> Result<()> {
     fs::create_dir_all(folder)?;
     render_long_paragraph_views(folder)?;
     render_setup_views(folder)?;
     render_youtube_views(folder)?;
+    render_earlier_talk_views(folder)?;
     let nothing_saved = tempfile::tempdir()?;
     for (viewport_width, viewport_height) in [(1280, 880), (860, 620), (2560, 1369)] {
         for (name, tab, filled, overlay, listening) in [
@@ -2769,7 +2766,7 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 "33-input-menu",
                 Tab::Live,
                 true,
-                Overlay::InputMenu,
+                Overlay::Submenu("入力の切り替え"),
                 Listening::PcAudio,
             ),
             (
@@ -2785,6 +2782,13 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 true,
                 Overlay::Error,
                 Listening::Stopped,
+            ),
+            (
+                "47-other-features",
+                Tab::Live,
+                true,
+                Overlay::Submenu(ui::OTHER_FEATURES),
+                Listening::Both,
             ),
         ] {
             let ctx = egui::Context::default();
@@ -2886,31 +2890,33 @@ fn render_demo_views(folder: &Path) -> Result<()> {
                 app.live_chat.toggle_original(3, 0);
             }
             let mut pointer = None;
+            if matches!(
+                overlay,
+                Overlay::Menu | Overlay::Submenu(_) | Overlay::Details
+            ) {
+                ctx.style_mut(|style| style.animation_time = 0.0);
+            }
             match overlay {
                 Overlay::Nothing => {}
                 Overlay::Menu => egui::Popup::open_id(&ctx, egui::Id::new(ui::MORE_MENU)),
-                Overlay::InputMenu => {
+                Overlay::Submenu(row) => {
                     let open_menu = |ctx: &egui::Context| {
                         egui::Popup::open_id(ctx, egui::Id::new(ui::MORE_MENU))
                     };
+                    app.screens = two_screens();
                     // A context of its own finds the row, so that the pointer can
                     // rest on it and open the submenu. Without the row, the menu
                     // is drawn as it is.
                     let probe = egui::Context::default();
                     ui::configure_theme(&probe);
                     open_menu(&probe);
-                    pointer = preview::locate(
-                        &probe,
-                        viewport_width,
-                        viewport_height,
-                        "入力の切り替え",
-                        |ctx| app.render_ui(ctx),
-                    );
+                    pointer =
+                        preview::locate(&probe, viewport_width, viewport_height, row, |ctx| {
+                            app.render_ui(ctx)
+                        });
                     open_menu(&ctx);
                 }
                 Overlay::Details => {
-                    // The window fades in; the picture shows it after it has.
-                    ctx.style_mut(|style| style.animation_time = 0.0);
                     app.settings.readout_enabled = true;
                     app.details_open = true;
                 }
@@ -2954,7 +2960,6 @@ fn render_demo_views(folder: &Path) -> Result<()> {
         app.asr_ready = true;
         app.tab = Tab::Live;
         app.startup_decided = true;
-        app.settings.show_original = false;
         app.status = "プレビュー · 公開用の架空例文です".into();
         for (id, source, target, state, start, end) in [
             (
@@ -3181,8 +3186,8 @@ fn main() -> eframe::Result {
                     .expect("Bundled application icon"),
             )
             .with_title("Talk風Live翻訳 | translated by PLaMo")
-            .with_inner_size([1180.0, 800.0])
-            .with_min_inner_size([860.0, 620.0]),
+            .with_inner_size(window_mode::NORMAL_SIZE)
+            .with_min_inner_size(window_mode::NORMAL_MIN),
         ..Default::default()
     };
     eframe::run_native(
@@ -3333,10 +3338,8 @@ mod tests {
         assert!(!a.manual_output_ready());
         a.tx.send(Event::Done {
             id,
-            lane: Lane::Manual,
             result: Err("stream interrupted".into()),
             elapsed: 0.0,
-            generation: 0,
         })
         .unwrap();
         a.process(&ctx);
@@ -3368,10 +3371,8 @@ mod tests {
         assert!(!a.manual_output_ready());
         a.tx.send(Event::Done {
             id,
-            lane: Lane::Manual,
             result: Ok("complete translation".into()),
             elapsed: 0.0,
-            generation: 0,
         })
         .unwrap();
         a.process(&ctx);
@@ -3381,25 +3382,19 @@ mod tests {
         assert!(a.rows[0].error.is_none());
     }
     #[test]
-    fn source_toggles_only_invalidate_their_own_generation_and_overlay() {
+    fn source_toggles_only_invalidate_their_own_generation() {
         let mut a = app();
         a.audio_enabled = true;
-        a.overlay_kind = Some(LiveKind::Audio);
-        a.overlay_text = "audio stays".into();
         a.set_caption_enabled(true);
         assert_eq!(a.audio_generation, 7);
         assert_eq!(a.caption_generation, 12);
-        assert_eq!(a.overlay_text, "audio stays");
-        a.overlay_kind = Some(LiveKind::Caption);
-        a.overlay_text = "caption stays".into();
         a.stop_audio();
         assert_eq!(a.audio_generation, 8);
         assert_eq!(a.caption_generation, 12);
-        assert_eq!(a.overlay_text, "caption stays");
         a.caption_paused = false;
-        assert!(a.overlay_allowed("YouTube", 12));
-        assert!(!a.overlay_allowed("YouTube", 11));
-        assert!(!a.overlay_allowed("音声", 8));
+        assert!(a.may_read_aloud("YouTube", 12));
+        assert!(!a.may_read_aloud("YouTube", 11));
+        assert!(!a.may_read_aloud("音声", 8));
     }
     #[test]
     fn active_live_result_is_archived_only_for_its_source_or_a_new_audio_draft() {
@@ -3596,34 +3591,25 @@ mod tests {
         let mut a = app();
         a.caption_enabled = true;
         a.audio_enabled = true;
-        a.last_live_id = Some(42);
         a.current_live_id = Some(42);
         a.last_live_text = "same caption".into();
         a.last_caption = Some(Instant::now());
         a.caption_paused = false;
-        a.overlay_kind = Some(LiveKind::Caption);
-        a.overlay_text = "old caption".into();
         let last = a.last_caption;
         a.accept_caption(caption("same caption", true));
         assert_eq!(a.caption_generation, 11);
-        assert_eq!(a.last_live_id, Some(42));
         assert_eq!(a.current_live_id, Some(42));
         assert_eq!(a.last_live_text, "same caption");
         assert_eq!(a.last_caption, last);
         assert!(!a.captions_fresh());
-        assert!(a.overlay_text.is_empty());
-        assert!(!a.overlay_allowed("YouTube", 11));
-        assert!(a.overlay_allowed("音声", 7));
-        a.overlay_kind = Some(LiveKind::Audio);
-        a.overlay_text = "audio".into();
+        assert!(!a.may_read_aloud("YouTube", 11));
+        assert!(a.may_read_aloud("音声", 7));
         a.accept_caption(caption("", false));
-        assert_eq!(a.overlay_text, "audio");
         assert_eq!(a.caption_generation, 11);
         a.accept_caption(caption("same caption", false));
         assert!(a.captions_fresh());
-        assert_eq!(a.last_live_id, Some(42));
         assert_eq!(a.last_live_text, "same caption");
-        assert!(!a.overlay_allowed("音声", 7));
+        assert!(!a.may_read_aloud("音声", 7));
     }
     #[test]
     fn latest_audio_persists_while_busy_and_asr_does_not_wait_for_translation() {
@@ -3773,7 +3759,7 @@ mod tests {
         assert!(a.caption_enabled);
 
         // A picture is read first. An unprepared recogniser keeps it waiting,
-        // and the manual lane is busy, so nothing runs in this test.
+        // and a text translation is still running, so nothing starts in this test.
         let mut a = chat();
         a.settings.ocr_backend = "indra".into();
         a.manual_busy = Some(1);
@@ -3845,8 +3831,20 @@ mod tests {
         let audio = record(1, "音声", "", 0, 1000);
         let video_a = record(2, "YouTube", "a", 0, 1000);
         let video_b = record(3, "YouTube", "b", 1000, 2000);
-        assert!(timeline_srt(&[audio.clone(), video_a.clone()]).is_err());
-        assert!(timeline_srt(&[video_a.clone(), video_b]).is_err());
+        let screen = record(5, "画面", "screen:1", 0, 1000);
+        for history in [
+            vec![audio.clone(), video_a.clone()],
+            vec![video_a.clone(), video_b],
+            vec![screen.clone()],
+            vec![audio.clone(), screen],
+        ] {
+            assert_eq!(
+                timeline_srt(&history).unwrap_err().to_string(),
+                "SRTに書き出せるのは、PC音声だけ、または1本のYouTube動画だけの履歴です。TXTかJSONを選んでください。",
+                "{:?}",
+                history.iter().map(|r| &r.kind).collect::<Vec<_>>()
+            );
+        }
         assert!(timeline_srt(&[video_a]).is_ok());
         let audio_next = record(4, "音声", "", 1000, 2000);
         assert!(timeline_srt(&[audio, audio_next]).is_ok());
@@ -3954,10 +3952,8 @@ mod tests {
         });
         a.tx.send(Event::Done {
             id,
-            lane: Lane::Manual,
             result: Ok("完成した訳文です。".into()),
             elapsed: 0.0,
-            generation: 0,
         })
         .unwrap();
         a.process(&ctx);

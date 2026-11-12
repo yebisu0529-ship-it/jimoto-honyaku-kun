@@ -1,12 +1,12 @@
 //! The mini view is the chat in a small window, with the main window's words
 //! and its one listen button. A reading or a text translation asked for there
 //! shows its result on a card in the chat's place.
-use super::home_tests::Window;
-use super::listen_tests::{INPUTS, armed, chat_without_speech};
+use super::home_tests::{Window, key, row};
+use super::listen_tests::{INPUTS, SCREEN, armed, chat_without_speech, drawn, hint, marked};
 use super::*;
 use crate::chat::testing::{
-    box_of, cut_at_the_top, dots, filled, find_text, has_text_containing, line_cut_at_the_top,
-    press, selected, shapes, texts, wheel,
+    box_of, dots, filled, find_text, has_text_containing, line_cut_at_the_top, press, selected,
+    shapes, texts, wheel,
 };
 use plamo_translate::journal::{ParagraphMeta, ParagraphState};
 
@@ -56,33 +56,6 @@ fn mini() -> App {
     app
 }
 
-fn drawn(app: &mut App, (width, height): (f32, f32)) -> Window {
-    let mut window = Window::new(width, height);
-    window.settle(app);
-    window
-}
-
-/// A fixed message of the talk.
-fn row(id: u64, kind: &str, translation: &str) -> Row {
-    Row {
-        record: Record {
-            id,
-            start_ms: 0,
-            end_ms: 1000,
-            source: format!("Original {id}."),
-            translation: translation.into(),
-            standard_translation: None,
-            kind: kind.into(),
-            video_id: String::new(),
-            created_at: String::new(),
-            paragraph: None,
-        },
-        pending: false,
-        error: None,
-        generation: 0,
-    }
-}
-
 /// The same message while it is still being said.
 fn forming(mut row: Row) -> Row {
     row.record.paragraph = Some(ParagraphMeta {
@@ -114,16 +87,6 @@ fn in_view(window: &Window, app: &App, id: u64) -> bool {
         .any(|(text, rect, _)| *text == words && body.contains_rect(*rect))
 }
 
-fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
-    egui::Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    }
-}
-
 fn escape() -> egui::Event {
     key(egui::Key::Escape, egui::Modifiers::NONE)
 }
@@ -147,6 +110,11 @@ fn release_on(window: &mut Window, app: &mut App, label: &str) {
 fn open_menu(window: &mut Window, app: &mut App) {
     window.click(app, "⋯");
     window.settle(app);
+}
+
+fn open_other_features(window: &mut Window, app: &mut App) {
+    open_menu(window, app);
+    window.click(app, OTHER_FEATURES);
 }
 
 /// Rests the pointer on `label` after it was used elsewhere. The hover text
@@ -233,19 +201,6 @@ fn status_line(window: &Window) -> (Vec<(String, Color32)>, bool) {
     (parts, lines[0].elided)
 }
 
-/// The words in the middle of the chat while it has no message.
-fn hint(app: &mut App, size: (f32, f32)) -> String {
-    let window = drawn(app, size);
-    let panel = app.live_chat.panel().expect("the chat is drawn");
-    let inside: Vec<_> = texts(&window.output)
-        .into_iter()
-        .filter(|(_, rect, _)| panel.contains_rect(*rect))
-        .map(|(text, _, _)| text)
-        .collect();
-    assert_eq!(inside.len(), 1, "{inside:?}");
-    inside.into_iter().next().unwrap()
-}
-
 /// A text translation in flight, as `translate` leaves it once its worker has
 /// started. The test answers for the worker with `answer`.
 fn in_flight(app: &mut App, id: u64) {
@@ -279,10 +234,8 @@ fn translation_begun(app: &mut App) -> u64 {
 fn done(id: u64, result: std::result::Result<&str, &str>) -> Event {
     Event::Done {
         id,
-        lane: Lane::Manual,
         result: result.map(Into::into).map_err(Into::into),
         elapsed: 0.1,
-        generation: 0,
     }
 }
 
@@ -352,7 +305,8 @@ fn the_button_listens_in_the_chosen_input_and_stops_every_input_as_in_the_main_w
         }
         (heard, stops, armed(&app), window.has("● 聞く"))
     };
-    for (label, mode) in INPUTS {
+    let screen = (SCREEN, LiveSourceMode::Screen, (false, false));
+    for (label, mode, expected) in INPUTS.into_iter().chain([screen]) {
         let small = pressed(mode, true);
         assert_eq!(
             small,
@@ -360,13 +314,6 @@ fn the_button_listens_in_the_chosen_input_and_stops_every_input_as_in_the_main_w
             "{label}: the button of the mini view and the button of the main window differ"
         );
         let ((heard, asks, status), stops, after, listens_again) = small;
-        let expected = match mode {
-            LiveSourceMode::Auto => (true, true),
-            LiveSourceMode::Captions => (true, false),
-            LiveSourceMode::Audio => (false, true),
-            // This PC has no screen to read, and says so.
-            LiveSourceMode::Screen => (false, false),
-        };
         assert_eq!(heard, expected, "{label}: 聞く");
         assert_eq!(
             asks, expected.1,
@@ -569,17 +516,26 @@ fn a_failure_to_save_a_service_error_and_a_failed_readout_are_on_the_status_line
     );
 
     let mut app = mini();
+    app.settings.readout_enabled = true;
     app.readout.error = READOUT.into();
     let window = drawn(&mut app, USUAL);
     assert_eq!(
         status_line(&window).0,
-        [stopped, (READOUT.to_owned(), theme::ERROR)],
+        [stopped.clone(), (READOUT.to_owned(), theme::ERROR)],
         "a failure to read aloud comes last"
+    );
+    app.settings.readout_enabled = false;
+    let window = drawn(&mut app, USUAL);
+    assert_eq!(
+        status_line(&window).0,
+        [stopped],
+        "a failure to read aloud is not said while readout is off"
     );
 
     let mut app = mini();
     app.journal_error = "Could not append translation history".into();
     app.service_error = SERVICE.into();
+    app.settings.readout_enabled = true;
     app.readout.error = READOUT.into();
     let mut window = drawn(&mut app, SMALLEST);
     let (parts, cut_short) = status_line(&window);
@@ -1209,6 +1165,76 @@ fn escape_lets_go_of_selected_text_before_it_leaves_the_mini_view() {
 }
 
 #[test]
+fn escape_closes_the_menu_before_it_lets_go_of_selected_text() {
+    let mut app = mini();
+    app.rows = talk(2);
+    let mut window = drawn(&mut app, USUAL);
+    let words = window.at("1番目の訳文です。");
+    let from = words.left_center() + egui::vec2(2.0, 0.0);
+    let to = words.right_center() - egui::vec2(2.0, 0.0);
+    window.draw(&mut app, vec![egui::Event::PointerMoved(from)]);
+    window.draw(
+        &mut app,
+        vec![press(from, egui::PointerButton::Primary, true)],
+    );
+    for step in 1..=4 {
+        let at = from + (to - from) * (step as f32 / 4.0);
+        window.draw(&mut app, vec![egui::Event::PointerMoved(at)]);
+    }
+    window.draw(
+        &mut app,
+        vec![press(to, egui::PointerButton::Primary, false)],
+    );
+    open_menu(&mut window, &mut app);
+    assert!(window.has("最前面") && !selected(&window.output).is_empty());
+
+    window.draw(&mut app, vec![escape()]);
+    window.settle(&mut app);
+    assert!(!window.has("最前面"), "Esc did not close the menu");
+    assert_eq!(
+        selected(&window.output),
+        ["1番目の訳文です。"],
+        "the Esc that closed the menu let go of the selection too"
+    );
+    window.draw(&mut app, vec![escape()]);
+    window.settle(&mut app);
+    assert!(selected(&window.output).is_empty());
+    assert!(app.window_mode.is_mini());
+}
+
+#[test]
+fn the_model_screen_has_no_way_into_the_mini_view_and_says_why() {
+    let row_ink = |ready: bool, tab: Tab| {
+        let mut app = chat_without_speech();
+        app.backend_ready = ready;
+        app.tab = tab;
+        let mut window = Window::new(MAIN.0, MAIN.1);
+        window.open_menu(&mut app);
+        window.ink("ミニ表示")
+    };
+    let faded = row_ink(false, Tab::Files);
+    assert_ne!(row_ink(true, Tab::Files), faded);
+    assert_eq!(
+        row_ink(true, Tab::Setup),
+        faded,
+        "the row is not faded on the model screen"
+    );
+
+    for (ready, words) in [
+        (true, "モデルの画面では、ミニ表示を使えません。"),
+        (false, "モデルの準備ができると、ミニ表示を使えます。"),
+    ] {
+        let mut app = chat_without_speech();
+        app.backend_ready = ready;
+        app.tab = Tab::Setup;
+        let mut window = drawn(&mut app, MAIN);
+        window.draw(&mut app, vec![mini_key()]);
+        assert!(!app.window_mode.is_mini());
+        assert_eq!(app.status, words);
+    }
+}
+
+#[test]
 fn the_text_screen_brings_its_result_into_the_mini_view_and_every_other_screen_opens_the_chat() {
     let enter = |tab: Tab, prepare: fn(&mut App)| {
         let mut app = chat_without_speech();
@@ -1394,8 +1420,8 @@ fn nothing_leaves_the_window_or_overlaps_and_a_long_error_does_not_move_the_chat
         }
         assert_apart_and_inside(&around(&window, ""), size);
         assert!(
-            !cut_at_the_top(&window.output, app.live_chat.body().unwrap()),
-            "a message is cut at the top at {size:?}"
+            !line_cut_at_the_top(&window.output, app.live_chat.body().unwrap()),
+            "a line of a message is cut at the top at {size:?}"
         );
 
         // The toolbar is one row of controls 32 points tall, above the chat.
@@ -1545,6 +1571,407 @@ fn a_forming_paragraph_taller_than_the_chat_is_drawn_from_a_whole_line() {
     }
 }
 
+/// The room a bubble keeps above its first line.
+const BUBBLE_MARGIN: f32 = 9.0;
+
+/// Each line of text drawn whole inside the chat, with the text it is part of.
+fn whole_lines(output: &egui::FullOutput, body: egui::Rect) -> Vec<(&str, egui::Rect)> {
+    shapes(output)
+        .into_iter()
+        .filter_map(|(clip, shape)| match shape {
+            egui::Shape::Text(text) => Some((clip.intersect(body).expand(0.5), text)),
+            _ => None,
+        })
+        .flat_map(|(seen, text)| {
+            text.galley.rows.iter().filter_map(move |row| {
+                let line = row.rect().translate(text.pos.to_vec2());
+                seen.contains_rect(line)
+                    .then_some((text.galley.text(), line))
+            })
+        })
+        .collect()
+}
+
+/// `earlier`, a bubble that starts above the top of the chat, is drawn from
+/// its first whole line, so no more of the top is empty than a line and the
+/// margin above it, and the newest message `newest` is in view.
+fn assert_drawn_from_a_whole_line(
+    window: &Window,
+    app: &App,
+    (earlier, newest): (&str, &str),
+    size: (f32, f32),
+) {
+    let body = app.live_chat.body().expect("the chat is drawn");
+    let lines = whole_lines(&window.output, body);
+    let first = lines
+        .iter()
+        .map(|(_, line)| *line)
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .expect("a line is in view");
+    let room = first.top() - body.top();
+    assert!(
+        room < first.height() + BUBBLE_MARGIN,
+        "the top {room} points of the chat are empty at {size:?}"
+    );
+    assert!(
+        box_of(&window.output, earlier, theme::CHAT_BUBBLE).top() < body.top(),
+        "the earlier bubble starts inside the chat at {size:?}, so nothing is tested"
+    );
+    assert!(
+        lines.iter().any(|(text, _)| *text == earlier),
+        "no line of the earlier bubble is in view at {size:?}"
+    );
+    assert!(
+        !line_cut_at_the_top(&window.output, body),
+        "a line is cut at the top of the chat at {size:?}"
+    );
+    let (words, _) = find_text(&window.output, newest);
+    assert!(
+        body.contains_rect(words),
+        "the newest message is not in view at {size:?}"
+    );
+}
+
+#[test]
+fn the_bubble_above_a_growing_message_is_drawn_from_a_whole_line_instead_of_leaving_the_top_empty()
+{
+    // One sentence longer than a bubble takes, so it is a bubble of its own.
+    const LAST: &str = "直訳では分かりにくい場合は、スタッフが平易な言葉で意味を説明し、来館者がその場で質問できるように、展示室の入り口と出口に案内係を一人ずつ置きます。";
+    const GROWING: &str = "来館者はいつでも展示リストに戻れます。画面のタップ数を数えます。";
+    for size in SIZES {
+        let mut app = mini();
+        app.rows = vec![
+            row(1, "音声", &format!("試行期間は6週間です。{LAST}")),
+            forming(row(2, "音声", GROWING)),
+        ];
+        app.current_live_id = Some(2);
+        let window = drawn(&mut app, size);
+        assert_drawn_from_a_whole_line(&window, &app, (LAST, GROWING), size);
+    }
+}
+
+#[test]
+fn a_paragraph_that_ended_but_is_still_one_forming_bubble_is_drawn_from_a_whole_line() {
+    const ENDED: &str = "来館者はいつでも展示リストに戻れます。画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。フィードバックカードでは、印象に残った内容、分かりにくい箇所、今後の改善について3つの質問をします。回答は毎週金曜日にスタッフが確認します。";
+    const NEXT: &str = "次は展示室の地図です。";
+    for size in SIZES {
+        let mut app = mini();
+        // The paragraph waits for its final translation, which cuts it into
+        // bubbles. Until then it is one bubble, still forming.
+        let mut ended = forming(row(1, "音声", ENDED));
+        ended.record.paragraph.as_mut().unwrap().state = ParagraphState::Closing;
+        app.rows = vec![ended, forming(row(2, "音声", NEXT))];
+        app.current_live_id = Some(2);
+        let window = drawn(&mut app, size);
+        assert_drawn_from_a_whole_line(&window, &app, (ENDED, NEXT), size);
+        let body = app.live_chat.body().expect("the chat is drawn");
+        assert!(
+            box_of(&window.output, ENDED, theme::CHAT_BUBBLE).height() > body.height(),
+            "the paragraph that ended fits in the chat at {size:?}"
+        );
+        assert_eq!(
+            find_text(&window.output, ENDED).1,
+            theme::CHAT_TEXT_FORMING,
+            "the paragraph that ended is not drawn as forming at {size:?}"
+        );
+    }
+}
+
+/// A bubble that starts above the top of the chat, as drawn where the chat
+/// does not follow the newest message and so draws every bubble whole.
+struct Cut {
+    /// The texts painted in the bubble.
+    texts: Vec<String>,
+    /// The texts of its lines that are whole in view.
+    lines: Vec<String>,
+    /// Its dots are in view, on a line of their own under its text.
+    dots_alone: bool,
+    /// The chat that follows the newest message draws it.
+    drawn: bool,
+}
+
+/// What reached above the top of the chat while the window grew.
+#[derive(Default)]
+struct Top {
+    bubbles: Vec<Cut>,
+    /// Dates that started above the top.
+    dates: usize,
+}
+
+/// The window grows a point at a time, so the top of the chat runs through
+/// each place of a bubble of one line: the margin above the line, the line,
+/// and the margin below it.
+fn heights() -> impl Iterator<Item = f32> {
+    (SMALLEST.1 as u16..=USUAL.1 as u16).map(f32::from)
+}
+
+/// Draws the chat at `width` and each of `heights`, at `pixels_per_point`,
+/// while it follows the newest message, and again at the same place while it
+/// does not, which draws every bubble in view whole. A bubble that starts
+/// above the top is drawn only with a whole line of its text in view, as an
+/// empty strip of bubble reads as an empty message; no line or date is drawn
+/// cut; and following leaves out no line of a message that is whole in view.
+fn sweep(
+    app: &mut App,
+    width: f32,
+    pixels_per_point: f32,
+    heights: impl IntoIterator<Item = f32>,
+) -> Top {
+    let mut window = Window::new(width, SMALLEST.1);
+    window.scale(pixels_per_point);
+    // The scroll bar comes in over a few frames and narrows the chat.
+    for _ in 0..4 {
+        window.settle(app);
+    }
+    let mut top = Top::default();
+    for height in heights {
+        let size = (width, height);
+        window.resize(width, height);
+        app.settings.auto_scroll = true;
+        window.settle(app);
+        let body = app.live_chat.body().expect("the chat is drawn");
+        let offset = app.live_chat.offset();
+        let following = window.output.clone();
+        let lines = whole_lines(&following, body);
+        let drawn = filled(&following, theme::CHAT_BUBBLE);
+        for bubble in &drawn {
+            if bubble.top() < body.top() - 0.5 {
+                assert!(
+                    lines.iter().any(|(_, line)| bubble.contains_rect(*line)),
+                    "a bubble is drawn at the top without a whole line of its text at {size:?}"
+                );
+            }
+        }
+        assert!(
+            !line_cut_at_the_top(&following, body),
+            "a line is drawn cut at the top at {size:?}"
+        );
+        assert!(
+            filled(&following, theme::CHAT_PILL)
+                .iter()
+                .all(|pill| pill.top() >= body.top() - 0.5),
+            "a date is drawn cut at the top at {size:?}"
+        );
+
+        app.settings.auto_scroll = false;
+        window.draw(app, vec![]);
+        assert!(
+            app.live_chat.offset() == offset && app.live_chat.body() == Some(body),
+            "the chat moved when it stopped following at {size:?}, so nothing is compared"
+        );
+        let still = &window.output;
+        let bubbles = filled(still, theme::CHAT_BUBBLE);
+        let in_view: Vec<_> = whole_lines(still, body)
+            .into_iter()
+            .filter(|(_, line)| bubbles.iter().any(|bubble| bubble.contains_rect(*line)))
+            .collect();
+        for (text, line) in &in_view {
+            assert!(
+                lines.contains(&(*text, *line)),
+                "a line of {text} is whole in view but is not drawn while the chat follows at {size:?}"
+            );
+        }
+        let painted: Vec<_> = shapes(still)
+            .into_iter()
+            .filter_map(|(_, shape)| match shape {
+                egui::Shape::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        for bubble in bubbles {
+            if bubble.top() >= body.top() - 0.5 || bubble.bottom() <= body.top() + 0.5 {
+                continue;
+            }
+            let inside: Vec<_> = painted
+                .iter()
+                .filter(|text| bubble.contains(text.pos))
+                .collect();
+            let text_bottom = inside
+                .iter()
+                .flat_map(|text| {
+                    let y = text.pos.y;
+                    text.galley
+                        .rows
+                        .iter()
+                        .map(move |row| y + row.rect().bottom())
+                })
+                .fold(f32::MIN, f32::max);
+            top.bubbles.push(Cut {
+                texts: inside
+                    .iter()
+                    .map(|text| text.galley.text().to_owned())
+                    .collect(),
+                lines: in_view
+                    .iter()
+                    .filter(|(_, line)| bubble.contains_rect(*line))
+                    .map(|(text, _)| (*text).to_owned())
+                    .collect(),
+                dots_alone: dots(still).iter().any(|(dot, _)| {
+                    bubble.contains(*dot) && body.contains(*dot) && dot.y > text_bottom
+                }),
+                drawn: drawn.contains(&bubble),
+            });
+        }
+        top.dates += filled(still, theme::CHAT_PILL)
+            .iter()
+            .filter(|pill| pill.top() < body.top() - 0.5 && pill.bottom() > body.top() + 0.5)
+            .count();
+    }
+    top
+}
+
+#[test]
+fn no_bubble_is_drawn_at_the_top_without_a_whole_line_of_its_text_in_view() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.rows = talk(8);
+        let top = sweep(&mut app, width, 1.0, heights());
+        assert!(
+            top.bubbles.iter().any(|bubble| bubble.drawn),
+            "no bubble is drawn cut at the top at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+#[test]
+fn the_newest_message_cut_into_bubbles_leaves_no_empty_strip_at_the_top() {
+    // A finished paragraph is cut at the ends of its sentences into bubbles,
+    // and all of them are the newest message.
+    const PARAGRAPH: &str = "来館者はいつでも展示リストに戻れます。画面のタップ数を数えるだけでなく、同じ資料をもう一度見つけられるかどうかを確認します。回答は毎週金曜日にスタッフが確認し、分かりにくいと書かれた説明文は、翌週の月曜日までに平易な言葉で書き直します。";
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.rows = vec![
+            row(1, "音声", "試行期間は6週間です。"),
+            row(2, "音声", PARAGRAPH),
+        ];
+        let top = sweep(&mut app, width, 1.0, heights());
+        assert!(
+            top.bubbles.iter().any(|bubble| {
+                bubble.lines.is_empty()
+                    && bubble
+                        .texts
+                        .iter()
+                        .any(|text| PARAGRAPH.contains(text.as_str()))
+            }),
+            "no bubble of the newest message is cut at the top without a whole line in view at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+/// Words still being said that fill each line they take at `width`, so the
+/// dots after them start a line of their own. With the scroll bar in, a line
+/// of a bubble holds 11 letters at the smallest width and 16 at the usual one.
+fn filling(width: f32) -> String {
+    let letters = if width == SMALLEST.0 { 11 } else { 16 };
+    "展示室の入り口と出口に案内係を置きます"
+        .chars()
+        .cycle()
+        .take(2 * letters)
+        .collect()
+}
+
+#[test]
+fn a_message_still_forming_is_not_drawn_at_the_top_with_only_its_dots_in_view() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        let words = filling(width);
+        // The third has no words yet, only dots.
+        let mut listening = forming(row(3, "音声", ""));
+        listening.record.source.clear();
+        app.rows = vec![
+            forming(row(1, "音声", &words)),
+            forming(row(2, "音声", &words)),
+            listening,
+            forming(row(4, "音声", &words)),
+            row(5, "音声", "5番目の訳文です。"),
+        ];
+        let top = sweep(&mut app, width, 1.0, heights());
+        assert!(
+            top.bubbles.iter().any(|bubble| {
+                bubble.dots_alone && bubble.lines.is_empty() && !bubble.texts.is_empty()
+            }),
+            "no message still forming is cut at the top with only its dots in view at the width {width}, so nothing is tested"
+        );
+        assert!(
+            top.bubbles
+                .iter()
+                .any(|bubble| bubble.dots_alone && bubble.texts.is_empty()),
+            "no message of dots alone is cut at the top with its dots in view at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+#[test]
+fn a_bubble_is_drawn_at_the_top_while_its_original_or_video_time_is_whole_in_view() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.settings.live_show_original = true;
+        app.rows = (1..=6)
+            .map(|id| {
+                let mut row = row(id, "YouTube", &format!("{id}番目の字幕の訳文です。"));
+                row.record.source =
+                    format!("Caption {id} of the talk, which goes on for a while in English.");
+                row.record.start_ms = id * 7_000;
+                row
+            })
+            .collect();
+        let top = sweep(&mut app, width, 1.0, heights());
+        let video = |line: &String| line.starts_with("動画 ");
+        let original = |line: &String| line.starts_with("Caption ");
+        assert!(
+            top.bubbles
+                .iter()
+                .any(|bubble| !bubble.lines.is_empty() && bubble.lines.iter().all(video)),
+            "no bubble is cut at the top with only its video time whole in view at the width {width}, so nothing is tested"
+        );
+        assert!(
+            top.bubbles.iter().any(|bubble| {
+                bubble.lines.iter().any(original)
+                    && bubble
+                        .lines
+                        .iter()
+                        .all(|line| original(line) || video(line))
+            }),
+            "no bubble is cut at the top with only its original in view at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+#[test]
+fn a_date_cut_at_the_top_is_not_drawn() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.rows = (1..=8)
+            .map(|id| {
+                let mut row = row(id, "音声", &format!("{id}日の訳文です。"));
+                row.record.created_at = format!("2026-11-{id:02}T10:00:00+09:00");
+                row
+            })
+            .collect();
+        let top = sweep(&mut app, width, 1.0, heights());
+        assert!(
+            top.dates > 0,
+            "no date is cut at the top at the width {width}, so nothing is tested"
+        );
+    }
+}
+
+#[test]
+fn at_125_percent_no_bubble_is_drawn_at_the_top_without_a_whole_line_of_its_text_in_view() {
+    for (width, _) in SIZES {
+        let mut app = mini();
+        app.rows = talk(8);
+        // A window is a whole number of pixels, and at 125% a pixel is 0.8
+        // points.
+        let heights = (325..=450_u16).map(|pixels| f32::from(pixels) / 1.25);
+        let top = sweep(&mut app, width, 1.25, heights);
+        assert!(
+            top.bubbles.iter().any(|bubble| bubble.drawn),
+            "no bubble is drawn cut at the top at the width {width}, so nothing is tested"
+        );
+    }
+}
+
 #[test]
 fn none_of_the_old_words_of_the_mini_view_is_drawn() {
     type Change = fn(&mut App);
@@ -1606,18 +2033,15 @@ fn none_of_the_old_words_of_the_mini_view_is_drawn() {
             change(&mut app);
             let mut window = drawn(&mut app, size);
             check(&window, scene, size);
-            for behind in ["入力の切り替え", "表示"] {
+            for behind in ["入力の切り替え", "表示", OTHER_FEATURES] {
                 open_menu(&mut window, &mut app);
-                assert!(
-                    window.has("字幕ウィンドウ"),
-                    "{scene}: the menu is not open"
-                );
+                assert!(window.has("最前面"), "{scene}: the menu is not open");
                 check(&window, scene, size);
                 window.click(&mut app, behind);
                 check(&window, scene, size);
                 window.draw(&mut app, vec![escape()]);
                 window.settle(&mut app);
-                assert!(!window.has("字幕ウィンドウ"), "{scene}: the menu is open");
+                assert!(!window.has("最前面"), "{scene}: the menu is open");
             }
         }
     }
@@ -1632,24 +2056,8 @@ fn open_card(app: &mut App) {
     app.reset_screen_ocr();
 }
 
-fn two_screens() -> Vec<platform::Screen> {
-    [(1, "DISPLAY1"), (2, "DISPLAY2")]
-        .map(|(id, name)| platform::Screen {
-            id,
-            name: name.into(),
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-            scale: 1.0,
-        })
-        .into()
-}
-
-/// The 「⋯」 menu as it is drawn: its frame, and the words of its rows from
-/// the top without the arrow or the shortcut at the end of a row.
-fn menu(window: &Window) -> (egui::Rect, Vec<(String, egui::Rect)>) {
-    let frame = box_of(&window.output, "入力の切り替え", theme::SURFACE);
+fn menu(window: &Window, first: &str) -> (egui::Rect, Vec<(String, egui::Rect)>) {
+    let frame = box_of(&window.output, first, theme::SURFACE);
     let mut rows: Vec<_> = texts(&window.output)
         .into_iter()
         .filter(|(text, rect, _)| {
@@ -1659,19 +2067,6 @@ fn menu(window: &Window) -> (egui::Rect, Vec<(String, egui::Rect)>) {
         .collect();
     rows.sort_by(|a, b| a.1.center().y.total_cmp(&b.1.center().y));
     (frame, rows)
-}
-
-/// The inputs behind 入力の切り替え that are drawn as the chosen one.
-fn marked(window: &Window) -> Vec<&'static str> {
-    INPUTS
-        .iter()
-        .filter(|(label, _)| {
-            filled(&window.output, theme::ACCENT_SOFT)
-                .iter()
-                .any(|rect| rect.contains_rect(window.at(label)))
-        })
-        .map(|(label, _)| *label)
-        .collect()
 }
 
 /// Chooses `label` behind 入力の切り替え in the 「⋯」 menu, the way a pointer does.
@@ -1689,48 +2084,65 @@ fn the_menu_has_its_rows_in_order_32_points_apart_and_fits_the_smallest_window()
             app.rows = talk(2);
             app.screens = two_screens().into_iter().take(screens).collect();
             let mut window = drawn(&mut app, size);
-            assert!(!window.has("字幕ウィンドウ"), "the menu opens unasked");
+            assert!(!window.has("最前面"), "the menu opens unasked");
             assert!(
                 window.at("⋯").right() > size.0 - 30.0,
                 "⋯ is not at the right"
             );
             open_menu(&mut window, &mut app);
+            let inside = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+            let steps = |rows: &[(String, egui::Rect)], line_under: Option<&str>| {
+                for pair in rows.windows(2) {
+                    let step = pair[1].1.center().y - pair[0].1.center().y;
+                    if Some(pair[0].0.as_str()) == line_under {
+                        assert!(
+                            step > 33.0 && step < 48.0,
+                            "no separator under {}: {step}",
+                            pair[0].0
+                        );
+                    } else {
+                        assert!(
+                            (step - 32.0).abs() < 0.5,
+                            "{} is {step} under {}",
+                            pair[1].0,
+                            pair[0].0
+                        );
+                    }
+                }
+            };
 
-            let (frame, rows) = menu(&window);
+            let (frame, rows) = menu(&window, "入力の切り替え");
             assert!(
-                egui::Rect::from_min_size(egui::Pos2::ZERO, size.into()).contains_rect(frame),
+                inside.contains_rect(frame),
                 "the menu leaves the window with {screens} screens at {size:?}: {frame:?}"
             );
-            let mut expected = vec![
-                "入力の切り替え",
-                "表示",
-                "最前面",
-                "全文コピー",
-                "範囲翻訳",
-                "画面選択",
-                "字幕ウィンドウ",
-            ];
+            let words: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
+            assert_eq!(
+                words,
+                [
+                    "入力の切り替え",
+                    "表示",
+                    "最前面",
+                    "全文コピー",
+                    OTHER_FEATURES
+                ],
+                "{screens} screens at {size:?}"
+            );
+            steps(&rows, Some("全文コピー"));
+
+            window.click(&mut app, OTHER_FEATURES);
+            let (frame, rows) = menu(&window, "範囲翻訳");
+            assert!(
+                inside.contains_rect(frame),
+                "{OTHER_FEATURES} leaves the window with {screens} screens at {size:?}: {frame:?}"
+            );
+            let mut expected = vec!["範囲翻訳", "画面選択", "字幕ウィンドウ"];
             if screens == 1 {
                 expected.retain(|row| *row != "画面選択");
             }
             let words: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
             assert_eq!(words, expected, "{screens} screens at {size:?}");
-            for pair in rows.windows(2) {
-                let step = pair[1].1.center().y - pair[0].1.center().y;
-                if pair[0].0 == "全文コピー" {
-                    assert!(
-                        step > 33.0 && step < 48.0,
-                        "no separator under 全文コピー: {step}"
-                    );
-                } else {
-                    assert!(
-                        (step - 32.0).abs() < 0.5,
-                        "{} is {step} under {}",
-                        pair[1].0,
-                        pair[0].0
-                    );
-                }
-            }
+            steps(&rows, None);
             let (range, shortcut) = (window.at("範囲翻訳"), window.at("Ctrl + Alt + T"));
             assert!(
                 shortcut.left() > range.right()
@@ -1761,11 +2173,11 @@ fn the_menu_button_is_called_other_and_escape_closes_the_menu_before_the_mini_vi
         "a screen reader is not told the name of the button"
     );
     window.settle(&mut app);
-    assert!(window.has("字幕ウィンドウ"));
+    assert!(window.has("最前面"));
 
     window.draw(&mut app, vec![escape()]);
     window.settle(&mut app);
-    assert!(!window.has("字幕ウィンドウ"), "Esc did not close the menu");
+    assert!(!window.has("最前面"), "Esc did not close the menu");
     assert!(app.window_mode.is_mini(), "Esc left the mini view as well");
     window.draw(&mut app, vec![escape()]);
     assert!(
@@ -1785,7 +2197,7 @@ fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
         let inside = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
         let tops: Vec<f32> = INPUTS
             .iter()
-            .map(|(label, _)| {
+            .map(|(label, _, _)| {
                 let words = window.at(label);
                 assert!(inside.contains_rect(words), "{label} leaves the window");
                 words.top()
@@ -1794,6 +2206,10 @@ fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
         assert!(
             tops.windows(2).all(|pair| pair[0] < pair[1]),
             "the inputs are out of order at {size:?}: {tops:?}"
+        );
+        assert!(
+            !window.has(SCREEN),
+            "{SCREEN} is listed while it is not the input"
         );
         assert_eq!(marked(&window), ["自動（字幕を優先）"], "the default");
 
@@ -1815,7 +2231,7 @@ fn the_inputs_are_behind_one_row_in_order_with_the_chosen_one_marked() {
 #[test]
 fn an_input_chosen_while_stopped_waits_for_the_button_and_one_chosen_while_listening_is_on_at_once()
 {
-    for (label, mode) in INPUTS {
+    for (label, mode, on) in INPUTS {
         let mut app = mini();
         let mut window = drawn(&mut app, USUAL);
         choose(&mut window, &mut app, label);
@@ -1825,16 +2241,10 @@ fn an_input_chosen_while_stopped_waits_for_the_button_and_one_chosen_while_liste
         assert!(app.status.is_empty(), "{label}: {}", app.status);
 
         window.click(&mut app, "● 聞く");
-        let expected = match mode {
-            LiveSourceMode::Auto => (true, true),
-            LiveSourceMode::Captions => (true, false),
-            LiveSourceMode::Audio => (false, true),
-            LiveSourceMode::Screen => (false, false),
-        };
-        assert_eq!(armed(&app), expected, "{label}: 聞く");
+        assert_eq!(armed(&app), on, "{label}: 聞く");
     }
 
-    for (label, mode) in INPUTS {
+    for (label, mode, on) in INPUTS {
         let mut app = mini();
         let mut window = drawn(&mut app, USUAL);
         window.click(&mut app, "● 聞く");
@@ -1842,20 +2252,9 @@ fn an_input_chosen_while_stopped_waits_for_the_button_and_one_chosen_while_liste
         let generation = app.caption_generation;
         choose(&mut window, &mut app, label);
         assert!(app.listen_input == mode);
-        match mode {
-            LiveSourceMode::Auto => {
-                assert_eq!(armed(&app), (true, true), "{label}");
-                assert_eq!(app.caption_generation, generation, "{label} restarted");
-            }
-            LiveSourceMode::Captions => assert_eq!(armed(&app), (true, false), "{label}"),
-            LiveSourceMode::Audio => assert_eq!(armed(&app), (false, true), "{label}"),
-            LiveSourceMode::Screen => {
-                assert_eq!(
-                    app.status, NO_SCREEN,
-                    "the range to read is asked for first"
-                );
-                assert_eq!(armed(&app), (true, true), "what runs goes on until then");
-            }
+        assert_eq!(armed(&app), on, "{label}");
+        if mode == LiveSourceMode::Auto {
+            assert_eq!(app.caption_generation, generation, "{label} restarted");
         }
     }
 }
@@ -1956,7 +2355,7 @@ fn reading_a_range_from_the_menu_stays_in_the_mini_view_and_reports_on_the_card(
         let mut app = mini();
         app.backend_ready = ready;
         let mut window = drawn(&mut app, USUAL);
-        open_menu(&mut window, &mut app);
+        open_other_features(&mut window, &mut app);
         window.ink("範囲翻訳")
     };
     assert_ne!(
@@ -1969,7 +2368,7 @@ fn reading_a_range_from_the_menu_stays_in_the_mini_view_and_reports_on_the_card(
     app.tab = Tab::Files;
     app.rows = talk(2);
     let mut window = drawn(&mut app, USUAL);
-    open_menu(&mut window, &mut app);
+    open_other_features(&mut window, &mut app);
     window.click(&mut app, "範囲翻訳");
     // This PC has no screen to read, and says so.
     assert_eq!(app.status, NO_SCREEN);
@@ -1986,13 +2385,13 @@ fn the_screen_to_read_is_chosen_in_the_menu_and_the_subtitle_window_opens_from_i
     let mut app = mini();
     app.screens = two_screens();
     let mut window = drawn(&mut app, USUAL);
-    open_menu(&mut window, &mut app);
+    open_other_features(&mut window, &mut app);
     window.click(&mut app, "画面選択");
     window.click(&mut app, "2: DISPLAY2");
     assert_eq!(app.screen_index, 1);
 
     assert!(!app.subtitle_window.open);
-    open_menu(&mut window, &mut app);
+    open_other_features(&mut window, &mut app);
     window.click(&mut app, "字幕ウィンドウ");
     assert!(app.subtitle_window.open);
     assert!(app.window_mode.is_mini());

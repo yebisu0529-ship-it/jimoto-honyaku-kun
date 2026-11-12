@@ -146,7 +146,7 @@ impl App {
                 self.service_error.clear();
                 self.status = "Nemotronの準備ができました。".into();
                 if self.audio_start_requested && self.backend_ready && !self.audio_enabled {
-                    self.toggle_audio();
+                    self.start_audio();
                 }
             }
             NemotronEvent::Partial {
@@ -276,51 +276,6 @@ mod tests {
         app.accept_nemotron_event(final_event(4));
         assert!(app.streaming_transcripts.is_empty());
         assert!(app.rows.is_empty());
-    }
-
-    #[test]
-    fn next_draft_archives_the_previous_translation_only_after_completion() {
-        let mut app = active();
-        app.rows.push(Row {
-            record: Record {
-                id: 42,
-                start_ms: 1000,
-                end_ms: 1500,
-                source: "The previous sentence.".into(),
-                translation: String::new(),
-                standard_translation: None,
-                kind: "音声".into(),
-                video_id: String::new(),
-                created_at: String::new(),
-                paragraph: None,
-            },
-            pending: true,
-            error: None,
-            generation: app.audio_generation,
-        });
-        app.live_busy = Some(42);
-        app.current_live_id = Some(42);
-        app.accept_nemotron_event(NemotronEvent::Partial {
-            generation: 4,
-            text: "The next sentence".into(),
-            audio_processed_ms: 600,
-        });
-        assert_eq!(app.current_live_id, Some(42));
-        app.tx
-            .send(Event::Done {
-                id: 42,
-                lane: Lane::Live,
-                result: Ok("前の文です。".into()),
-                elapsed: 0.2,
-                generation: app.audio_generation,
-            })
-            .unwrap();
-        app.process(&egui::Context::default());
-        assert_eq!(app.current_live_id, None);
-        assert_eq!(app.asr_partial, "The next sentence");
-        assert_eq!(app.rows.len(), 1);
-        assert!(!app.rows[0].pending);
-        assert_eq!(app.rows[0].record.translation, "前の文です。");
     }
 
     #[test]

@@ -227,19 +227,28 @@ impl App {
         })
     }
 
-    /// The steps the settings ask for: the translation model always, the rest as chosen.
-    fn planned_steps(&self) -> Vec<Step> {
-        let mut steps = vec![Step::Translation];
-        for (wanted, step) in [
-            (self.settings.english_punctuation, Step::Punctuation),
-            (self.settings.asr_backend == "nemotron", Step::Speech),
-            (self.settings.readout_enabled, Step::Voice),
-        ] {
-            if wanted {
-                steps.push(step);
-            }
+    /// Whether the settings ask for this step: the translation model always, the
+    /// rest as chosen. The settings can change while the chain runs, so the chain
+    /// asks again when a step starts and when it stops.
+    pub(super) fn wants(&self, step: Step) -> bool {
+        match step {
+            Step::Translation => true,
+            Step::Punctuation => self.settings.english_punctuation,
+            Step::Speech => self.settings.asr_backend == "nemotron",
+            Step::Voice => self.settings.readout_enabled,
         }
-        steps
+    }
+
+    fn planned_steps(&self) -> Vec<Step> {
+        [
+            Step::Translation,
+            Step::Punctuation,
+            Step::Speech,
+            Step::Voice,
+        ]
+        .into_iter()
+        .filter(|step| self.wants(*step))
+        .collect()
     }
 
     pub(super) fn plan_key(&self) -> Option<PlanKey> {
@@ -363,6 +372,10 @@ impl App {
     }
 
     fn launch(&mut self, step: Step) {
+        if !self.wants(step) {
+            self.finish_step(step);
+            return;
+        }
         match step {
             Step::Translation => {
                 if self.translation_is_current() {
@@ -379,9 +392,7 @@ impl App {
                 }
             }
             Step::Speech => {
-                if self.settings.asr_backend != "nemotron" {
-                    self.finish_step(step);
-                } else if self.audio_environment_ready() {
+                if self.audio_environment_ready() {
                     self.start_asr();
                     self.finish_step(step);
                 } else {
@@ -409,7 +420,9 @@ impl App {
 
     /// The readout voice is the runtime and model, then the fixed voice made from them.
     pub(super) fn continue_voice(&mut self) {
-        if self.readout.ready.is_none() {
+        if !self.wants(Step::Voice) {
+            self.finish_step(Step::Voice);
+        } else if self.readout.ready.is_none() {
             self.begin_readout_install();
         } else if !self
             .readout
@@ -423,14 +436,16 @@ impl App {
         }
     }
 
+    /// A step's work is done. What is saved changed whether or not the chain
+    /// ran it, so the plan is measured again either way.
     pub(super) fn finish_step(&mut self, step: Step) {
+        self.setup.plan = None;
         let Some(chain) = &mut self.setup.chain else {
             return;
         };
         if !chain.complete(step) {
             return;
         }
-        self.setup.plan = None;
         if chain.is_finished() {
             self.finish_chain();
         }
@@ -438,16 +453,18 @@ impl App {
 
     /// An installer stopped. `cancelled` is the step's own cancel flag, as it was when the installer answered.
     pub(super) fn stop_step(&mut self, step: Step, cancelled: bool, error: String) {
+        if !self.wants(step) {
+            self.finish_step(step);
+            return;
+        }
+        self.setup.plan = None;
         let Some(chain) = &mut self.setup.chain else {
             return;
         };
-        let stopped = if cancelled {
-            chain.cancel(step)
+        if cancelled {
+            chain.cancel(step);
         } else {
-            chain.fail(step, error)
-        };
-        if stopped {
-            self.setup.plan = None;
+            chain.fail(step, error);
         }
     }
 

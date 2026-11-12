@@ -311,7 +311,7 @@ fn install_release(
             &staging,
             &cancel,
             &mut on_progress,
-            &executable.to_ascii_lowercase(),
+            &executable,
         )?;
         installer::atomic_write(
             &staging.join("runtime.json"),

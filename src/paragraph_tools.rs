@@ -211,10 +211,8 @@ impl App {
             }
         }
     }
-    /// The helper is ready, or the attempt failed: either settles the chain's step.
-    /// A run still going, or started again just now, leaves it waiting.
     fn punctuation_settled(&mut self) {
-        if self.paragraph_tools.engine.is_some() {
+        if self.paragraph_tools.engine.is_some() || !self.wants(Step::Punctuation) {
             self.finish_step(Step::Punctuation);
         } else if !self.paragraph_tools.error.is_empty() {
             let error = self.paragraph_tools.error.clone();
@@ -294,7 +292,7 @@ impl App {
             if ui
                 .add_enabled(
                     self.settings.english_punctuation,
-                    egui::Button::new("文章区切りの補助を準備").min_size(Vec2::new(0.0, 32.0)),
+                    ui::standard("文章区切りの補助を準備"),
                 )
                 .clicked()
             {

@@ -294,12 +294,18 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .write(true)
         .create_new(true)
         .open(&temp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&temp, path)
-        .with_context(|| format!("インストール記録を確定できません: {}", path.display()))?;
-    Ok(())
+    let written = (|| -> Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, path)
+            .with_context(|| format!("インストール記録を確定できません: {}", path.display()))?;
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written
 }
 fn hash_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
     safe_file(path)?;
@@ -454,7 +460,7 @@ fn start_stream(client: Client, url: String, offset: u64) -> mpsc::Receiver<Pack
             Ok(())
         })();
         if let Err(error) = result {
-            let _ = tx.send(Packet::Error(error.to_string()));
+            let _ = tx.send(Packet::Error(format!("{error:#}")));
         }
     });
     rx
@@ -1257,7 +1263,7 @@ pub(crate) fn unpack_runtime(
         }
     }
     ensure!(
-        files.contains_key(executable),
+        files.contains_key(&executable.to_ascii_lowercase()),
         "ZIPに{executable}がありません。"
     );
     Ok(files.into_values().collect())
@@ -2188,6 +2194,62 @@ mod tests {
         atomic_write(&path, b"old").unwrap();
         atomic_write(&path, b"new").unwrap();
         assert_eq!(fs::read(path).unwrap(), b"new");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn a_record_that_cannot_replace_its_file_leaves_no_temporary_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = Temp::new();
+        let path = temp.0.join("manifest.json");
+        atomic_write(&path, b"old").unwrap();
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        assert!(atomic_write(&path, b"new").is_err());
+        drop(held);
+        let left: Vec<_> = fs::read_dir(&temp.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["manifest.json"]);
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+    }
+    #[test]
+    fn a_download_that_cannot_connect_says_why() {
+        let temp = Temp::new();
+        let closed = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let spec = artifact(format!("http://{closed}/asset"), b"abcdef");
+        let error = download(&spec, &temp.0.join(&spec.name), &AtomicBool::new(false)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("tcp connect error"), "{message}");
+    }
+    #[test]
+    fn a_runtime_whose_executable_name_has_capitals_unpacks() {
+        let temp = Temp::new();
+        let archive = temp.0.join("runtime.zip");
+        let staging = temp.0.join("runtime");
+        fs::create_dir(&staging).unwrap();
+        make_zip(&archive, "Release/Nemo-Speech.exe", false);
+        let files = unpack_runtime(
+            &[archive],
+            &staging,
+            &AtomicBool::new(false),
+            &mut |_| {},
+            "Release/Nemo-Speech.exe",
+        )
+        .unwrap();
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["Release/Nemo-Speech.exe"]
+        );
     }
     #[test]
     fn a_saved_path_is_the_expected_one_only_when_just_the_folder_in_front_differs() {

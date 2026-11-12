@@ -81,6 +81,10 @@ pub(super) struct DocumentState {
     caption: Accumulator,
     flight: Option<Flight>,
     rows: HashMap<ParagraphKey, u64>,
+    keys: HashMap<u64, ParagraphKey>,
+    /// The first row made since the last reset. Row ids only grow, so no
+    /// older row has a paragraph key.
+    first_row: Option<u64>,
     translated_source: HashMap<ParagraphKey, String>,
     saved_at: HashMap<u64, u64>,
     failures: HashMap<ParagraphKey, (u64, usize)>,
@@ -106,6 +110,8 @@ impl Default for DocumentState {
             caption: Accumulator::new(stamp(SourceKind::Caption), Policy::default()),
             flight: None,
             rows: HashMap::new(),
+            keys: HashMap::new(),
+            first_row: None,
             translated_source: HashMap::new(),
             saved_at: HashMap::new(),
             failures: HashMap::new(),
@@ -165,7 +171,7 @@ impl DocumentState {
 }
 impl App {
     /// Feed the independent subtitle viewport from accepted paragraph pairs,
-    /// never from the legacy twelve-second overlay string or a newer draft.
+    /// never from a newer draft.
     pub(super) fn document_update_subtitle_window(&mut self) {
         use super::subtitle_window::{Phase, Playback, View};
 
@@ -185,11 +191,7 @@ impl App {
             Some(_) => Playback::Running,
         };
         let to_view = |row: &Row| {
-            let (key, _) = self
-                .document
-                .rows
-                .iter()
-                .find(|(_, id)| **id == row.record.id)?;
+            let key = self.document.keys.get(&row.record.id)?;
             let stamp = &key.0;
             if expected.as_ref().is_some_and(|scope| scope != stamp) {
                 return None;
@@ -226,12 +228,24 @@ impl App {
                 phase,
             })
         };
+        let made_here = |row: &&Row| {
+            self.document
+                .first_row
+                .is_some_and(|first| row.record.id >= first)
+        };
         let current = self.document_visible_row().and_then(to_view);
-        let view = current.or_else(|| self.rows.iter().rev().find_map(to_view));
+        let view = current.or_else(|| {
+            self.rows
+                .iter()
+                .rev()
+                .take_while(made_here)
+                .find_map(to_view)
+        });
         let mut history: Vec<View> = self
             .rows
             .iter()
             .rev()
+            .take_while(made_here)
             .filter_map(to_view)
             .filter(|view| view.phase == Phase::Final)
             .take(SUBTITLE_HISTORY)
@@ -352,6 +366,8 @@ impl App {
             let id = self.next_id;
             self.next_id += 1;
             self.document.rows.insert(key.clone(), id);
+            self.document.keys.insert(id, key.clone());
+            self.document.first_row.get_or_insert(id);
             self.rows.push(Row {
                 record: Record {
                     id,
@@ -517,9 +533,6 @@ impl App {
         {
             let id = self.document_row(&snapshot);
             self.current_live_id = Some(id);
-            if kind == SourceKind::Caption {
-                self.last_live_id = Some(id);
-            }
         }
     }
     pub(super) fn document_ingest_caption(&mut self, caption: bridge::Caption) {
@@ -542,16 +555,16 @@ impl App {
         if caption.text == self.last_live_text {
             return;
         }
+        // The extension offers the visible caption again every two seconds.
+        // One that cannot join the paragraph is preserved once, not each time.
+        self.last_live_text.clone_from(&caption.text);
         match self.document.caption.push_caption(
             &caption.text,
             start,
             start.saturating_add(3_000),
             now,
         ) {
-            Ok(outcome) => {
-                self.last_live_text = caption.text;
-                self.document_apply(SourceKind::Caption, outcome);
-            }
+            Ok(outcome) => self.document_apply(SourceKind::Caption, outcome),
             Err(error) => self.document_preserve_rejected(
                 SourceKind::Caption,
                 caption.text,
@@ -732,6 +745,10 @@ impl App {
         let kind = self.document_tools_kind(request.snapshot.stamp.kind);
         if self.settings.english_punctuation
             && paragraph_tools::use_english_support(&options, kind, &request.snapshot.text)
+            && self
+                .document
+                .source(request.snapshot.stamp.kind)
+                .wants_sentence_hints(&request, now)
             && let Some(engine) = self.paragraph_tools.engine.clone()
         {
             let tx = self.tx.clone();
@@ -767,29 +784,26 @@ impl App {
             return;
         }
         let cancel = flight.cancel.clone();
-        match result {
-            Ok(punctuation) if punctuation.original == request.snapshot.text => {
-                let now = self.document.now();
-                let kind = request.snapshot.stamp.kind;
-                let outcome = self.document.source_mut(kind).apply_sentence_hints(
-                    &request,
-                    &punctuation.boundaries,
-                    now,
-                );
-                if outcome.changed {
-                    self.document_cancel_flight();
-                    self.document_apply(kind, outcome);
-                    return;
-                }
-                // A punctuation tagger can preserve every word yet still place
-                // a comma/full stop badly. Use only guarded boundary hints;
-                // PLaMo never reads the tagger's text.
+        // A failed or out-of-date answer is no failure of the helper's
+        // preparation: the paragraph is translated without its hints.
+        if let Ok(punctuation) = result
+            && punctuation.original == request.snapshot.text
+        {
+            let now = self.document.now();
+            let kind = request.snapshot.stamp.kind;
+            let outcome = self.document.source_mut(kind).apply_sentence_hints(
+                &request,
+                &punctuation.boundaries,
+                now,
+            );
+            if outcome.changed {
+                self.document_cancel_flight();
+                self.document_apply(kind, outcome);
+                return;
             }
-            other => {
-                self.paragraph_tools.error = other.err().unwrap_or_else(|| {
-                    "Punctuation source did not match the active paragraph".into()
-                });
-            }
+            // A punctuation tagger can preserve every word yet still place
+            // a comma/full stop badly. Use only guarded boundary hints;
+            // PLaMo never reads the tagger's text.
         }
         self.document_translate(row_id, request, options, cancel);
     }
@@ -995,14 +1009,8 @@ impl App {
         self.document_save(id, true);
         if final_paragraph && self.document.spoken.insert(key) {
             let name = source_name(kind, &snapshot.stamp.video_id);
-            if self.overlay_allowed(name, snapshot.stamp.generation) {
-                self.overlay_text.clone_from(&target);
-                self.overlay_source = snapshot.text;
-                self.overlay_time = Some(Instant::now());
-                self.overlay_kind = LiveKind::from_record(name);
-                if self.settings.auto_read {
-                    self.auto_read_translation(target, true);
-                }
+            if self.may_read_aloud(name, snapshot.stamp.generation) && self.settings.auto_read {
+                self.auto_read_translation(target, true);
             }
         }
         self.status = if final_paragraph {
@@ -1436,7 +1444,6 @@ mod tests {
         app.document_done(id, request, options, Ok("late duplicate".into()), 0.2);
         assert_eq!(app.rows[0].record.translation, final_text);
         assert_eq!(app.document.spoken.len(), 1);
-        assert!(app.readout.engine.is_none());
     }
 
     #[test]
@@ -1632,6 +1639,13 @@ mod tests {
         let mut app = audio_app();
         app.settings.readout_enabled = true;
         app.settings.auto_read = true;
+        app.readout.ready = Some(plamo_translate::speech_setup::SpeechInstallation {
+            executable: PathBuf::new(),
+            model: PathBuf::new(),
+            backend: String::new(),
+            voice: String::new(),
+        });
+        app.settings.tts_voice_profile = "missing".into();
         feed(
             &mut app,
             "Readers can return to this complete explanation later",
@@ -1651,7 +1665,10 @@ mod tests {
         );
         assert!(app.rows[0].is_confirmed());
         assert!(app.readout.engine.is_none());
-        assert!(app.overlay_text.is_empty());
+        assert_eq!(
+            app.readout.error, "",
+            "the paragraph is not read after its input stopped"
+        );
     }
 
     #[test]
@@ -1679,7 +1696,7 @@ mod tests {
             0.1,
         );
         assert!(
-            !app.overlay_text.is_empty(),
+            app.rows[0].is_confirmed(),
             "the paragraph reached the live view"
         );
         assert!(
@@ -2158,6 +2175,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_paragraph_the_helper_could_not_mark_is_translated_and_the_settings_say_nothing_failed() {
+        let source = "The committee will review the report and share it with the public";
+        for tagger in [
+            Err("Punctuation output changed original words, names or numbers".to_owned()),
+            Ok(plamo_translate::punctuation::PunctuationResult {
+                original: "an older revision of the paragraph".into(),
+                restored: "An older revision of the paragraph.".into(),
+                boundaries: Vec::new(),
+            }),
+        ] {
+            let (endpoint, prompts) = translation_stub(vec![Completion::Text("訳")]);
+            let mut app = App::inert();
+            app.settings.translation.endpoint = endpoint;
+            let options = app.settings.translation.clone();
+            let request = live_request(SourceKind::Caption, "video-a", source, "");
+            app.document.flight = Some(Flight {
+                row_id: 7,
+                request: request.clone(),
+                options: options.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+            });
+            app.document_punctuated(7, request, options, tagger);
+            let prompt = prompts.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(prompt.contains(source), "{prompt}");
+
+            let output = crate::chat::testing::frame(
+                &crate::chat::testing::context(),
+                egui::vec2(860.0, 900.0),
+                0.0,
+                vec![],
+                |ui| app.paragraph_tools_settings_ui(ui),
+            );
+            assert!(
+                !crate::chat::testing::has_text_containing(
+                    &output,
+                    "区切り補助を準備できませんでした"
+                ),
+                "one paragraph is shown as a failed preparation"
+            );
+        }
+    }
+
+    #[test]
+    fn a_caption_the_paragraph_cannot_take_is_kept_once_while_it_stays_on_screen() {
+        let mut app = App::inert();
+        app.caption_enabled = true;
+        app.caption_paused = false;
+        for position in [1.0, 3.0, 5.0] {
+            live_caption(&mut app, "Read the <|plamo:tag|> marker aloud", position);
+        }
+        let failed = app
+            .rows
+            .iter()
+            .filter(|row| {
+                row.record
+                    .paragraph
+                    .as_ref()
+                    .is_some_and(|p| p.state == ParagraphState::Failed)
+            })
+            .count();
+        assert_eq!(failed, 1, "the rejected caption is saved once");
+    }
+
     const COMMITTEE: &str =
         "The committee will review the report and we can share it with the public.";
     const ORDINARY: &str = "委員会は報告書を確認し、一般にも共有できます。";
@@ -2201,7 +2282,6 @@ mod tests {
         assert!(row.is_confirmed());
         assert_eq!(row.record.translation, EASY);
         assert_eq!(row.record.standard_translation.as_deref(), Some(ORDINARY));
-        assert_eq!(app.overlay_text, EASY);
         app.document_update_subtitle_window();
         assert_eq!(app.subtitle_window.view().unwrap().target, EASY);
 

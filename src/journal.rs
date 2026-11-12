@@ -8,7 +8,8 @@ use std::{
 };
 
 const PREFIX: &str = "plamo-timeline-";
-const LOAD_LIMIT: usize = 10_000;
+/// The most records a talk is read back with.
+pub const LOAD_LIMIT: usize = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +49,23 @@ pub struct Record {
 
 pub struct Journal {
     pub path: PathBuf,
+}
+
+/// The talk of one journal file: its records in id order.
+pub struct Talk {
+    /// The file the talk was read from. No two talks share it.
+    pub file: PathBuf,
+    pub records: Vec<Record>,
+}
+
+/// The talks of the journal files in a journal's folder other than its own.
+#[derive(Default)]
+pub struct EarlierTalks {
+    /// Newest file first.
+    pub talks: Vec<Talk>,
+    pub older_left_out: bool,
+    /// Files that could not be read.
+    pub unreadable: usize,
 }
 
 impl Journal {
@@ -142,6 +160,57 @@ impl Journal {
         file.sync_data()
             .context("Could not flush translation history to disk")?;
         Ok(())
+    }
+
+    /// The talks of the other journals of this application in this journal's
+    /// folder, with at most `limit` records in all. Reading changes no file.
+    pub fn earlier_talks(&self, limit: usize) -> Result<EarlierTalks> {
+        let dir = self
+            .path
+            .parent()
+            .context("The translation history has no folder")?;
+        let mut files = Vec::new();
+        let entries = fs::read_dir(dir).with_context(|| {
+            format!(
+                "Could not read the translation history directory {}",
+                dir.display()
+            )
+        })?;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_file()
+                && owned_filename(&entry.file_name().to_string_lossy())
+                && path != self.path
+            {
+                files.push(path);
+            }
+        }
+        // Names begin with the time the file was made.
+        files.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        let mut earlier = EarlierTalks::default();
+        let mut room = limit;
+        for file in files {
+            if room == 0 {
+                earlier.older_left_out = true;
+                break;
+            }
+            match load(&file) {
+                // The next start copied what was readable into a newer file.
+                Ok((_, true)) => {}
+                Ok((records, false)) if records.is_empty() => {}
+                Ok((mut records, false)) => {
+                    if records.len() > room {
+                        records.drain(..records.len() - room);
+                        earlier.older_left_out = true;
+                    }
+                    room -= records.len();
+                    earlier.talks.push(Talk { file, records });
+                }
+                Err(_) => earlier.unreadable += 1,
+            }
+        }
+        Ok(earlier)
     }
 }
 
@@ -417,6 +486,118 @@ mod tests {
         );
         fs::write(temp.0.join("unrelated.jsonl"), "not history").unwrap();
         assert!(!owned_filename("unrelated.jsonl"));
+    }
+
+    fn journal_file(dir: &Path, made: &str, lines: &str) -> PathBuf {
+        let path = dir.join(format!("{PREFIX}{made}-{}.jsonl", uuid::Uuid::new_v4()));
+        assert!(owned_filename(path.file_name().unwrap().to_str().unwrap()));
+        fs::write(&path, lines).unwrap();
+        path
+    }
+
+    fn lines(ids: impl IntoIterator<Item = u64>) -> String {
+        ids.into_iter()
+            .map(|id| format!("{}\n", serde_json::to_string(&record(id)).unwrap()))
+            .collect()
+    }
+
+    fn files(earlier: &EarlierTalks) -> Vec<&Path> {
+        earlier
+            .talks
+            .iter()
+            .map(|talk| talk.file.as_path())
+            .collect()
+    }
+
+    fn ids(earlier: &EarlierTalks) -> Vec<Vec<u64>> {
+        earlier
+            .talks
+            .iter()
+            .map(|talk| talk.records.iter().map(|record| record.id).collect())
+            .collect()
+    }
+
+    fn folder(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_earlier_talks_are_the_other_files_newest_first_and_never_the_current_one() {
+        let temp = Temp::new();
+        let older = journal_file(&temp.0, "20261108T100100000000000Z", &lines([2, 1]));
+        let newer = journal_file(&temp.0, "20261108T100200000000000Z", &lines([3]));
+        let ahead = journal_file(&temp.0, "20991231T000000000000000Z", &lines([4]));
+        fs::write(temp.0.join("unrelated.jsonl"), lines([5])).unwrap();
+        let journal = Journal::new(&temp.0).unwrap();
+        journal.append(&record(9)).unwrap();
+
+        let earlier = journal.earlier_talks(LOAD_LIMIT).unwrap();
+        assert_eq!(
+            files(&earlier),
+            [ahead.as_path(), newer.as_path(), older.as_path()]
+        );
+        assert_eq!(ids(&earlier), [vec![4], vec![3], vec![1, 2]]);
+        assert!(!earlier.older_left_out);
+        assert_eq!(earlier.unreadable, 0);
+    }
+
+    #[test]
+    fn a_file_with_a_damaged_last_line_and_an_empty_file_are_left_out_and_no_file_changes() {
+        let temp = Temp::new();
+        let kept = journal_file(&temp.0, "20261108T100100000000000Z", &lines([1]));
+        let damaged = format!("{}{{\"id\":3,\"source\":\"trunc", lines([2]));
+        journal_file(&temp.0, "20261108T100200000000000Z", &damaged);
+        journal_file(&temp.0, "20261108T100300000000000Z", "");
+        journal_file(&temp.0, "20261108T100400000000000Z", "\n\n");
+        let journal = Journal::new(&temp.0).unwrap();
+        let before = folder(&temp.0);
+
+        let earlier = journal.earlier_talks(LOAD_LIMIT).unwrap();
+        assert_eq!(files(&earlier), [kept.as_path()]);
+        assert_eq!(earlier.unreadable, 0);
+        assert_eq!(folder(&temp.0), before, "reading changed the folder");
+    }
+
+    #[test]
+    fn a_file_damaged_in_the_middle_is_counted_and_the_others_are_still_returned() {
+        let temp = Temp::new();
+        let older = journal_file(&temp.0, "20261108T100100000000000Z", &lines([1]));
+        let broken = format!("broken\n{}", lines([2]));
+        journal_file(&temp.0, "20261108T100200000000000Z", &broken);
+        let newer = journal_file(&temp.0, "20261108T100300000000000Z", &lines([3]));
+        let journal = Journal::new(&temp.0).unwrap();
+
+        let earlier = journal.earlier_talks(LOAD_LIMIT).unwrap();
+        assert_eq!(files(&earlier), [newer.as_path(), older.as_path()]);
+        assert_eq!(earlier.unreadable, 1);
+    }
+
+    #[test]
+    fn reading_stops_at_the_limit_and_says_that_older_talks_were_left_out() {
+        let temp = Temp::new();
+        journal_file(&temp.0, "20261108T100100000000000Z", &lines([1, 2]));
+        journal_file(&temp.0, "20261108T100200000000000Z", &lines([3, 4, 5]));
+        journal_file(&temp.0, "20261108T100300000000000Z", &lines([6, 7]));
+        let journal = Journal::new(&temp.0).unwrap();
+
+        let all = journal.earlier_talks(7).unwrap();
+        assert_eq!(ids(&all), [vec![6, 7], vec![3, 4, 5], vec![1, 2]]);
+        assert!(!all.older_left_out, "everything fits");
+
+        let up_to_a_talk = journal.earlier_talks(5).unwrap();
+        assert_eq!(ids(&up_to_a_talk), [vec![6, 7], vec![3, 4, 5]]);
+        assert!(up_to_a_talk.older_left_out, "the oldest file is not read");
+
+        let into_a_talk = journal.earlier_talks(4).unwrap();
+        assert_eq!(ids(&into_a_talk), [vec![6, 7], vec![4, 5]]);
+        assert!(into_a_talk.older_left_out);
     }
 
     #[test]

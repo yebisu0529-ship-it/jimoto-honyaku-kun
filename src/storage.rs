@@ -5,8 +5,7 @@ use std::{
 };
 
 /// The folder the app runs from: `PLAMO_APP_DIR`, which the launcher sets to
-/// the unzipped folder, or the exe's folder. A build under `target/release` or
-/// `target/debug` belongs to its project folder.
+/// the unzipped folder, or the folder of the exe.
 pub fn app_root() -> PathBuf {
     if let Some(root) = std::env::var_os("PLAMO_APP_DIR") {
         return root.into();
@@ -14,19 +13,24 @@ pub fn app_root() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        if dir
-            .file_name()
-            .is_some_and(|n| n == "release" || n == "debug")
-            && let Some(target) = dir.parent()
-            && target.file_name().is_some_and(|n| n == "target")
-            && let Some(project) = target.parent()
-            && project.join("Cargo.toml").exists()
-        {
-            return project.into();
-        }
-        return dir.into();
+        return exe_folder_root(dir);
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn exe_folder_root(dir: &Path) -> PathBuf {
+    let profile = dir
+        .file_name()
+        .is_some_and(|n| n == "release" || n == "debug");
+    let target = dir
+        .ancestors()
+        .skip(1)
+        .take(2)
+        .find(|folder| folder.ends_with("target"));
+    match target.and_then(Path::parent) {
+        Some(project) if profile && project.join("Cargo.toml").exists() => project.into(),
+        _ => dir.into(),
+    }
 }
 
 /// Where settings, history, models and runtimes are kept: `PLAMO_DATA_DIR`
@@ -102,6 +106,29 @@ mod tests {
         assert!(!portable.exists(), "no empty folder is left in the app");
         std::fs::create_dir_all(&portable).unwrap();
         assert_eq!(resolve(None, &portable, Some(&earlier)), portable);
+    }
+
+    #[test]
+    fn a_build_runs_from_its_project_folder_and_any_other_exe_from_its_own_folder() {
+        let base = tempfile::tempdir().unwrap();
+        let project = base.path().join("jimoto-honyaku-kun");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("Cargo.toml"), b"").unwrap();
+        for build in [
+            "target/release",
+            "target/debug",
+            "target/x86_64-pc-windows-msvc/release",
+            "target/x86_64-pc-windows-msvc/debug",
+        ] {
+            assert_eq!(exe_folder_root(&project.join(build)), project, "{build}");
+        }
+        for elsewhere in [
+            base.path().join("Talk風Live翻訳"),
+            base.path().join("downloads/target/release"),
+            project.join("target/x86_64-pc-windows-msvc/debug/deps"),
+        ] {
+            assert_eq!(exe_folder_root(&elsewhere), elsewhere);
+        }
     }
 
     #[test]

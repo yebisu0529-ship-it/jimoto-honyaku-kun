@@ -6,7 +6,7 @@ Windows 10 / 11（x64）向けのポータブル版です。
 
 1. ZIPを任意のフォルダに展開し、`Talk風Live翻訳.cmd` を開きます（RustやシステムPythonの事前導入は不要です）。
 2. 未導入のPCでは、翻訳エンジンの実行に必要な [Microsoft Visual C++ v14 再頒布可能パッケージ（x64）](https://learn.microsoft.com/ja-jp/cpp/windows/latest-supported-vc-redist?view=msvc-170) をインストールしてください。
-3. 初回起動時の画面で、PCの空き容量に応じた翻訳モデルを選択してダウンロードします。
+3. 初回の画面で、0.8B・2B・8B・31B の大きさを選び、「はじめる」を押します。GPUのメモリに入らない大きさは選べません（GPUがないPCでは、0.8Bだけを選べます）。押すと、翻訳モデル、英語の文章区切り補助（チェックを外すと省きます）、英語のPC音声の認識（Nemotron Speech）を、順に準備します。
 
 各機能の詳細や必要な空き容量、対応GPUドライバー、モデルごとのライセンス条件は [詳細仕様・動作要件・ライセンス](SPECIFICATIONS.md) をご覧ください。YouTube字幕連携の手順は [extension/README.md](../extension/README.md) に記載しています。
 

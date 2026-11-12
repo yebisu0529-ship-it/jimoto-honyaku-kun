@@ -12,6 +12,7 @@ pub(super) const AUTO_READ_HINT: &str = "新しい日本語の訳文を自動で
 
 pub(super) struct ReadoutState {
     pub ready: Option<SpeechInstallation>,
+    pub install_checked: bool,
     pub engine: Option<TtsEngine>,
     pub preparing: bool,
     pub confirm: bool,
@@ -33,6 +34,7 @@ impl Default for ReadoutState {
     fn default() -> Self {
         Self {
             ready: None,
+            install_checked: false,
             engine: None,
             preparing: false,
             confirm: false,
@@ -85,7 +87,13 @@ fn readout_options(settings: &Settings, live: bool) -> ReadoutOptions {
 }
 
 impl App {
+    /// Reading the saved install hashes the runtime and every voice, so it
+    /// waits until 「読み上げを使う」 is on: at start, or when it is turned on.
     pub(super) fn initialize_readout(&mut self) {
+        if !self.settings.readout_enabled || self.readout.install_checked {
+            return;
+        }
+        self.readout.install_checked = true;
         match speech_setup::load(&data_root().join("speech")) {
             Ok(installation) => self.readout.ready = installation,
             Err(error) => {
@@ -133,7 +141,8 @@ impl App {
         else {
             if self.settings.tts_voice_profile != "default-v1" {
                 self.readout.error =
-                    "選択した固定声がありません。設定で声を選び直してください。".into();
+                    "選択した固定声がありません。設定の「その他の機能」で声を選び直してください。"
+                        .into();
                 return;
             }
             self.readout.pending_voice_read = Some((text, live, Instant::now()));
@@ -182,7 +191,7 @@ impl App {
             if self.window_mode.is_mini() {
                 self.restore_normal_view(ctx);
             }
-            self.tab = Tab::Settings;
+            self.open_other_setting(ui::OtherSetting::Readout);
             self.readout.confirm = true;
         }
     }
@@ -328,6 +337,7 @@ impl App {
                 match result {
                     Ok(config) => {
                         self.readout.ready = Some(config);
+                        self.setup.plan = None;
                         self.readout.confirm = false;
                         self.readout.error.clear();
                         self.readout.status = "読み上げの準備ができました。".into();
@@ -385,8 +395,14 @@ impl App {
         let was_used = self.settings.readout_enabled;
         ui::toggle(ui, &mut self.settings.readout_enabled, "読み上げを使う");
         if was_used && !self.settings.readout_enabled {
+            self.readout.cancel.store(true, Ordering::Relaxed);
             self.stop_readout();
             self.readout.engine.take();
+            self.readout.status.clear();
+            self.readout.error.clear();
+        }
+        if !was_used && self.settings.readout_enabled {
+            self.initialize_readout();
         }
         if !self.settings.readout_enabled {
             ui.label(theme::caption(
@@ -518,7 +534,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.label("小型の日本語音声モデルとspeech.cppを追加します。Pythonは不要です。");
                 ui.label("初回は約1.95GBを取得します。WindowsではVulkan対応ドライバーが必要です。");
-                ui.label("展開用を含め、約4.4GiBの空き容量を用意してください。");
+                ui.label("展開用を含め、約4.4GBの空き容量を用意してください。");
                 ui.label("準備だけでは読み上げや音声の取得は始まりません。");
                 if self.readout.preparing {
                     if let Some(progress) = &self.readout.progress {

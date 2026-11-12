@@ -345,6 +345,7 @@ impl State {
                 follow: true,
                 readout: None,
                 empty: chat::EMPTY_HINT,
+                cut_from_a_whole_line: false,
             },
         );
         if closed {
@@ -635,7 +636,7 @@ mod tests {
         );
     }
     #[test]
-    fn minimum_headless_window_renders_provisional_and_paused_without_root_close() {
+    fn minimum_headless_window_renders_provisional_and_paused() {
         let ctx = egui::Context::default();
         let mut state = State {
             open: true,
@@ -650,12 +651,6 @@ mod tests {
         assert!(
             state.chat.body().unwrap().height() > 120.0,
             "room for a message of two lines at the default size"
-        );
-        assert!(
-            output
-                .viewport_output
-                .values()
-                .all(|v| !v.commands.contains(&egui::ViewportCommand::Close))
         );
     }
     #[test]

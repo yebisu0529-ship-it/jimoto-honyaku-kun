@@ -337,6 +337,26 @@ fn a_loaded_model_is_replaced_not_stacked_when_another_size_is_chosen() {
 }
 
 #[test]
+fn the_model_in_use_stays_chosen_when_the_disk_has_no_room_to_download_it_again() {
+    let mut app = app_with_loaded("plamo3-8b-q4_k_m", 24 * GIB, 5 * GIB);
+    app.setup.saved = ["plamo3-2b-q4_k_m", "plamo3-8b-q4_k_m"]
+        .map(String::from)
+        .into();
+    app.setup.hardware.as_mut().unwrap().disk_free_bytes = Some(5 * GIB);
+    app.recalculate_recommendation();
+    let short = model_catalog::disk_peak_bytes(&model("plamo3-0.8b-q4_k_m")) - 5 * GIB;
+    assert_eq!(
+        rows(&picker(&app))[..3],
+        [
+            format!("0.8B (disabled): {}", blocker_text(Blocker::Disk(short))),
+            "2B: 保存済み".into(),
+            "8B: 使用中".into(),
+        ]
+    );
+    assert_eq!(app.setup.selected_id, "plamo3-8b-q4_k_m");
+}
+
+#[test]
 fn choosing_a_smaller_model_than_the_loaded_one_shows_memory_freed() {
     let mut app = app_with_loaded("plamo3-8b-q4_k_m", 24 * GIB, 5 * GIB);
     app.setup.selected_id = "plamo3-2b-q4_k_m".into();
@@ -730,4 +750,14 @@ fn the_screen_lists_each_download_with_its_size_and_the_folder_it_goes_to() {
             "{size:?}: the list replaces the sentence about what comes next"
         );
     }
+}
+
+#[test]
+fn the_screen_says_every_part_comes_from_its_own_official_source() {
+    let nothing = tempfile::tempdir().unwrap();
+    let mut app = app_on(Some((24 * GIB, 5 * GIB)));
+    app.seed_plan(&setup_chain::Roots::under(nothing.path()));
+    let drawn = texts(&Session::new().settle(&mut app, (SMALL.0, 1600.0)));
+    assert!(drawn.iter().any(|(_, _, text)| text
+        == "モデルと実行環境は、それぞれの公式の配布先から取得します。PC情報は外部へ送信しません。"));
 }

@@ -871,6 +871,74 @@ fn emptying_the_input_ends_its_failure_and_the_mini_view_opens_on_the_chat() {
 }
 
 #[test]
+fn the_mini_view_opens_on_the_chat_after_the_input_was_emptied_while_it_was_being_translated() {
+    let (endpoint, prompts) = translation_stub(vec![Completion::Text("こんにちは。")]);
+    let mut app = screen(endpoint);
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    assert!(
+        app.manual_busy.is_some(),
+        "the input was not sent by itself"
+    );
+    // The answer is not taken in: the translation is still in flight.
+    prompts
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the translator was not asked");
+    window.click(&mut app, "クリア");
+    assert!(app.input.is_empty() && app.manual_busy.is_some());
+
+    window.draw(
+        &mut app,
+        vec![key(
+            egui::Key::M,
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+        )],
+    );
+    window.resize(520.0, 360.0);
+    window.settle(&mut app);
+    assert!(app.window_mode.is_mini());
+    assert!(
+        !window.has(BACK_TO_CHAT) && !window.has("翻訳中"),
+        "the mini view opens on a translation that will not be shown"
+    );
+    assert!(
+        has_text_containing(&window.output, "上の「● 聞く」を押すと始まります。"),
+        "the mini view does not open on the chat"
+    );
+}
+
+#[test]
+fn a_reading_does_not_show_the_translation_of_the_text_before_it_while_its_own_is_coming() {
+    let (endpoint, prompts) = translation_stub(vec![
+        Completion::Text("こんにちは。"),
+        Completion::Text("読み取った文です。"),
+    ]);
+    let mut app = screen(endpoint);
+    let mut window = Window::new(860.0, 620.0);
+    app.input = "Hello.".into();
+    wait(&mut window, &mut app, 1.2);
+    translated(&mut app, &prompts);
+    window.settle(&mut app);
+    assert!(window.has("こんにちは。"));
+
+    app.accept_ocr("Read from a picture.".into());
+    app.process(&egui::Context::default());
+    assert!(app.manual_busy.is_some(), "the reading was not sent");
+    window.settle(&mut app);
+    assert!(
+        !window.has("こんにちは。"),
+        "the translation of another text is shown beside the reading"
+    );
+    assert_eq!(
+        words(&translated(&mut app, &prompts)),
+        "Read from a picture."
+    );
+    window.settle(&mut app);
+    assert!(window.has("読み取った文です。"));
+}
+
+#[test]
 fn a_failed_request_leaves_the_card_empty_and_is_sent_again_only_once_the_input_changes() {
     let (endpoint, prompts) = translation_stub(vec![
         Completion::Text("こんにちは。"),

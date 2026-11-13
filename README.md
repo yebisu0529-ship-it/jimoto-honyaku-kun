@@ -10,7 +10,7 @@ Nemotron と PLaMo をこのPCで動かし、PCで再生中の英語の音声を
 
 **[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/talk-style-live-translation/releases)** · **1.0.0**
 
-![チャットの画面。PCで再生中の英語の訳が、吹き出しになって上から並ぶ](assets/screenshots/live.png)
+https://github.com/user-attachments/assets/24994065-11f1-486d-a089-330682f25c6c
 
 ## できること
 

@@ -1,7 +1,5 @@
 # Talk風Live翻訳
 
-旧名：地元翻訳くん
-
 <img src="assets/icons/jimoto.svg" alt="Talk風Live翻訳のアイコン" width="96" height="96">
 
 translated by PLaMo

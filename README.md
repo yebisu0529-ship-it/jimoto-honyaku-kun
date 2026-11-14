@@ -4,7 +4,7 @@
 
 translated by PLaMo
 
-Nemotron と PLaMo をこのPCで動かし、PCで再生中の英語の音声を、やさしい日本語にリアルタイムで訳してトーク風のチャットに出す、Windows用の翻訳アプリです。
+Nemotron と PLaMo をPCで動かし、PCで再生中の英語の音声を、やさしい日本語にリアルタイムで訳してトーク風のチャットに出す、Windows用の翻訳アプリです。
 
 **[Windows版のダウンロード](https://github.com/yebisu0529-ship-it/talk-style-live-translation/releases)** · **1.0.0**
 
